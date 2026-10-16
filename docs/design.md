@@ -93,7 +93,7 @@ In every case the runtime also adapts to live headers.
 
 1. **Filter.** The spec exposes a server-side filter param (`since`, `updated_after`, `modified_since`…) matched with a record cursor field. The next run sends `param=<watermark>`.
 2. **Early stop.** There is no filter param, but the endpoint can sort by the cursor in descending order: a `sort` / `order_by` / `sort_by` param, optionally with `order` / `direction`, whose enum or description allows `updated_at` descending. `run` requests that sort, pages normally, and stops as soon as a page holds only records whose cursor is below the watermark. The records of the last page that are below the watermark are dropped.
-   - **Runtime guard:** if the cursor ever increases within a run, the API is not sorted as promised. The stream finishes this run as a full fetch, a warning is logged and recorded in the manifest, and `list` shows `early stop (unreliable)`.
+   - **Runtime guard:** if the cursor ever increases within a run, the API is not sorted as promised. From that point the run keeps every record it pages through (records already dropped stay dropped), later runs fetch everything, a warning is logged and recorded in the manifest, and `list` shows `early stop (unreliable)`.
    - When both a filter and a sort exist, filter mode wins.
 3. **Full refresh.** Nothing usable exists, so every run re-downloads the stream. Each run's output is a complete snapshot under its own `run_id=` sub-partition.
 
@@ -139,7 +139,9 @@ Duplicates have three sources: the inclusive boundary, a re-run after a crash, a
    3. write the manifest;
    4. clean up the staging files.
 
-   A failed run leaves no data and no moved watermark. Duplicates from a crash remain possible only between steps 1 and 2.
+   A run that fails before step 1 leaves no data and no moved watermark. A crash between steps 1 and 2 leaves the files without the watermark: the next run fetches them again, and the views remove the duplicates.
+
+   Only one run at a time works on a folder: `run` holds an OS lock on `.apisip/run.lock`.
 2. **Ranges and overlaps in the manifest.** The run manifest records per stream the status, the requested range and the cursor range actually observed. An overlap with an earlier committed run is flagged in the manifest and printed by `run`.
 3. **Primary key detection.** OpenAPI has no primary-key marker. `init` picks `id` when it is present and asks otherwise, and the value stays editable in `apisip.toml`.
 

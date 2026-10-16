@@ -108,7 +108,7 @@ apisip run
 The mock API lies on purpose:
 
 - **events:** it claims a descending sort but does not honour it, so apisip
-  falls back to a full fetch for that stream;
+  stops filtering that stream and fetches all of it on later runs;
 - **users:** one user carries a field the spec does not declare, and another
   has a mistyped value. Both are reported as drift.
 
@@ -215,13 +215,16 @@ one of three modes:
 2. **early stop:** there is no filter, but the API sorts by the cursor in
    descending order. The run stops at the first page older than the watermark.
    If the cursor ever goes up during a run, the API is not sorted as it claims.
-   The stream then fetches everything, and `list` shows
-   `early stop (unreliable)`.
+   From that point the run keeps every record it pages through, later runs
+   fetch everything, and `list` shows `early stop (unreliable)`.
 3. **full refresh:** nothing usable exists, so every run takes a complete
    snapshot.
 
 The comparison with the watermark is inclusive, so delivery is **at least
 once**. Losing a record at the boundary is worse than repeating one.
+A cursor value that breaks the spec, or whose type differs from the others
+(such as `"N/A"` among timestamps), never moves the watermark. The manifest
+counts those records.
 
 ## Understanding the output
 
@@ -237,7 +240,10 @@ _apisip/runs/<run_id>.json                                        # manifest: co
 _apisip/views/*.sql                                               # generated views
 ```
 
-Every record carries `_apisip_run_id` and `_apisip_extracted_at`.
+Every record carries `_apisip_run_id` and `_apisip_extracted_at`. On a local
+destination, a run appends its JSONL lines to the latest part file while that
+file is under `rotate.max_bytes`. A file name therefore tells which run started
+the file, not which runs it holds: use `_apisip_run_id` for that.
 
 **The grain is one row per version that a run observed.** Take a user who is
 created, then updated twice, with a run after each change: that user appears
@@ -253,8 +259,13 @@ committed in this order:
 2. advance the watermark;
 3. write the manifest.
 
-A failed run therefore leaves no data and no moved watermark. The manifest
-flags any overlap with an earlier run.
+A run that fails before step 1 leaves no data and no moved watermark. A crash
+between steps 1 and 2 leaves the files in place but not the watermark, so the
+next run fetches those records again; the views remove the duplicates. The
+manifest flags any overlap with an earlier run.
+
+Run one `apisip run` at a time: a second run in the same folder stops with an
+error. Two folders must not share a destination path.
 
 ### Generated views
 
