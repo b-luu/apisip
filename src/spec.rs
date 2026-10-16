@@ -298,15 +298,23 @@ impl Spec {
             return Some("declares no success response");
         };
         match self.version() {
-            Version::Swagger2 => resp
-                .get("schema")
-                .is_none()
-                .then_some("declares no response body"),
+            // Swagger 2.0 defines a missing `schema` as "no content returned".
+            Version::Swagger2 if resp.get("schema").is_none() => Some("declares no response body"),
+            Version::Swagger2 => {
+                let produces = op
+                    .get("produces")
+                    .or_else(|| self.root.get("produces"))
+                    .and_then(Value::as_array);
+                match produces {
+                    Some(types) if !types.iter().filter_map(Value::as_str).any(json_media_type) => {
+                        Some("does not return JSON")
+                    }
+                    _ => None,
+                }
+            }
             _ => match resp.get("content").and_then(Value::as_object) {
                 None => Some("declares no response body"),
-                Some(c) if !c.keys().any(|k| k.contains("json") || k == "*/*") => {
-                    Some("does not return JSON")
-                }
+                Some(c) if !c.keys().any(|k| json_media_type(k)) => Some("does not return JSON"),
                 Some(_) => None,
             },
         }
@@ -321,7 +329,7 @@ impl Spec {
                 let content = resp.get("content")?.as_object()?;
                 let media = content
                     .iter()
-                    .find(|(k, _)| k.contains("json"))
+                    .find(|(k, _)| k.to_ascii_lowercase().contains("json"))
                     .or_else(|| content.iter().next())?
                     .1;
                 media.get("schema")?
@@ -426,6 +434,12 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// `application/json`, `application/vnd.api+json`, `*/*`, in any case.
+fn json_media_type(t: &str) -> bool {
+    let t = t.to_ascii_lowercase();
+    t.contains("json") || t.starts_with("*/*")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,6 +454,34 @@ mod tests {
         .unwrap();
         let op = spec.operation("get", "/a").unwrap();
         assert!(spec.success_response(op.op).is_some());
+    }
+
+    #[test]
+    fn json_bodies_are_recognised_in_any_case_and_from_produces() {
+        let v3 = Spec::parse(
+            &json!({"openapi": "3.0.3", "info": {"title": "t", "version": "1"}, "paths": {
+                "/a": {"get": {"responses": {"200": {"description": "ok",
+                    "content": {"Application/JSON; charset=utf-8": {"schema": {"type": "array"}}}}}}}
+            }})
+            .to_string(),
+            "x.json",
+        )
+        .unwrap();
+        assert_eq!(v3.no_json_body(v3.operation("get", "/a").unwrap().op), None);
+        let ok = json!({"200": {"description": "ok", "schema": {"type": "array"}}});
+        let v2 = Spec::parse(
+            &json!({"swagger": "2.0", "info": {"title": "t", "version": "1"},
+                "produces": ["application/xml"], "paths": {
+                "/xml": {"get": {"responses": ok}},
+                "/json": {"get": {"produces": ["application/json"], "responses": ok}}
+            }})
+            .to_string(),
+            "x.json",
+        )
+        .unwrap();
+        let op = |p| v2.operation("get", p).unwrap().op;
+        assert_eq!(v2.no_json_body(op("/xml")), Some("does not return JSON"));
+        assert_eq!(v2.no_json_body(op("/json")), None);
     }
 
     #[test]
