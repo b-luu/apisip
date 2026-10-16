@@ -3,6 +3,7 @@
 //! The binary is the main interface; the library exposes the same pieces
 //! for tests and for embedding.
 
+pub mod auth;
 pub mod cmd;
 pub mod config;
 pub mod detect;
