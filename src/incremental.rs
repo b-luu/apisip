@@ -31,8 +31,9 @@ impl CursorValue {
 
     /// Parses a stored watermark or a string field.
     pub fn parse(s: &str) -> CursorValue {
-        if let Ok(t) = DateTime::parse_from_rfc3339(s) {
-            return CursorValue::Time(t.with_timezone(&Utc));
+        // The same timestamp forms the schema accepts, offset or not.
+        if let Some(t) = crate::schema::parse_timestamp(s) {
+            return CursorValue::Time(t);
         }
         if let Ok(n) = s.parse::<f64>() {
             return CursorValue::Number(n);
@@ -276,6 +277,11 @@ mod tests {
         assert!(a < b, "timestamps compare in UTC");
         assert!(CursorValue::from_json(&json!(10)) > CursorValue::from_json(&json!(9)));
         assert!(CursorValue::parse("10") > CursorValue::parse("9"));
+        assert!(
+            CursorValue::parse("2026-01-02T10:00:00")
+                .same_kind(&CursorValue::parse("2026-01-01T10:00:00Z")),
+            "a timestamp without an offset is still a timestamp"
+        );
         let mut r = Range::default();
         for v in [json!(3), json!(1), json!(7)] {
             r.observe(&v);
