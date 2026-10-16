@@ -3,6 +3,7 @@
 //! the commit then moves them into the data layout.
 
 pub mod jsonl;
+pub mod parquet;
 
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -17,6 +18,7 @@ use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 use crate::config::Destination;
 
 pub use jsonl::JsonlWriter;
+pub use parquet::ParquetWriter;
 
 #[derive(Debug)]
 pub struct Store {

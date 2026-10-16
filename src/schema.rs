@@ -74,7 +74,7 @@ impl Shape {
             Shape::Float => DataType::Float64,
             Shape::Bool => DataType::Boolean,
             Shape::Str | Shape::Json => DataType::Utf8,
-            Shape::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            Shape::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())),
             Shape::Date => DataType::Date32,
             Shape::Struct(fields) => DataType::Struct(arrow_fields(fields)),
             Shape::List(item) => DataType::List(Arc::new(Field::new("item", item.arrow(), true))),
@@ -162,7 +162,7 @@ impl RecordSchema {
         fields.push(Field::new(RUN_ID, DataType::Utf8, true));
         fields.push(Field::new(
             EXTRACTED_AT,
-            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())),
             true,
         ));
         Arc::new(Schema::new(fields))
