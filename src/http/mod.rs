@@ -74,7 +74,10 @@ pub fn masked_url(url: &Url, secrets: &[String]) -> String {
         let pairs: Vec<(String, String)> = url
             .query_pairs()
             .map(|(k, v)| {
-                let hide = sensitive_param(&k) || secrets.iter().any(|s| v.contains(s.as_str()));
+                let hide = sensitive_param(&k)
+                    || secrets
+                        .iter()
+                        .any(|s| v == s.as_str() || (maskable(s) && v.contains(s.as_str())));
                 (
                     k.into_owned(),
                     if hide { "****".into() } else { v.into_owned() },
@@ -83,11 +86,20 @@ pub fn masked_url(url: &Url, secrets: &[String]) -> String {
             .collect();
         shown.query_pairs_mut().clear().extend_pairs(pairs);
     }
-    let mut text = shown.to_string();
-    for s in secrets {
-        text = text.replace(s.as_str(), "****");
-    }
-    text
+    mask_text(shown.to_string(), secrets)
+}
+
+/// Very short values (`"1"`, a Basic password of `"X"`) would mask unrelated
+/// text, so only longer ones are replaced inside free text.
+fn maskable(secret: &str) -> bool {
+    secret.chars().count() >= 6
+}
+
+fn mask_text(text: String, secrets: &[String]) -> String {
+    secrets
+        .iter()
+        .filter(|s| maskable(s))
+        .fold(text, |t, s| t.replace(s.as_str(), "****"))
 }
 
 pub fn http_client() -> Result<reqwest::Client> {
@@ -102,16 +114,36 @@ pub fn http_client() -> Result<reqwest::Client> {
 impl ApiClient {
     /// Builds the client for a `[source]`. Fails when a `${VAR}` it needs is unset.
     pub fn new(source: &Source) -> Result<Arc<ApiClient>> {
+        ApiClient::build(source, &[])
+    }
+
+    /// The client for a whole config: the values of every `${VAR}` its
+    /// streams use (fixed params, for instance) are masked in messages too.
+    pub fn for_config(config: &crate::config::Config) -> Result<Arc<ApiClient>> {
+        let streams = serde_json::to_string(&config.streams).unwrap_or_default();
+        ApiClient::build(&config.source, &crate::config::referenced_vars(&streams))
+    }
+
+    fn build(source: &Source, extra_vars: &[String]) -> Result<Arc<ApiClient>> {
         let http = http_client()?;
         let base_url = parse_base(&source.base_url)?;
         let auth = Authenticator::new(source.auth.as_ref(), http.clone(), &source.base_url)?;
         let mut secrets = auth.secrets();
+        // Values from the environment are what users keep secret; literal
+        // header values such as `X-Api-Version = "1"` are not.
+        let text = serde_json::to_string(source).unwrap_or_default();
+        let vars = crate::config::referenced_vars(&text);
+        for var in vars.iter().chain(extra_vars) {
+            if let Ok(v) = std::env::var(var)
+                && !v.is_empty()
+                && !secrets.contains(&v)
+            {
+                secrets.push(v);
+            }
+        }
         let mut headers = HeaderMap::new();
         for (k, v) in &source.headers {
             let v = interpolate(v).with_context(|| format!("header {k}"))?;
-            if !v.is_empty() {
-                secrets.push(v.clone());
-            }
             headers.insert(
                 HeaderName::from_bytes(k.as_bytes()).with_context(|| format!("header name {k}"))?,
                 HeaderValue::from_str(&v).with_context(|| format!("header {k}"))?,
@@ -135,9 +167,12 @@ impl ApiClient {
     }
 
     fn mask(&self, text: String) -> String {
-        self.secrets
-            .iter()
-            .fold(text, |t, s| t.replace(s.as_str(), "****"))
+        mask_text(text, &self.secrets)
+    }
+
+    /// `url` as shown in messages and logs.
+    pub fn shown(&self, url: &Url) -> String {
+        masked_url(url, &self.secrets)
     }
 
     /// `base_url` joined with a stream path such as `/users`.

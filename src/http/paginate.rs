@@ -104,7 +104,8 @@ impl Paginator {
         }
         self.last_fingerprint = Some(fingerprint);
         if !self.seen.insert(next.to_string()) {
-            tracing::debug!("next page {next} was already fetched, stopping");
+            // No URL in the message: a next link can repeat a query-string key.
+            tracing::debug!("the next page was already fetched, stopping");
             return None;
         }
         Some(next)

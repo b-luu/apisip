@@ -138,3 +138,25 @@ fn masked_url_hides_keys_by_name_and_by_value() {
         "https://x.test/items?page=2&api_key=****&q=****&access_token=****"
     );
 }
+
+#[tokio::test]
+async fn only_values_from_the_environment_are_masked() {
+    let server = MockServer::start().await;
+    let mut src = source(&server);
+    // SAFETY: test-only variable with a unique name, read by this test only.
+    unsafe { std::env::set_var("APISIP_TEST_MASK_HEADER", "hdr-s3cr3t") };
+    src.headers = [
+        ("X-Api-Version".to_string(), "1".to_string()),
+        (
+            "X-Secret".to_string(),
+            "${APISIP_TEST_MASK_HEADER}".to_string(),
+        ),
+    ]
+    .into();
+    let c = ApiClient::new(&src).unwrap();
+    let url = Url::parse("http://127.0.0.1:8100/v1/plans?x=1&y=hdr-s3cr3t").unwrap();
+    assert_eq!(c.shown(&url), "http://127.0.0.1:8100/v1/plans?x=1&y=****");
+    // A short secret is hidden as a whole query value, never inside text.
+    let short = super::masked_url(&url, &["1".to_string()]);
+    assert_eq!(short, "http://127.0.0.1:8100/v1/plans?x=****&y=hdr-s3cr3t");
+}

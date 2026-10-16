@@ -24,7 +24,7 @@ pub async fn run(ws: &Workspace) -> Result<bool> {
             None
         }
     };
-    let client = ApiClient::new(&config.source)?;
+    let client = ApiClient::for_config(&config)?;
     let mut ok = true;
 
     if config.destination.url.starts_with("s3://") {

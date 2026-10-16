@@ -59,7 +59,7 @@ pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
             None
         }
     };
-    let client = ApiClient::new(&config.source)?;
+    let client = ApiClient::for_config(&config)?;
     let store = Arc::new(Store::open(&config.destination, &ws.dir)?);
     let layout = Layout::new(Utc::now());
     // Leftovers of an interrupted run were never committed: drop them.

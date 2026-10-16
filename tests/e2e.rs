@@ -709,20 +709,69 @@ fn live_github_detection() {
 /// reach the terminal or the manifest.
 #[test]
 fn a_query_api_key_is_never_shown() {
-    const KEY: &str = "qk_live_SECRET_9f8e7d";
     let closed = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
+    init_keyed(d, &format!("http://{closed}"));
+
+    let mut shown = String::new();
+    for cmd in ["check", "run"] {
+        let a = apisip(d).args([cmd, "-v"]).assert().failure();
+        shown += &stdout(&a);
+        shown += &stderr(&a);
+    }
+    for f in files(&d.join("_apisip/runs"), "json") {
+        shown += &std::fs::read_to_string(f).unwrap();
+    }
+    assert!(shown.contains("FAILED: GET http://127.0.0.1"), "{shown}");
+    assert!(!shown.contains(KEY), "the API key leaked:\n{shown}");
+}
+
+#[test]
+fn a_next_link_that_repeats_the_key_is_never_logged() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    // Every page links to the same URL, key included, with new records each
+    // time, so paging stops on the "already fetched" check.
+    std::thread::spawn(move || {
+        for (n, conn) in listener.incoming().enumerate() {
+            let Ok(mut conn) = conn else { continue };
+            let mut buf = [0u8; 4096];
+            let _ = conn.read(&mut buf);
+            let body = format!("[{{\"id\": {n}}}]");
+            let _ = write!(
+                conn,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Link: <http://{addr}/things?api_key={KEY}>; rel=\"next\"\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init_keyed(d, &format!("http://{addr}"));
+    let a = apisip(d).args(["run", "-vv"]).assert().success();
+    let shown = stdout(&a) + &stderr(&a);
+    assert!(shown.contains("already fetched"), "{shown}");
+    assert!(!shown.contains(KEY), "the API key leaked:\n{shown}");
+}
+
+const KEY: &str = "qk_live_SECRET_9f8e7d";
+
+/// A folder for an API that takes its key in the query string.
+fn init_keyed(d: &Path, server: &str) {
     let spec = d.join("spec.json");
     std::fs::write(
         &spec,
         serde_json::json!({
             "openapi": "3.0.3",
             "info": {"title": "Keyed", "version": "1"},
-            "servers": [{"url": format!("http://{closed}")}],
+            "servers": [{"url": server}],
             "security": [{"key": []}],
             "components": {"securitySchemes": {
                 "key": {"type": "apiKey", "in": "query", "name": "api_key"}
@@ -754,16 +803,4 @@ fn a_query_api_key_is_never_shown() {
             .replace("max_backoff = \"1m\"", "max_backoff = \"1s\""),
     )
     .unwrap();
-
-    let mut shown = String::new();
-    for cmd in ["check", "run"] {
-        let a = apisip(d).args([cmd, "-v"]).assert().failure();
-        shown += &stdout(&a);
-        shown += &stderr(&a);
-    }
-    for f in files(&d.join("_apisip/runs"), "json") {
-        shown += &std::fs::read_to_string(f).unwrap();
-    }
-    assert!(shown.contains("FAILED: GET http://127.0.0.1"), "{shown}");
-    assert!(!shown.contains(KEY), "the API key leaked:\n{shown}");
 }
