@@ -1,7 +1,56 @@
+pub mod check;
 pub mod init;
 pub mod list;
+pub mod run;
 
-use crate::config::Pagination;
+use anyhow::{Result, bail};
+use url::Url;
+
+use crate::config::{Config, Pagination, StreamConfig, interpolate};
+use crate::http::ApiClient;
+
+/// The streams to run: the named ones, or every enabled one.
+pub fn select_streams(config: &Config, names: &[String]) -> Result<Vec<StreamConfig>> {
+    if names.is_empty() {
+        return Ok(config
+            .streams
+            .iter()
+            .filter(|s| s.enabled)
+            .cloned()
+            .collect());
+    }
+    names
+        .iter()
+        .map(|n| match config.streams.iter().find(|s| &s.name == n) {
+            Some(s) if s.enabled => Ok(s.clone()),
+            Some(_) => bail!("stream `{n}` is disabled in apisip.toml (set enabled = true)"),
+            None => bail!(
+                "no stream `{n}` in apisip.toml; known: {}",
+                config
+                    .streams
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        })
+        .collect()
+}
+
+/// The endpoint URL with the stream's fixed params, before paging and incremental params.
+pub fn first_url(client: &ApiClient, s: &StreamConfig) -> Result<Url> {
+    let mut url = client.endpoint(&s.path)?;
+    for (k, v) in &s.params {
+        crate::http::paginate::set_param(&mut url, k, &interpolate(v)?);
+    }
+    if let Some(sort) = s.incremental.as_ref().and_then(|i| i.sort.as_ref()) {
+        crate::http::paginate::set_param(&mut url, &sort.param, &sort.value);
+        for (k, v) in &sort.params {
+            crate::http::paginate::set_param(&mut url, k, v);
+        }
+    }
+    Ok(url)
+}
 
 pub fn pagination_label(p: &Option<Pagination>) -> &'static str {
     match p {

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::spec::schema_type;
@@ -104,7 +104,7 @@ fn arrow_fields(fields: &[(String, Shape)]) -> Fields {
 }
 
 /// Where a record schema came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SchemaSource {
     Spec,
@@ -398,13 +398,14 @@ fn short(v: &Value) -> String {
 }
 
 /// Per-stream drift against the spec, for the manifest and the run summary.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Drift {
     /// Fields the spec does not declare: count and one example.
     pub undeclared: BTreeMap<String, FieldStat>,
     /// Values whose type does not match the spec.
     pub mistyped: BTreeMap<String, Mistyped>,
     /// Declared top-level fields that no record of the run carried.
+    #[serde(default)]
     pub missing: Vec<String>,
     #[serde(skip)]
     seen: BTreeSet<String>,
@@ -412,13 +413,13 @@ pub struct Drift {
     declared: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldStat {
     pub count: u64,
     pub example: Value,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mistyped {
     pub count: u64,
     pub expected: String,

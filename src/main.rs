@@ -112,6 +112,14 @@ fn main() -> ExitCode {
     }
 }
 
+fn exit(ok: bool) -> ExitCode {
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 fn init_tracing(verbose: u8) {
     let default = match verbose {
         0 => "warn",
@@ -165,8 +173,18 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 cmd::list::run(&ws).await?;
                 Ok(ExitCode::SUCCESS)
             }
-            Command::Check => anyhow::bail!("check: not implemented yet"),
-            Command::Run(_) => anyhow::bail!("run: not implemented yet"),
+            Command::Check => Ok(exit(cmd::check::run(&ws).await?)),
+            Command::Run(a) => Ok(exit(
+                cmd::run::run(
+                    &ws,
+                    cmd::run::RunOptions {
+                        streams: a.stream,
+                        full_refresh: a.full_refresh,
+                        strict: a.strict,
+                    },
+                )
+                .await?,
+            )),
             Command::Update(_) => anyhow::bail!("update: not implemented yet"),
         }
     })
