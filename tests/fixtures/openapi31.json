@@ -43,7 +43,17 @@
     },
     "/devices": {
       "get": {
-        "responses": {"200": {"description": "no schema"}}
+        "responses": {"200": {"description": "JSON without a schema", "content": {"application/json": {}}}}
+      }
+    },
+    "/logout": {
+      "get": {
+        "responses": {"200": {"description": "no body"}}
+      }
+    },
+    "/report.csv": {
+      "get": {
+        "responses": {"200": {"description": "CSV", "content": {"text/csv": {"schema": {"type": "string"}}}}}
       }
     }
   }

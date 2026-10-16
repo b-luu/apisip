@@ -174,6 +174,13 @@ fn openapi31_next_url_filter_and_extension_limit() {
         devices.record_schema.is_none(),
         "no response schema: falls back to inference"
     );
+    let skipped: Vec<_> = d
+        .skipped
+        .iter()
+        .map(|s| (s.path.as_str(), s.reason.as_str()))
+        .collect();
+    assert!(skipped.contains(&("/logout", "declares no response body")));
+    assert!(skipped.contains(&("/report.csv", "does not return JSON")));
 
     assert!(d.rate_limits.plans().is_empty());
     let limit = d.rate_limits.default_limit().unwrap();

@@ -130,7 +130,8 @@ fn init_warns_when_no_rate_limit_is_found() {
     std::fs::write(
         &spec,
         r#"{"openapi":"3.0.0","info":{"title":"Quiet"},"servers":[{"url":"http://quiet.test"}],
-            "paths":{"/things":{"get":{"responses":{"200":{"description":"ok"}}}}}}"#,
+            "paths":{"/things":{"get":{"responses":{"200":{"description":"ok",
+            "content":{"application/json":{"schema":{"type":"array","items":{}}}}}}}}}}"#,
     )
     .unwrap();
     apisip(dir.path())

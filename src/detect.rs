@@ -154,6 +154,9 @@ pub fn detect(spec: &Spec) -> Detection {
 }
 
 fn detect_stream(spec: &Spec, op: &Operation) -> Result<DetectedStream, String> {
+    if let Some(reason) = spec.no_json_body(op.op) {
+        return Err(reason.to_string());
+    }
     let schema = spec.response_schema(op.op);
     let (records, record_schema) = match &schema {
         Some(s) => records_location(s).ok_or("returns a single object, not a list")?,

@@ -291,6 +291,27 @@ impl Spec {
         Some(self.resolve(pick))
     }
 
+    /// Why the success response cannot hold records, if it declares no body
+    /// (OpenAPI 3: no `content`; Swagger 2.0: no `schema`) or no JSON one.
+    pub fn no_json_body(&self, op: &Value) -> Option<&'static str> {
+        let Some(resp) = self.success_response(op) else {
+            return Some("declares no success response");
+        };
+        match self.version() {
+            Version::Swagger2 => resp
+                .get("schema")
+                .is_none()
+                .then_some("declares no response body"),
+            _ => match resp.get("content").and_then(Value::as_object) {
+                None => Some("declares no response body"),
+                Some(c) if !c.keys().any(|k| k.contains("json") || k == "*/*") => {
+                    Some("does not return JSON")
+                }
+                Some(_) => None,
+            },
+        }
+    }
+
     /// The inlined JSON schema of the success response, if the spec declares one.
     pub fn response_schema(&self, op: &Value) -> Option<Value> {
         let resp = self.success_response(op)?;
