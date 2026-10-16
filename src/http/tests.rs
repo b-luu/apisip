@@ -238,11 +238,14 @@ async fn credentials_never_go_to_another_host() {
         .try_collect()
         .await;
     let err = format!("{:#}", pages.unwrap_err());
-    assert!(err.contains("on another host (localhost)"), "{err}");
+    assert!(err.contains("is on http://localhost:"), "{err}");
 
     let err = c.get(&c.endpoint("/moved").unwrap()).await.unwrap_err();
     let err = format!("{err:#}");
-    assert!(err.contains("refused a redirect to another host"), "{err}");
+    assert!(
+        err.contains("refused a redirect to http://localhost:"),
+        "{err}"
+    );
     // Neither the next page nor the redirect target was requested.
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
@@ -269,4 +272,43 @@ params = { tok = "${APISIP_TEST_MASK_PARAM}" }
     let c = ApiClient::for_config(&config).unwrap();
     let url = Url::parse("http://127.0.0.1:8100/plans?tok=prm-7a6b5c4d").unwrap();
     assert_eq!(c.shown(&url), "http://127.0.0.1:8100/plans?tok=****");
+}
+
+#[tokio::test]
+async fn a_redirect_on_the_same_host_is_followed() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/old"))
+        .respond_with(ResponseTemplate::new(301).insert_header("location", "/v1/new"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/new"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1}])))
+        .mount(&server)
+        .await;
+    let c = client(&server);
+    let page = c.get(&c.endpoint("/old").unwrap()).await.unwrap();
+    assert_eq!(page.body, json!([{"id": 1}]));
+}
+
+#[test]
+fn credentials_keep_to_the_scheme_and_port_or_upgrade() {
+    let ok =
+        |a: &str, b: &str| may_send_credentials(&Url::parse(a).unwrap(), &Url::parse(b).unwrap());
+    assert!(ok("https://api.x/a", "https://api.x:443/b"));
+    assert!(ok("http://api.x/a", "https://api.x/b"));
+    assert!(
+        !ok("https://api.x/a", "http://api.x/b"),
+        "a downgrade to http"
+    );
+    assert!(
+        !ok("https://api.x/a", "https://api.x:8443/b"),
+        "another port"
+    );
+    assert!(!ok("https://api.x/a", "https://evil.y/b"), "another host");
+    assert!(
+        !ok("https://api.x/a", "https://api.x@evil.y/b"),
+        "userinfo trick"
+    );
 }

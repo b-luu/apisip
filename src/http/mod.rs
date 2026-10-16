@@ -106,21 +106,38 @@ fn mask_text(text: String, secrets: &[String]) -> String {
 /// Credentials (an API key header, custom headers) would follow a redirect
 /// to another host, so such redirects are refused rather than followed.
 fn same_host_redirects(attempt: reqwest::redirect::Attempt) -> reqwest::redirect::Action {
-    let host = attempt.url().host_str().unwrap_or_default().to_string();
-    if attempt
-        .previous()
-        .first()
-        .is_some_and(|u| u.host_str() != Some(host.as_str()))
+    if let Some(from) = attempt.previous().first()
+        && !may_send_credentials(from, attempt.url())
     {
+        let to = shown_origin(attempt.url());
         attempt.error(format!(
-            "refused a redirect to another host ({host}): apisip sends credentials only to the \
-             API's own host"
+            "refused a redirect to {to}: apisip sends credentials only to the API's own host, \
+             over the same scheme and port or upgraded to https"
         ))
-    } else if attempt.previous().len() >= 10 {
+    } else if attempt.previous().len() > 10 {
         attempt.error("too many redirects")
     } else {
         attempt.follow()
     }
+}
+
+/// Whether a request to `to` may carry the credentials meant for `from`: the
+/// same host, and the same scheme and port, or an upgrade from http to https.
+fn may_send_credentials(from: &Url, to: &Url) -> bool {
+    from.host_str() == to.host_str()
+        && ((from.scheme() == to.scheme()
+            && from.port_or_known_default() == to.port_or_known_default())
+            || (from.scheme() == "http" && to.scheme() == "https"))
+}
+
+/// `scheme://host:port` only, for messages.
+fn shown_origin(url: &Url) -> String {
+    format!(
+        "{}://{}:{}",
+        url.scheme(),
+        url.host_str().unwrap_or_default(),
+        url.port_or_known_default().unwrap_or_default()
+    )
 }
 
 pub fn http_client() -> Result<reqwest::Client> {
@@ -311,7 +328,7 @@ pub fn pages(
 ) -> impl futures::Stream<Item = Result<Vec<Value>>> {
     async_stream::try_stream! {
         let mut paginator = Paginator::new(pagination);
-        let host = first.host_str().map(str::to_string);
+        let origin = first.clone();
         let mut next = Some(paginator.first(first));
         while let Some(url) = next.take() {
             let page = client.get(&url).await?;
@@ -320,13 +337,14 @@ pub fn pages(
             // Credentials go with every request: never to another host. The
             // stream fails rather than stops, so no partial data is committed.
             if let Some(n) = &next
-                && n.host_str().map(str::to_string) != host
+                && !may_send_credentials(&origin, n)
             {
                 Err(anyhow::anyhow!(
-                    "the next page of {} is on another host ({}): apisip sends credentials only \
-                     to the API's own host, so it does not follow it",
+                    "the next page of {} is on {}: apisip sends credentials only to the API's \
+                     own host, over the same scheme and port or upgraded to https, so it does \
+                     not follow it",
                     client.shown(&url),
-                    n.host_str().unwrap_or_default()
+                    shown_origin(n)
                 ))?;
             }
             yield recs;
