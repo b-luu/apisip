@@ -45,3 +45,7 @@ rexpect = "0.7.1"
 tokio = { version = "1.53.3", features = ["full", "test-util"] }
 tempfile = "3.27.0"
 wiremock = "0.6.5"
+
+[[example]]
+name = "mock-api"
+path = "examples/mock-api/main.rs"
