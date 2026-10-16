@@ -105,6 +105,7 @@ dependencies = [
  "assert_cmd",
  "async-stream",
  "axum",
+ "bytes",
  "bytesize",
  "chrono",
  "clap",

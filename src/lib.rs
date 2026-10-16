@@ -11,6 +11,8 @@ pub mod envfile;
 pub mod http;
 pub mod incremental;
 pub mod prompt;
+pub mod schema;
+pub mod sink;
 pub mod spec;
 pub mod state;
 pub mod workspace;
