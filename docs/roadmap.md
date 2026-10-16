@@ -26,3 +26,8 @@ Not in v1. Each item becomes a GitHub issue labelled `roadmap`.
   rows of a later crashed snapshot show up as non-current versions.
 - **Minimum Rust version in CI:** build with Rust 1.89, the declared
   `rust-version`.
+- **Hosts allowed to receive credentials:** an allowlist for APIs whose
+  next-page links legitimately move to another host, which today fails the
+  stream. On an http-to-https redirect, the HTTP client also drops the
+  `Authorization` header, so such APIs get a 401 unless the key is in a custom
+  header.
