@@ -1,0 +1,45 @@
+[package]
+name = "apisip"
+version = "0.1.0"
+edition = "2024"
+description = "Point it at an OpenAPI spec, get JSONL or Parquet files: API ingestion in one binary"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["openapi", "ingestion", "parquet", "etl", "api"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow = "1.0.104"
+arrow = { version = "60.0.0", default-features = false, features = ["json"] }
+async-stream = "0.3.6"
+bytesize = "2.7.0"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+dotenvy = "0.15.7"
+futures = "0.3.34"
+humantime = "2.4.0"
+inquire = "0.9.4"
+object_store = { version = "0.14.2", features = ["aws"] }
+parquet = { version = "60.0.0", default-features = false, features = ["arrow", "async", "object_store", "snap", "zstd"] }
+rand = "0.10.3"
+regex = "1.13.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "http2", "query", "form", "stream", "gzip"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+serde_yaml_ng = "0.10.0"
+thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["full"] }
+toml = "1.1.8"
+toml_edit = "0.25.17"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = "2.5.8"
+uuid = { version = "1.28.0", features = ["v7"] }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+axum = "0.8.9"
+predicates = "3.1.4"
+rexpect = "0.7.1"
+tempfile = "3.27.0"
+wiremock = "0.6.5"
