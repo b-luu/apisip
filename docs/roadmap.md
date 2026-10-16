@@ -13,3 +13,8 @@ Not in v1. Each item becomes a GitHub issue labelled `roadmap`.
 - **Iceberg table metadata** over the Parquet output.
 - **Config drafted from HTML docs** for APIs that publish no OpenAPI spec.
 - **Python bindings, and releases** on crates.io and Homebrew.
+- **Renamed streams in `update`:** a stream the user renamed in `apisip.toml`
+  is offered again as a new endpoint, because streams are matched by name. Match
+  them by path as well.
+- **One lock per destination:** `run` locks its folder, but two folders that
+  write to the same destination path are not detected.
