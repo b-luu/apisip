@@ -12,12 +12,32 @@ pub fn read(path: &Path) -> Result<Vec<(String, String)>> {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    for item in
-        dotenvy::from_path_iter(path).with_context(|| format!("reading {}", path.display()))?
+    for item in dotenvy::from_path_iter(path)
+        .map_err(|e| anyhow::anyhow!("reading {}: {}", path.display(), describe(&e)))?
     {
-        out.push(item.with_context(|| format!("parsing {}", path.display()))?);
+        out.push(
+            item.map_err(|e| anyhow::anyhow!("parsing {}: {}", path.display(), describe(&e)))?,
+        );
     }
     Ok(out)
+}
+
+/// A `dotenvy` error without the offending line, which may hold a secret.
+pub fn describe(e: &dotenvy::Error) -> String {
+    match e {
+        dotenvy::Error::LineParse(line, at) => {
+            // Without `=`, the whole line could be a pasted secret: name no key.
+            let key = line.split_once('=').map_or("", |(k, _)| k.trim());
+            let key =
+                if !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    format!(" for `{key}`")
+                } else {
+                    String::new()
+                };
+            format!("malformed line{key} (character {at}); expected KEY=VALUE")
+        }
+        other => other.to_string(),
+    }
 }
 
 pub fn get(path: &Path, key: &str) -> Result<Option<String>> {
@@ -96,8 +116,9 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         let mut f = opts
             .open(path)
             .with_context(|| format!("writing {}", path.display()))?;
-        f.write_all(bytes)?;
+        // An existing file keeps its mode on open: narrow it before writing.
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(bytes)?;
     }
     #[cfg(not(unix))]
     {
@@ -177,6 +198,37 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn parse_errors_never_quote_the_line() {
+        let dir = tempfile::tempdir().unwrap();
+        for (content, key) in [
+            ("TOKEN=\"s3cr3t-value\n", Some("TOKEN")),
+            ("s3cr3t-value\n", None),
+        ] {
+            let path = dir.path().join(".env");
+            std::fs::write(&path, content).unwrap();
+            let err = format!("{:#}", read(&path).unwrap_err());
+            assert!(!err.contains("s3cr3t"), "{err}");
+            let direct = describe(&dotenvy::from_path(&path).unwrap_err());
+            assert!(!direct.contains("s3cr3t"), "{direct}");
+            if let Some(key) = key {
+                assert!(err.contains(key), "{err}");
+            }
+        }
+    }
+
+    #[test]
+    fn write_private_narrows_an_existing_file_before_writing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&path, b"A=1\n").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

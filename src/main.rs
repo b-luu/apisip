@@ -143,7 +143,13 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     // in the process environment win over the file.
     let env = ws.env_path();
     if env.exists() {
-        dotenvy::from_path(&env).map_err(|e| anyhow::anyhow!("reading {}: {e}", env.display()))?;
+        dotenvy::from_path(&env).map_err(|e| {
+            anyhow::anyhow!(
+                "reading {}: {}",
+                env.display(),
+                apisip::envfile::describe(&e)
+            )
+        })?;
     }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
