@@ -38,7 +38,7 @@ It is a single binary written in Rust. No Python, no platform, no daemon.
 - [Following API changes with `update`](#following-api-changes-with-update)
 - [Alternatives](#alternatives)
 - [Works well with](#works-well-with)
-- [Roadmap](#roadmap) and [License](#license)
+- [Roadmap](#roadmap), [Contributing](#contributing) and [License](#license)
 
 ## Install
 
@@ -411,6 +411,11 @@ See [docs/roadmap.md](docs/roadmap.md). Planned work includes:
 - Iceberg metadata.
 
 The design is described in [docs/design.md](docs/design.md).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for building, testing and sending
+changes. Coding agents also read [AGENTS.md](AGENTS.md).
 
 ## License
 
