@@ -536,13 +536,35 @@ fn confirm_auth(
     if !matches(opt) {
         return Ok((Some(detected), opt.vars.clone()));
     }
-    // Same scheme: follow the spec unless the user edited the auth table.
     let cur = current.cloned().unwrap();
-    if base.source.auth.as_ref() == Some(&cur) || cur == detected {
-        return Ok((Some(detected), opt.vars.clone()));
+    let (auth, vars) = same_scheme(base.source.auth.as_ref(), cur, detected, &opt.vars);
+    Ok((Some(auth), vars))
+}
+
+/// Same scheme: follow the spec unless the user edited the auth table. The
+/// current variable names are kept when only they differ (the spec title
+/// they derive from changed), so `.env` keeps working.
+fn same_scheme(
+    base: Option<&AuthConfig>,
+    cur: AuthConfig,
+    detected: AuthConfig,
+    known: &[EnvVar],
+) -> (AuthConfig, Vec<EnvVar>) {
+    let edited = base != Some(&cur);
+    if cur == detected || (!edited && !same_but_vars(&cur, &detected)) {
+        return (detected, known.to_vec());
     }
-    let vars = auth_vars(&cur, &opt.vars);
-    Ok((Some(cur), vars))
+    let vars = auth_vars(&cur, known);
+    (cur, vars)
+}
+
+fn same_but_vars(a: &AuthConfig, b: &AuthConfig) -> bool {
+    let re = regex::Regex::new(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}").unwrap();
+    let shape = |c: &AuthConfig| {
+        re.replace_all(&serde_json::to_string(c).unwrap_or_default(), "${}")
+            .into_owned()
+    };
+    shape(a) == shape(b)
 }
 
 /// The variables an edited auth table references.
@@ -809,6 +831,38 @@ path = "/legacy"
                 .unwrap()
                 .enabled
         );
+    }
+
+    #[test]
+    fn a_renamed_spec_keeps_the_auth_variables_in_use() {
+        let auth = |var: &str, header: &str| -> AuthConfig {
+            toml::from_str(&format!(
+                "type = \"api_key\"\nin = \"header\"\nname = \"{header}\"\nvalue = \"${{{var}}}\""
+            ))
+            .unwrap()
+        };
+        let old = auth("OLD_API_KEY", "X-Key");
+        let known = [EnvVar {
+            name: "NEW_API_KEY".into(),
+            label: "API key".into(),
+            secret: true,
+        }];
+        // Only the variable name changed: keep the one .env defines.
+        let (kept, vars) = same_scheme(
+            Some(&old),
+            old.clone(),
+            auth("NEW_API_KEY", "X-Key"),
+            &known,
+        );
+        assert_eq!(kept, old);
+        assert_eq!(
+            vars.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+            ["OLD_API_KEY"]
+        );
+        // A real change in the spec is followed.
+        let moved = auth("NEW_API_KEY", "X-Api-Key");
+        let (taken, _) = same_scheme(Some(&old), old.clone(), moved.clone(), &known);
+        assert_eq!(taken, moved);
     }
 
     #[test]
