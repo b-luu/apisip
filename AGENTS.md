@@ -13,7 +13,7 @@ cargo test
 ```
 
 Nix users can get the toolchain with `nix develop` and run `nix flake check`.
-Tests that need the network or docker are `#[ignore]`d or gated behind an
+Tests that need the network or an S3 server are `#[ignore]`d or gated behind an
 environment variable (`APISIP_TEST_S3=1`), so the default suite runs offline.
 
 ## Rules
