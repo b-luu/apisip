@@ -124,7 +124,18 @@ pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
     m.finished_at = Some(Utc::now());
     m.save(&store).await?;
     store.delete_prefix(&layout.staging_root()).await?;
+    let state = ctx.state.lock().await;
+    let views = crate::views::write_all(&store, &ctx.config, &state).await;
     print_summary(&m, &store);
+    match views {
+        Ok(v) if !v.is_empty() => println!(
+            "Views: {}/all.sql (duckdb -c \".read {}/all.sql\")",
+            crate::views::VIEWS_DIR,
+            view_dir_hint(&store)
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!("warning: could not write the views: {e:#}"),
+    }
     Ok(failed == 0)
 }
 
@@ -415,6 +426,17 @@ fn fail_point(name: &str) -> Result<()> {
         bail!("injected failure at {name}");
     }
     Ok(())
+}
+
+fn view_dir_hint(store: &Store) -> String {
+    match &store.local_root {
+        Some(p) => p.join(crate::views::VIEWS_DIR).display().to_string(),
+        None => format!(
+            "{}/{}",
+            store.url.trim_end_matches('/'),
+            crate::views::VIEWS_DIR
+        ),
+    }
 }
 
 fn print_summary(m: &Manifest, store: &Store) {

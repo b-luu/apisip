@@ -15,4 +15,5 @@ pub mod schema;
 pub mod sink;
 pub mod spec;
 pub mod state;
+pub mod views;
 pub mod workspace;

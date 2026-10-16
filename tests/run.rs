@@ -22,6 +22,14 @@ fn spec() -> Value {
                     "updated_at": {"type": "string", "format": "date-time"}
                 }}
             }}}}}
+        }},
+        "/plans": {"get": {
+            "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+                "type": "array",
+                "items": {"type": "object", "properties": {
+                    "id": {"type": "integer"}, "name": {"type": "string"}
+                }}
+            }}}}}
         }}}
     })
 }
@@ -94,12 +102,34 @@ name = "users"
 path = "/users"
 primary_key = "id"
 incremental = {{ cursor = "updated_at", param = "updated_since" }}
+
+[[streams]]
+name = "plans"
+path = "/plans"
+primary_key = "id"
 "#,
             server.uri()
         ),
     )
     .unwrap();
     let ws = Workspace::new(Some(dir.to_path_buf())).unwrap();
+
+    // A full-refresh stream: plan 1 changes and plan 2 disappears after two calls.
+    Mock::given(method("GET"))
+        .and(path("/plans"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 1, "name": "a"}, {"id": 2, "name": "b"}
+        ])))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/plans"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 1, "name": "a2"}, {"id": 3, "name": "x"}
+        ])))
+        .mount(&server)
+        .await;
 
     // First run: no watermark, so no filter.
     Mock::given(method("GET"))
@@ -197,4 +227,57 @@ incremental = {{ cursor = "updated_at", param = "updated_since" }}
         Some("2026-01-03T00:00:00Z"),
         "the watermark never moves back"
     );
+
+    // Five rows on disk (1, 2 | 2, 3 | 1, 2): three keys, three versions.
+    let views = dir.join("out/_apisip/views");
+    assert!(views.join("users_current.sql").exists());
+    match duckdb(
+        &views,
+        "select count(*), count(distinct id), max(updated_at)::varchar from users_current",
+    ) {
+        Some(out) => assert_eq!(out, "3,3,2026-01-03 00:00:00"),
+        None => eprintln!("duckdb not found: skipping the view queries"),
+    }
+    if let Some(out) = duckdb(
+        &views,
+        "select count(*), count(*) filter (where is_current), count(*) filter (where valid_to is null) from users_history",
+    ) {
+        assert_eq!(out, "3,3,3");
+    }
+    // Committed plan snapshots: run 1, the retry and the full refresh.
+    if let Some(out) = duckdb(
+        &views,
+        "select string_agg(id || name, ' ' order by id) from plans_current",
+    ) {
+        assert_eq!(out, "1a2 3x");
+    }
+    if let Some(out) = duckdb(
+        &views,
+        "select string_agg(id || name || ':' || is_current || ':' || (valid_to is null), ' ' order by id, valid_from) from plans_history",
+    ) {
+        assert_eq!(
+            out,
+            "1a:false:false 1a2:true:true 2b:false:true 3x:true:true"
+        );
+    }
+}
+
+/// Runs a query through the DuckDB CLI after loading the generated views.
+/// Returns `None` when DuckDB is not installed.
+pub fn duckdb(views: &std::path::Path, query: &str) -> Option<String> {
+    let out = std::process::Command::new("duckdb")
+        .arg("-csv")
+        .arg("-noheader")
+        .arg("-c")
+        .arg(format!(".read {}", views.join("all.sql").display()))
+        .arg("-c")
+        .arg(query)
+        .output()
+        .ok()?;
+    assert!(
+        out.status.success(),
+        "duckdb failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Some(String::from_utf8(out.stdout).unwrap().trim().to_string())
 }

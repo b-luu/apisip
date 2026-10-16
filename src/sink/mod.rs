@@ -187,7 +187,7 @@ impl Layout {
     pub fn new(started: DateTime<Utc>) -> Layout {
         let suffix: u16 = rand::random();
         Layout {
-            run_id: format!("{}-{suffix:04x}", started.format("%Y%m%dT%H%M%SZ")),
+            run_id: format!("{}-{suffix:04x}", started.format("%Y%m%dT%H%M%S%3fZ")),
             started,
         }
     }
