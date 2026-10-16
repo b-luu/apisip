@@ -36,7 +36,8 @@ pub struct ApiClient {
     throttle: Throttle,
     retry: RetryPolicy,
     headers: HeaderMap,
-    /// Credential and header values, masked wherever a URL is shown.
+    /// Values from the environment, masked wherever a URL is shown. The
+    /// credentials come from `auth`, which knows the tokens fetched since.
     secrets: Vec<String>,
 }
 
@@ -128,7 +129,7 @@ impl ApiClient {
         let http = http_client()?;
         let base_url = parse_base(&source.base_url)?;
         let auth = Authenticator::new(source.auth.as_ref(), http.clone(), &source.base_url)?;
-        let mut secrets = auth.secrets();
+        let mut secrets = Vec::new();
         // Values from the environment are what users keep secret; literal
         // header values such as `X-Api-Version = "1"` are not.
         let text = serde_json::to_string(source).unwrap_or_default();
@@ -137,6 +138,7 @@ impl ApiClient {
             if let Ok(v) = std::env::var(var)
                 && !v.is_empty()
                 && !secrets.contains(&v)
+                && !auth.secrets().contains(&v)
             {
                 secrets.push(v);
             }
@@ -166,13 +168,19 @@ impl ApiClient {
         self
     }
 
+    fn secrets(&self) -> Vec<String> {
+        let mut all = self.auth.secrets();
+        all.extend(self.secrets.iter().cloned());
+        all
+    }
+
     fn mask(&self, text: String) -> String {
-        mask_text(text, &self.secrets)
+        mask_text(text, &self.secrets())
     }
 
     /// `url` as shown in messages and logs.
     pub fn shown(&self, url: &Url) -> String {
-        masked_url(url, &self.secrets)
+        masked_url(url, &self.secrets())
     }
 
     /// `base_url` joined with a stream path such as `/users`.
@@ -190,7 +198,7 @@ impl ApiClient {
         // reqwest errors carry the full request URL, query-string API keys
         // included: they are stripped with `without_url`, and `shown` is the
         // masked URL used in every message instead.
-        let shown = masked_url(url, &self.secrets);
+        let shown = self.shown(url);
         let mut refreshed_auth = false;
         let mut attempt = 0;
         loop {

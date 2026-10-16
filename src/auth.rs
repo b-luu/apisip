@@ -32,6 +32,8 @@ enum Kind {
         client_secret: String,
         scopes: Vec<String>,
         token: Mutex<Option<Token>>,
+        /// Every access token fetched, masked in messages like the secret.
+        issued: std::sync::Mutex<Vec<String>>,
     },
 }
 
@@ -104,6 +106,7 @@ impl Authenticator {
                     client_secret: interpolate(client_secret).context("OAuth2 client secret")?,
                     scopes: scopes.clone(),
                     token: Mutex::new(None),
+                    issued: Default::default(),
                 }
             }
         };
@@ -115,13 +118,34 @@ impl Authenticator {
     }
 
     /// The resolved secret values, so callers can mask them in messages.
+    /// They include the encoded Basic credential and the OAuth2 access
+    /// tokens fetched so far: a server can echo either back in an error.
     pub fn secrets(&self) -> Vec<String> {
         let v = match &self.kind {
             Kind::None => vec![],
             Kind::Bearer(t) => vec![t.clone()],
             Kind::ApiKey { value, .. } => vec![value.clone()],
-            Kind::Basic { password, .. } => vec![password.clone()],
-            Kind::OAuth2 { client_secret, .. } => vec![client_secret.clone()],
+            Kind::Basic { username, password } => {
+                use base64::Engine;
+                let encoded = base64::engine::general_purpose::STANDARD
+                    .encode(format!("{username}:{password}"));
+                vec![password.clone(), encoded]
+            }
+            Kind::OAuth2 {
+                client_secret,
+                issued,
+                ..
+            } => {
+                let mut v = vec![client_secret.clone()];
+                v.extend(
+                    issued
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .iter()
+                        .cloned(),
+                );
+                v
+            }
         };
         v.into_iter().filter(|s| !s.is_empty()).collect()
     }
@@ -165,6 +189,7 @@ impl Authenticator {
             client_secret,
             scopes,
             token,
+            issued,
         } = &self.kind
         else {
             unreachable!()
@@ -186,6 +211,7 @@ impl Authenticator {
             .form(&form)
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("requesting OAuth2 token")?;
         if matches!(resp.status().as_u16(), 400 | 401) {
             let mut body = form.clone();
@@ -196,6 +222,7 @@ impl Authenticator {
                 .form(&body)
                 .send()
                 .await
+                .map_err(reqwest::Error::without_url)
                 .context("requesting OAuth2 token")?;
         }
         let status = resp.status();
@@ -211,6 +238,10 @@ impl Authenticator {
             .and_then(|v| v.as_str())
             .context("OAuth2 token response has no access_token")?
             .to_string();
+        issued
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(access.clone());
         let ttl = body
             .get("expires_in")
             .and_then(|v| v.as_u64())

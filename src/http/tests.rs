@@ -6,7 +6,7 @@ use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
-use crate::config::{Pagination, RetryConfig};
+use crate::config::{AuthConfig, Pagination, RetryConfig};
 
 fn source(server: &MockServer) -> Source {
     Source {
@@ -159,4 +159,75 @@ async fn only_values_from_the_environment_are_masked() {
     // A short secret is hidden as a whole query value, never inside text.
     let short = super::masked_url(&url, &["1".to_string()]);
     assert_eq!(short, "http://127.0.0.1:8100/v1/plans?x=****&y=hdr-s3cr3t");
+}
+
+/// A 400 whose body echoes the Authorization header back.
+fn echo_authorization(req: &wiremock::Request) -> ResponseTemplate {
+    let auth = req
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    ResponseTemplate::new(400).set_body_string(format!("bad request, you sent {auth}"))
+}
+
+#[tokio::test]
+async fn echoed_basic_and_oauth_credentials_are_masked() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"access_token": "at-9f8e7d6c5b"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(echo_authorization)
+        .mount(&server)
+        .await;
+    let basic = AuthConfig::Basic {
+        scheme: None,
+        username: "reporting-user".into(),
+        password: "pw-4b3c2d1e".into(),
+    };
+    let oauth = AuthConfig::Oauth2ClientCredentials {
+        scheme: None,
+        token_url: format!("{}/oauth/token", server.uri()),
+        client_id: "client-1".into(),
+        client_secret: "cs-1a2b3c4d".into(),
+        scopes: vec![],
+    };
+    for (auth, leaked) in [(basic, "cmVwb3J0aW5n"), (oauth, "at-9f8e7d6c5b")] {
+        let mut src = source(&server);
+        src.auth = Some(auth);
+        let c = ApiClient::new(&src).unwrap();
+        let err = c.get(&c.endpoint("/users").unwrap()).await.unwrap_err();
+        let err = format!("{err:#}");
+        assert!(err.contains("you sent"), "{err}");
+        assert!(!err.contains(leaked), "a credential leaked: {err}");
+    }
+}
+
+#[test]
+fn env_values_in_stream_params_are_masked() {
+    // SAFETY: test-only variable with a unique name, read by this test only.
+    unsafe { std::env::set_var("APISIP_TEST_MASK_PARAM", "prm-7a6b5c4d") };
+    let config = crate::config::Config::parse(
+        r#"
+[source]
+spec = "spec.json"
+base_url = "http://127.0.0.1:8100"
+
+[destination]
+
+[[streams]]
+name = "plans"
+path = "/plans"
+params = { tok = "${APISIP_TEST_MASK_PARAM}" }
+"#,
+    )
+    .unwrap();
+    let c = ApiClient::for_config(&config).unwrap();
+    let url = Url::parse("http://127.0.0.1:8100/plans?tok=prm-7a6b5c4d").unwrap();
+    assert_eq!(c.shown(&url), "http://127.0.0.1:8100/plans?tok=****");
 }

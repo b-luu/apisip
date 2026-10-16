@@ -13,6 +13,7 @@ categories = ["command-line-utilities"]
 anyhow = "1.0.104"
 arrow = { version = "60.0.0", default-features = false, features = ["json"] }
 async-stream = "0.3.6"
+base64 = "0.22.1"
 bytes = "1"
 bytesize = "2.7.0"
 chrono = { version = "0.4.45", features = ["serde"] }
