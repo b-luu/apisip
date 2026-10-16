@@ -399,6 +399,7 @@ fn write_files(
     }
     envfile::write_example(&ws.dir.join(".env.example"), &example_keys)?;
     envfile::ensure_gitignored(&ws.dir.join(".gitignore"), ".env")?;
+    envfile::ensure_gitignored(&ws.dir.join(".gitignore"), ".apisip/run.lock")?;
     Ok(())
 }
 

@@ -46,6 +46,8 @@ struct Ctx {
 /// Returns false when a stream failed.
 pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
     let config = ws.load_config()?;
+    // Held until the run ends; the OS releases it if the process dies.
+    let _lock = lock(ws)?;
     let streams = select_streams(&config, &options.streams)?;
     if config.source.rate_limit.is_none() {
         print_rate_limit_warning(false);
@@ -436,6 +438,29 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
         .context("saving the watermark")?;
     report.observed = observed;
     Ok(())
+}
+
+/// One run at a time per folder: a second run would delete the first one's
+/// staging files and overwrite its watermarks.
+fn lock(ws: &Workspace) -> Result<std::fs::File> {
+    let dir = ws.meta_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("run.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            bail!("another `apisip run` is in progress in this folder; wait for it to finish")
+        }
+        Err(std::fs::TryLockError::Error(e)) => {
+            Err(e).with_context(|| format!("locking {}", path.display()))
+        }
+    }
 }
 
 /// Debug builds fail on purpose at a named point, for the crash tests.

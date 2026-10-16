@@ -410,6 +410,25 @@ fn an_empty_stream_does_not_break_the_views() {
     }
 }
 
+#[test]
+fn a_second_run_in_the_same_folder_is_refused() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init(&mock, d, &["--streams", "users"]);
+    let held = std::fs::File::create(d.join(".apisip/run.lock")).unwrap();
+    held.lock().unwrap();
+    let a = apisip(d).arg("run").assert().failure();
+    assert!(
+        stderr(&a).contains("another `apisip run` is in progress"),
+        "{}",
+        stderr(&a)
+    );
+    assert!(!d.join("_apisip/runs").exists(), "nothing was started");
+    drop(held);
+    apisip(d).arg("run").assert().success();
+}
+
 #[cfg(unix)]
 #[test]
 fn update_merges_the_v2_spec() {
