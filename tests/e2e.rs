@@ -1,6 +1,7 @@
 //! End to end: the real binary against the mock API in `examples/mock-api`.
 //!
-//! The DuckDB checks are skipped when `duckdb` is not on the PATH. The S3
+//! The DuckDB checks are skipped when `duckdb` is not on the PATH, unless
+//! `APISIP_REQUIRE_DUCKDB` is set. The S3
 //! test needs `APISIP_TEST_S3=1` and a bucket (see `s3_destination`), and the
 //! live-spec tests are `#[ignore]`d: `cargo test -- --ignored`.
 
@@ -132,8 +133,14 @@ fn duckdb(dir: &Path, query: &str) -> Option<String> {
         ))
         .arg("-c")
         .arg(query)
-        .output()
-        .ok()?;
+        .output();
+    let out = match out {
+        Ok(out) => out,
+        Err(e) if std::env::var_os("APISIP_REQUIRE_DUCKDB").is_some() => {
+            panic!("APISIP_REQUIRE_DUCKDB is set but duckdb cannot run: {e}")
+        }
+        Err(_) => return None,
+    };
     assert!(
         out.status.success(),
         "duckdb failed: {}",

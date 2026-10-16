@@ -27,7 +27,12 @@
           doCheck = true;
           # Debug tests: the crash-safety tests use fail points that release builds compile out.
           checkType = "debug";
-          nativeCheckInputs = [ pkgs.cacert ];
+          nativeCheckInputs = [
+            pkgs.cacert
+            pkgs.duckdb
+          ];
+          # The view checks run DuckDB; fail rather than skip if it is missing.
+          APISIP_REQUIRE_DUCKDB = "1";
           meta = {
             description = "Ingest any API described by an OpenAPI spec into JSONL or Parquet";
             license = with pkgs.lib.licenses; [
