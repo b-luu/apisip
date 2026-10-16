@@ -220,7 +220,8 @@ mod tests {
     }
 
     #[test]
-    fn write_private_narrows_an_existing_file_before_writing() {
+    fn write_private_narrows_an_existing_file() {
+        // Checks the final mode only: that it is set before the write is not tested.
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
