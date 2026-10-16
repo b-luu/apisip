@@ -37,7 +37,7 @@ pub async fn write_all(store: &Store, config: &Config, state: &State) -> Result<
         let source = read_files(&base, &s.name, format);
         let views = [
             ("current", current_sql(s, &source, last_run)),
-            ("history", history_sql(s, &source)),
+            ("history", history_sql(s, &source, last_run)),
         ];
         for (kind, sql) in views {
             let Some(sql) = sql else { continue };
@@ -108,19 +108,25 @@ fn current_sql(s: &StreamConfig, source: &str, last_run: &str) -> Option<String>
     ))
 }
 
-fn history_sql(s: &StreamConfig, source: &str) -> Option<String> {
+fn history_sql(s: &StreamConfig, source: &str, last_run: &str) -> Option<String> {
     let key = key_list(s)?;
     if s.mode() == Mode::FullRefresh {
         // Compare consecutive snapshots: a row is a new version when its
         // content differs from the same key in the previous snapshot. Runs
         // are ordered by extraction time: run ids only sort to the second.
+        // The current snapshot is the last committed run, as in the current
+        // view. A later snapshot, moved in place by a run that crashed before
+        // its commit finished, is left out until another run commits.
+        let last_run = literal(last_run);
         return Some(format!(
             "with snapshots as (\n  \
                select *,\n    \
                  md5(to_json(struct_pack(*columns(* exclude ({RUN_ID}, {EXTRACTED_AT}))))) as _apisip_hash,\n    \
-                 arg_max({RUN_ID}, {EXTRACTED_AT}) over () as _apisip_latest_run,\n    \
                  arg_max({RUN_ID}, {EXTRACTED_AT}) over (partition by {key}) as _apisip_last_seen\n  \
-               from {source}\n\
+               from {source}\n  \
+               where {EXTRACTED_AT} <= coalesce(\n    \
+                 (select max({EXTRACTED_AT}) from {source} where {RUN_ID} = {last_run}),\n    \
+                 (select max({EXTRACTED_AT}) from {source}))\n\
              ), changes as (\n  \
                select *, lag(_apisip_hash) over (partition by {key} order by {EXTRACTED_AT}) as _apisip_prev\n  \
                from snapshots\n\
@@ -131,8 +137,8 @@ fn history_sql(s: &StreamConfig, source: &str) -> Option<String> {
                from changes\n  \
                where _apisip_prev is distinct from _apisip_hash\n\
              )\n\
-             select * exclude (_apisip_hash, _apisip_prev, _apisip_latest_run, _apisip_last_seen),\n  \
-               valid_to is null and _apisip_last_seen = _apisip_latest_run as is_current\n\
+             select * exclude (_apisip_hash, _apisip_prev, _apisip_last_seen),\n  \
+               valid_to is null and _apisip_last_seen = {last_run} as is_current\n\
              from versions"
         ));
     }
@@ -202,7 +208,7 @@ incremental = { cursor = "meta.updated_at", param = "since" }"#,
         assert!(current.contains(
             r#"partition by "id" order by "meta"."updated_at" desc nulls last, _apisip_extracted_at desc"#
         ));
-        let history = history_sql(&s, &src).unwrap();
+        let history = history_sql(&s, &src, "r1").unwrap();
         assert!(history.contains(r#"lead("meta"."updated_at") over (partition by "id""#));
     }
 
@@ -215,7 +221,11 @@ incremental = { cursor = "meta.updated_at", param = "since" }"#,
                 .unwrap()
                 .ends_with("= 'it''s'")
         );
-        assert!(history_sql(&s, &src).unwrap().contains("lag(_apisip_hash)"));
+        assert!(
+            history_sql(&s, &src, "r1")
+                .unwrap()
+                .contains("lag(_apisip_hash)")
+        );
     }
 
     #[test]
@@ -224,6 +234,6 @@ incremental = { cursor = "meta.updated_at", param = "since" }"#,
             "name = \"events\"\npath = \"/events\"\nincremental = { cursor = \"at\", param = \"since\" }",
         );
         assert!(current_sql(&s, "x", "r").is_none());
-        assert!(history_sql(&s, "x").is_none());
+        assert!(history_sql(&s, "x", "r1").is_none());
     }
 }

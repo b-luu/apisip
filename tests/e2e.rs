@@ -359,6 +359,63 @@ fn a_crash_after_staging_commits_nothing() {
 }
 
 #[test]
+fn a_crash_after_the_move_only_repeats_records() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init(&mock, d, &["--streams", "users"]);
+    apisip(d)
+        .arg("run")
+        .env("APISIP_FAIL_POINT", "after_move")
+        .assert()
+        .failure();
+    assert_eq!(records(d, "users").len(), 25, "the files were moved");
+    let state = std::fs::read_to_string(d.join("_apisip/state.json")).unwrap_or_default();
+    assert!(!state.contains("watermark"), "{state}");
+
+    // The next run fetches the same records again; the view keeps one per key.
+    apisip(d).arg("run").assert().success();
+    assert_eq!(records(d, "users").len(), 50);
+    if let Some(n) = duckdb(d, "select count(*) from users_current") {
+        assert_eq!(n, "25");
+    }
+}
+
+#[test]
+fn an_uncommitted_snapshot_is_not_current_in_any_view() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init(&mock, d, &["--streams", "plans"]);
+    apisip(d).arg("run").assert().success();
+    mock.post("/_admin/touch/plans/2");
+    apisip(d)
+        .arg("run")
+        .env("APISIP_FAIL_POINT", "after_move")
+        .assert()
+        .failure();
+    // The views of the first run read the files on disk, the moved snapshot included.
+    let q = |view: &str| {
+        duckdb(
+            d,
+            &format!("select string_agg(name, ',') from {view} id = 2"),
+        )
+    };
+    let Some(current) = q("plans_current where") else {
+        return;
+    };
+    assert_eq!(current, "plan 2");
+    assert_eq!(q("plans_history where is_current and").unwrap(), current);
+
+    apisip(d).arg("run").assert().success();
+    assert_eq!(q("plans_current where").unwrap(), "plan 2 (edited)");
+    assert_eq!(
+        q("plans_history where is_current and").unwrap(),
+        "plan 2 (edited)"
+    );
+}
+
+#[test]
 fn a_stray_cursor_value_never_moves_the_watermark() {
     for format in ["jsonl", "parquet"] {
         let mock = Mock::start();
