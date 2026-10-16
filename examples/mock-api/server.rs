@@ -12,7 +12,8 @@
 //!   - `/plans`: next URL, no cursor (full refresh).
 //! - Not in the spec: `POST /_admin/touch/{resource}/{id}` updates a record,
 //!   `POST /_admin/add/users` adds one, `POST /_admin/stray/{resource}/{id}`
-//!   sets a record's `updated_at` to `"N/A"`, `GET /_admin/requests` counts calls.
+//!   sets a record's `updated_at` to `"N/A"`, `POST /_admin/clear/{resource}`
+//!   empties a list, `GET /_admin/requests` counts calls.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -125,6 +126,7 @@ pub async fn serve(addr: SocketAddr) -> std::io::Result<SocketAddr> {
         .route("/_admin/touch/{resource}/{id}", post(touch))
         .route("/_admin/add/users", post(add_user))
         .route("/_admin/stray/{resource}/{id}", post(stray))
+        .route("/_admin/clear/{resource}", post(clear))
         .route("/_admin/requests", get(requests))
         .merge(api)
         .with_state(app);
@@ -319,6 +321,18 @@ async fn stray(State(app): State<App>, Path((resource, id)): Path<(String, i64)>
     };
     r["updated_at"] = json!("N/A");
     Json(r.clone()).into_response()
+}
+
+async fn clear(State(app): State<App>, Path(resource): Path<String>) -> Response {
+    let mut d = app.data.lock().unwrap();
+    match resource.as_str() {
+        "users" => d.users.clear(),
+        "orders" => d.orders.clear(),
+        "events" => d.events.clear(),
+        "plans" => d.plans.clear(),
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn add_user(State(app): State<App>) -> Response {

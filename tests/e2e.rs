@@ -391,6 +391,25 @@ fn a_stray_cursor_value_never_moves_the_watermark() {
     }
 }
 
+#[test]
+fn an_empty_stream_does_not_break_the_views() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init(&mock, d, &[]);
+    mock.post("/_admin/clear/plans");
+    let a = apisip(d).arg("run").assert().success();
+    assert!(!stdout(&a).contains("plans_current"), "{}", stdout(&a));
+    let views = d.join("_apisip/views");
+    assert!(views.join("users_current.sql").exists());
+    assert!(!views.join("plans_current.sql").exists());
+    let all = std::fs::read_to_string(views.join("all.sql")).unwrap();
+    assert!(!all.contains("plans"), "{all}");
+    if let Some(n) = duckdb(d, "select count(*) from users_current") {
+        assert_eq!(n, "25");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn update_merges_the_v2_spec() {
