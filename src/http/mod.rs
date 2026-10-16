@@ -103,11 +103,32 @@ fn mask_text(text: String, secrets: &[String]) -> String {
         .fold(text, |t, s| t.replace(s.as_str(), "****"))
 }
 
+/// Credentials (an API key header, custom headers) would follow a redirect
+/// to another host, so such redirects are refused rather than followed.
+fn same_host_redirects(attempt: reqwest::redirect::Attempt) -> reqwest::redirect::Action {
+    let host = attempt.url().host_str().unwrap_or_default().to_string();
+    if attempt
+        .previous()
+        .first()
+        .is_some_and(|u| u.host_str() != Some(host.as_str()))
+    {
+        attempt.error(format!(
+            "refused a redirect to another host ({host}): apisip sends credentials only to the \
+             API's own host"
+        ))
+    } else if attempt.previous().len() >= 10 {
+        attempt.error("too many redirects")
+    } else {
+        attempt.follow()
+    }
+}
+
 pub fn http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(concat!("apisip/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(300))
+        .redirect(reqwest::redirect::Policy::custom(same_host_redirects))
         .build()
         .context("building the HTTP client")
 }
@@ -290,11 +311,24 @@ pub fn pages(
 ) -> impl futures::Stream<Item = Result<Vec<Value>>> {
     async_stream::try_stream! {
         let mut paginator = Paginator::new(pagination);
+        let host = first.host_str().map(str::to_string);
         let mut next = Some(paginator.first(first));
         while let Some(url) = next.take() {
             let page = client.get(&url).await?;
             let recs = extract_records(&page.body, &records);
             next = paginator.next(&page, &recs);
+            // Credentials go with every request: never to another host. The
+            // stream fails rather than stops, so no partial data is committed.
+            if let Some(n) = &next
+                && n.host_str().map(str::to_string) != host
+            {
+                Err(anyhow::anyhow!(
+                    "the next page of {} is on another host ({}): apisip sends credentials only \
+                     to the API's own host, so it does not follow it",
+                    client.shown(&url),
+                    n.host_str().unwrap_or_default()
+                ))?;
+            }
             yield recs;
         }
     }

@@ -208,6 +208,45 @@ async fn echoed_basic_and_oauth_credentials_are_masked() {
     }
 }
 
+#[tokio::test]
+async fn credentials_never_go_to_another_host() {
+    let server = MockServer::start().await;
+    let elsewhere = server.uri().replace("127.0.0.1", "localhost");
+    Mock::given(method("GET"))
+        .and(path("/v1/paged"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([{"id": 1}]))
+                .insert_header(
+                    "link",
+                    format!("<{elsewhere}/v1/paged?page=2>; rel=\"next\""),
+                ),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/moved"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("location", format!("{elsewhere}/v1/paged")),
+        )
+        .mount(&server)
+        .await;
+    let c = client(&server);
+
+    let first = c.endpoint("/paged").unwrap();
+    let pages: Result<Vec<_>> = pages(c.clone(), first, None, String::new())
+        .try_collect()
+        .await;
+    let err = format!("{:#}", pages.unwrap_err());
+    assert!(err.contains("on another host (localhost)"), "{err}");
+
+    let err = c.get(&c.endpoint("/moved").unwrap()).await.unwrap_err();
+    let err = format!("{err:#}");
+    assert!(err.contains("refused a redirect to another host"), "{err}");
+    // Neither the next page nor the redirect target was requested.
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
 #[test]
 fn env_values_in_stream_params_are_masked() {
     // SAFETY: test-only variable with a unique name, read by this test only.
