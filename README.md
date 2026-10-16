@@ -191,7 +191,10 @@ incremental = { cursor = "updated_at", param = "updated_since" }
   environment, which wins.
 - **Auth:** bearer, API key (header, query or cookie), HTTP basic, and OAuth2
   client credentials. OAuth2 fetches a token from the spec's `tokenUrl`, caches
-  it, and refreshes it on expiry or on a 401.
+  it, and refreshes it on expiry or on a 401. Credentials go only to the API's
+  own host: a redirect or a next-page link to another host fails the stream
+  rather than receive them. Values read from the environment are masked in
+  every message and log.
 - **Pagination:** page number, offset, cursor, next URL, and `Link: rel="next"`
   headers.
 - **Rate limits:** OpenAPI has no standard field for rate limits. `init` reads

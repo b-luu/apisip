@@ -18,3 +18,11 @@ Not in v1. Each item becomes a GitHub issue labelled `roadmap`.
   them by path as well.
 - **One lock per destination:** `run` locks its folder, but two folders that
   write to the same destination path are not detected.
+- **Cap far-future cursors:** a record whose cursor is far in the future (bad
+  source data) moves the watermark past later records, which filter mode then
+  never fetches. Cap the watermark at the run time plus a configurable skew.
+- **History view after an empty snapshot:** when the last committed
+  full-refresh snapshot is empty, the history view has no upper time bound, so
+  rows of a later crashed snapshot show up as non-current versions.
+- **Minimum Rust version in CI:** build with Rust 1.89, the declared
+  `rust-version`.
