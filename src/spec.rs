@@ -306,7 +306,11 @@ impl Spec {
                     .or_else(|| self.root.get("produces"))
                     .and_then(Value::as_array);
                 match produces {
-                    Some(types) if !types.iter().filter_map(Value::as_str).any(json_media_type) => {
+                    // An empty list says nothing about the media type.
+                    Some(types)
+                        if !types.is_empty()
+                            && !types.iter().filter_map(Value::as_str).any(json_media_type) =>
+                    {
                         Some("does not return JSON")
                     }
                     _ => None,
@@ -473,7 +477,8 @@ mod tests {
             &json!({"swagger": "2.0", "info": {"title": "t", "version": "1"},
                 "produces": ["application/xml"], "paths": {
                 "/xml": {"get": {"responses": ok}},
-                "/json": {"get": {"produces": ["application/json"], "responses": ok}}
+                "/json": {"get": {"produces": ["application/json"], "responses": ok}},
+                "/unknown": {"get": {"produces": [], "responses": ok}}
             }})
             .to_string(),
             "x.json",
@@ -482,6 +487,7 @@ mod tests {
         let op = |p| v2.operation("get", p).unwrap().op;
         assert_eq!(v2.no_json_body(op("/xml")), Some("does not return JSON"));
         assert_eq!(v2.no_json_body(op("/json")), None);
+        assert_eq!(v2.no_json_body(op("/unknown")), None);
     }
 
     #[test]
