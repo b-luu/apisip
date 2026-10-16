@@ -126,3 +126,15 @@ async fn non_json_body_is_a_clear_error() {
     );
     assert!(err.contains("not JSON") && err.contains("<html>"), "{err}");
 }
+
+#[test]
+fn masked_url_hides_keys_by_name_and_by_value() {
+    let url =
+        Url::parse("https://x.test/items?page=2&api_key=k123&q=abc-s3cr3t-def&access_token=t")
+            .unwrap();
+    let shown = super::masked_url(&url, &["s3cr3t".to_string()]);
+    assert_eq!(
+        shown,
+        "https://x.test/items?page=2&api_key=****&q=****&access_token=****"
+    );
+}

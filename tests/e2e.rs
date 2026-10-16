@@ -558,3 +558,66 @@ fn live_github_detection() {
         .success()
         .stdout(predicate::str::contains("/repositories"));
 }
+
+/// A query-string API key appears in reqwest's error URLs: it must never
+/// reach the terminal or the manifest.
+#[test]
+fn a_query_api_key_is_never_shown() {
+    const KEY: &str = "qk_live_SECRET_9f8e7d";
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let spec = d.join("spec.json");
+    std::fs::write(
+        &spec,
+        serde_json::json!({
+            "openapi": "3.0.3",
+            "info": {"title": "Keyed", "version": "1"},
+            "servers": [{"url": format!("http://{closed}")}],
+            "security": [{"key": []}],
+            "components": {"securitySchemes": {
+                "key": {"type": "apiKey", "in": "query", "name": "api_key"}
+            }},
+            "paths": {"/things": {"get": {"responses": {"200": {
+                "description": "ok",
+                "content": {"application/json": {"schema": {"type": "array", "items": {
+                    "type": "object", "properties": {"id": {"type": "integer"}}
+                }}}}
+            }}}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    apisip(d)
+        .args(["init", "--yes", spec.to_str().unwrap()])
+        .env("KEYED_API_KEY", KEY)
+        .assert()
+        .success();
+    let config = d.join("apisip.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        text.contains("in = \"query\"") || text.contains("location = \"query\""),
+        "{text}"
+    );
+    std::fs::write(
+        &config,
+        text.replace("max_tries = 8", "max_tries = 2")
+            .replace("max_backoff = \"1m\"", "max_backoff = \"1s\""),
+    )
+    .unwrap();
+
+    let mut shown = String::new();
+    for cmd in ["check", "run"] {
+        let a = apisip(d).args([cmd, "-v"]).assert().failure();
+        shown += &stdout(&a);
+        shown += &stderr(&a);
+    }
+    for f in files(&d.join("_apisip/runs"), "json") {
+        shown += &std::fs::read_to_string(f).unwrap();
+    }
+    assert!(shown.contains("FAILED: GET http://127.0.0.1"), "{shown}");
+    assert!(!shown.contains(KEY), "the API key leaked:\n{shown}");
+}

@@ -114,6 +114,18 @@ impl Authenticator {
         Authenticator { kind: Kind::None }
     }
 
+    /// The resolved secret values, so callers can mask them in messages.
+    pub fn secrets(&self) -> Vec<String> {
+        let v = match &self.kind {
+            Kind::None => vec![],
+            Kind::Bearer(t) => vec![t.clone()],
+            Kind::ApiKey { value, .. } => vec![value.clone()],
+            Kind::Basic { password, .. } => vec![password.clone()],
+            Kind::OAuth2 { client_secret, .. } => vec![client_secret.clone()],
+        };
+        v.into_iter().filter(|s| !s.is_empty()).collect()
+    }
+
     pub async fn apply(&self, rb: RequestBuilder) -> Result<RequestBuilder> {
         Ok(match &self.kind {
             Kind::None => rb,

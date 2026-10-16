@@ -29,7 +29,6 @@ pub struct Page {
     pub body: Value,
 }
 
-#[derive(Debug)]
 pub struct ApiClient {
     http: reqwest::Client,
     base_url: Url,
@@ -37,6 +36,58 @@ pub struct ApiClient {
     throttle: Throttle,
     retry: RetryPolicy,
     headers: HeaderMap,
+    /// Credential and header values, masked wherever a URL is shown.
+    secrets: Vec<String>,
+}
+
+impl std::fmt::Debug for ApiClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print credentials or header values.
+        f.debug_struct("ApiClient")
+            .field("base_url", &self.base_url.as_str())
+            .field("auth", &self.auth)
+            .field("headers", &self.headers.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Query parameter names whose values are never shown.
+fn sensitive_param(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    [
+        "key",
+        "token",
+        "secret",
+        "password",
+        "signature",
+        "auth",
+        "sig",
+    ]
+    .iter()
+    .any(|w| n.contains(w))
+}
+
+/// `url` for messages: sensitive query values and known secrets masked.
+pub fn masked_url(url: &Url, secrets: &[String]) -> String {
+    let mut shown = url.clone();
+    if url.query().is_some() {
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(k, v)| {
+                let hide = sensitive_param(&k) || secrets.iter().any(|s| v.contains(s.as_str()));
+                (
+                    k.into_owned(),
+                    if hide { "****".into() } else { v.into_owned() },
+                )
+            })
+            .collect();
+        shown.query_pairs_mut().clear().extend_pairs(pairs);
+    }
+    let mut text = shown.to_string();
+    for s in secrets {
+        text = text.replace(s.as_str(), "****");
+    }
+    text
 }
 
 pub fn http_client() -> Result<reqwest::Client> {
@@ -54,9 +105,13 @@ impl ApiClient {
         let http = http_client()?;
         let base_url = parse_base(&source.base_url)?;
         let auth = Authenticator::new(source.auth.as_ref(), http.clone(), &source.base_url)?;
+        let mut secrets = auth.secrets();
         let mut headers = HeaderMap::new();
         for (k, v) in &source.headers {
             let v = interpolate(v).with_context(|| format!("header {k}"))?;
+            if !v.is_empty() {
+                secrets.push(v.clone());
+            }
             headers.insert(
                 HeaderName::from_bytes(k.as_bytes()).with_context(|| format!("header name {k}"))?,
                 HeaderValue::from_str(&v).with_context(|| format!("header {k}"))?,
@@ -69,6 +124,7 @@ impl ApiClient {
             throttle: Throttle::new(source.rate_limit.as_ref()),
             retry: RetryPolicy::from(&source.retry),
             headers,
+            secrets,
         }))
     }
 
@@ -76,6 +132,12 @@ impl ApiClient {
     pub fn with_retry_base(mut self: Arc<Self>, base: Duration) -> Arc<Self> {
         Arc::get_mut(&mut self).expect("unshared client").retry.base = base;
         self
+    }
+
+    fn mask(&self, text: String) -> String {
+        self.secrets
+            .iter()
+            .fold(text, |t, s| t.replace(s.as_str(), "****"))
     }
 
     /// `base_url` joined with a stream path such as `/users`.
@@ -90,24 +152,29 @@ impl ApiClient {
 
     /// GETs `url` with auth, throttling and retries, and parses the JSON body.
     pub async fn get(&self, url: &Url) -> Result<Page> {
+        // reqwest errors carry the full request URL, query-string API keys
+        // included: they are stripped with `without_url`, and `shown` is the
+        // masked URL used in every message instead.
+        let shown = masked_url(url, &self.secrets);
         let mut refreshed_auth = false;
         let mut attempt = 0;
         loop {
             self.throttle.acquire().await;
             let rb = self.http.get(url.clone()).headers(self.headers.clone());
             let rb = self.auth.apply(rb).await?;
-            tracing::debug!("GET {url}");
+            tracing::debug!("GET {shown}");
             let last = attempt + 1 >= self.retry.max_tries;
             let resp = match rb.send().await {
                 Ok(r) => r,
                 Err(e) if !last && (e.is_connect() || e.is_timeout() || e.is_request()) => {
                     let delay = self.retry.delay(attempt, None);
-                    tracing::warn!("GET {url} failed ({e}), retrying in {delay:?}");
+                    let e = e.without_url();
+                    tracing::warn!("GET {shown} failed ({e}), retrying in {delay:?}");
                     tokio::time::sleep(delay).await;
                     attempt += 1;
                     continue;
                 }
-                Err(e) => return Err(e).with_context(|| format!("GET {url}")),
+                Err(e) => return Err(e.without_url()).with_context(|| format!("GET {shown}")),
             };
             let status = resp.status().as_u16();
             let headers = resp.headers().clone();
@@ -118,12 +185,19 @@ impl ApiClient {
                 continue;
             }
             if self.retry.is_success(status) {
-                let bytes = resp.bytes().await.with_context(|| format!("GET {url}"))?;
+                let bytes = resp
+                    .bytes()
+                    .await
+                    .map_err(reqwest::Error::without_url)
+                    .with_context(|| format!("GET {shown}"))?;
                 let body = if bytes.iter().all(u8::is_ascii_whitespace) {
                     Value::Null
                 } else {
                     serde_json::from_slice(&bytes).with_context(|| {
-                        format!("GET {url}: the response is not JSON: {}", snippet(&bytes))
+                        format!(
+                            "GET {shown}: the response is not JSON: {}",
+                            self.mask(snippet(&bytes))
+                        )
                     })?
                 };
                 return Ok(Page {
@@ -139,7 +213,7 @@ impl ApiClient {
                     self.throttle.block_for(delay).await;
                 }
                 tracing::warn!(
-                    "GET {url}: HTTP {status}, retry {}/{} in {delay:?}",
+                    "GET {shown}: HTTP {status}, retry {}/{} in {delay:?}",
                     attempt + 1,
                     self.retry.max_tries - 1
                 );
@@ -155,7 +229,10 @@ impl ApiClient {
                 404 => " (check base_url and the stream path in apisip.toml)",
                 _ => "",
             };
-            bail!("GET {url}: HTTP {status}{hint}: {}", snippet(&body));
+            bail!(
+                "GET {shown}: HTTP {status}{hint}: {}",
+                self.mask(snippet(&body))
+            );
         }
     }
 }
