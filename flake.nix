@@ -21,8 +21,13 @@
           version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
           src = pkgs.lib.cleanSource ./.;
           cargoLock.lockFile = ./Cargo.lock;
-          # Tests that need the network or docker are #[ignore]d, so the sandbox can run the rest.
+          # Tests that need the network or an S3 server are #[ignore]d or gated,
+          # so the sandbox runs the rest. The HTTP client loads CA certificates
+          # even for plain-HTTP test servers.
           doCheck = true;
+          # Debug tests: the crash-safety tests use fail points that release builds compile out.
+          checkType = "debug";
+          nativeCheckInputs = [ pkgs.cacert ];
           meta = {
             description = "Ingest any API described by an OpenAPI spec into JSONL or Parquet";
             license = with pkgs.lib.licenses; [
@@ -37,7 +42,7 @@
       apps = forAllSystems (pkgs: {
         default = {
           type = "app";
-          program = "${self.packages.${pkgs.system}.default}/bin/apisip";
+          program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/apisip";
         };
       });
 
@@ -55,7 +60,7 @@
       });
 
       checks = forAllSystems (pkgs: {
-        default = self.packages.${pkgs.system}.default;
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
       });
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);

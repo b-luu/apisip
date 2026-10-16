@@ -1,6 +1,7 @@
 //! `run` against a wiremock API: staged commit, watermarks, crash safety
 //! and overlap flagging. One test, because the failure injection uses a
-//! process-wide variable.
+//! process-wide variable. Fail points exist in debug builds only.
+#![cfg(debug_assertions)]
 
 use apisip::cmd::run::{RunOptions, run};
 use apisip::state::{Manifest, State};

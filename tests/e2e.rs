@@ -330,6 +330,8 @@ fn a_missing_rate_limit_is_warned_about() {
     }
 }
 
+/// Fail points exist in debug builds only.
+#[cfg(debug_assertions)]
 #[test]
 fn a_crash_after_staging_commits_nothing() {
     let mock = Mock::start();
