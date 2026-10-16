@@ -351,6 +351,46 @@ fn a_crash_after_staging_commits_nothing() {
     assert_eq!(records(d, "users").len(), 25);
 }
 
+#[test]
+fn a_stray_cursor_value_never_moves_the_watermark() {
+    for format in ["jsonl", "parquet"] {
+        let mock = Mock::start();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        init(&mock, d, &["--streams", "users", "--format", format]);
+        // "N/A" sorts above every date as text, and the server returns it for
+        // any `updated_since`.
+        mock.post("/_admin/stray/users/3");
+        apisip(d).arg("run").assert().success();
+        let state: Value =
+            serde_json::from_str(&std::fs::read_to_string(d.join("_apisip/state.json")).unwrap())
+                .unwrap();
+        let wm = state["streams"]["users"]["watermark"].as_str().unwrap();
+        assert!(wm.starts_with("2026-"), "{format}: watermark {wm}");
+        let manifest = files(&d.join("_apisip/runs"), "json").pop().unwrap();
+        let manifest = std::fs::read_to_string(manifest).unwrap();
+        if format == "jsonl" {
+            assert!(manifest.contains("do not move the watermark"), "{manifest}");
+        } else {
+            assert!(manifest.contains("\"quarantined\": 2"), "{manifest}");
+        }
+
+        // A later change is still picked up.
+        mock.post("/_admin/touch/users/5");
+        let before = mock.requests();
+        apisip(d).arg("run").assert().success();
+        assert!(count(&mock.requests(), "/users") > count(&before, "/users"));
+        let manifest = files(&d.join("_apisip/runs"), "json").pop().unwrap();
+        let manifest: Value =
+            serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+        let users = &manifest["streams"]["users"];
+        assert!(
+            users["records"].as_u64().unwrap() >= 1,
+            "{format}: the touched user was missed: {users}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn update_merges_the_v2_spec() {

@@ -11,7 +11,8 @@
 //!   - `/events`: cursor, claims to sort by `-updated_at` but does not;
 //!   - `/plans`: next URL, no cursor (full refresh).
 //! - Not in the spec: `POST /_admin/touch/{resource}/{id}` updates a record,
-//!   `POST /_admin/add/users` adds one, `GET /_admin/requests` counts calls.
+//!   `POST /_admin/add/users` adds one, `POST /_admin/stray/{resource}/{id}`
+//!   sets a record's `updated_at` to `"N/A"`, `GET /_admin/requests` counts calls.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -123,6 +124,7 @@ pub async fn serve(addr: SocketAddr) -> std::io::Result<SocketAddr> {
         .route("/oauth/token", post(token))
         .route("/_admin/touch/{resource}/{id}", post(touch))
         .route("/_admin/add/users", post(add_user))
+        .route("/_admin/stray/{resource}/{id}", post(stray))
         .route("/_admin/requests", get(requests))
         .merge(api)
         .with_state(app);
@@ -301,6 +303,21 @@ async fn touch(State(app): State<App>, Path((resource, id)): Path<(String, i64)>
     } else if let Some(a) = r.get("amount").and_then(Value::as_f64) {
         r["amount"] = json!(a + 1.0);
     }
+    Json(r.clone()).into_response()
+}
+
+async fn stray(State(app): State<App>, Path((resource, id)): Path<(String, i64)>) -> Response {
+    let mut d = app.data.lock().unwrap();
+    let list = match resource.as_str() {
+        "users" => &mut d.users,
+        "orders" => &mut d.orders,
+        "events" => &mut d.events,
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let Some(r) = list.iter_mut().find(|r| r["id"] == id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    r["updated_at"] = json!("N/A");
     Json(r.clone()).into_response()
 }
 

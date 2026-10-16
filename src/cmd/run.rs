@@ -242,7 +242,8 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
         Format::Parquet => None,
     };
     let mut quarantine: Option<JsonlWriter> = None;
-    let mut range = Range::default();
+    let mut range = Range::new(watermark.as_deref());
+    let mut mistyped_cursors = 0usize;
 
     let mut pages = pin!(http::pages(
         ctx.client.clone(),
@@ -276,9 +277,6 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
             ))));
         }
         for record in records {
-            if let Some(v) = cursor.and_then(|c| field(&record, c)) {
-                range.observe(v);
-            }
             let conformed = schema.as_ref().map(|sc| sc.conform(&record));
             if let (Some(c), Some(d)) = (&conformed, &mut drift) {
                 d.observe(c);
@@ -287,6 +285,18 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
                 .as_ref()
                 .map(|c| c.violations.as_slice())
                 .unwrap_or_default();
+            // Only a written record with a well-typed cursor moves the watermark.
+            let quarantined = format == Format::Parquet && !violations.is_empty();
+            if let Some(c) = cursor
+                && !quarantined
+                && let Some(v) = field(&record, c)
+            {
+                if violations.iter().any(|v| v.path == c) {
+                    mistyped_cursors += 1;
+                } else {
+                    range.observe(v);
+                }
+            }
             if !violations.is_empty() && ctx.options.strict {
                 bail!(
                     "a record does not match the spec ({}); run without --strict to {}",
@@ -348,6 +358,14 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
              This run fetched everything; later runs will too."
                 .into(),
         );
+    }
+    let stray = mistyped_cursors + range.ignored();
+    if stray > 0 {
+        report.warnings.push(format!(
+            "{stray} record(s) have a `{}` value that does not match the spec or the other \
+             values: they were written but do not move the watermark",
+            cursor.unwrap_or_default()
+        ));
     }
     if let Some(d) = &mut drift {
         d.finish(report.records + report.quarantined);

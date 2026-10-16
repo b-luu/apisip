@@ -68,31 +68,92 @@ pub fn raw(v: &Value) -> String {
 }
 
 /// Tracks the lowest and highest cursor of the records seen.
+///
+/// Values of one kind only count: the kind of the stored watermark, or else
+/// the kind seen most often. A stray `"N/A"` in a timestamp cursor would
+/// otherwise sort above every date as text and freeze the stream.
 #[derive(Debug, Default, Clone)]
 pub struct Range {
-    pub min: Option<(CursorValue, String)>,
-    pub max: Option<(CursorValue, String)>,
+    kind: Option<Kind>,
+    by_kind: [KindRange; 3],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Kind {
+    Time = 0,
+    Number = 1,
+    Text = 2,
+}
+
+#[derive(Debug, Default, Clone)]
+struct KindRange {
+    count: usize,
+    min: Option<(CursorValue, String)>,
+    max: Option<(CursorValue, String)>,
+}
+
+impl CursorValue {
+    fn kind(&self) -> Kind {
+        match self {
+            CursorValue::Time(_) => Kind::Time,
+            CursorValue::Number(_) => Kind::Number,
+            CursorValue::Text(_) => Kind::Text,
+        }
+    }
+
+    /// Whether two values are of the same kind, so that comparing them means something.
+    pub fn same_kind(&self, other: &CursorValue) -> bool {
+        self.kind() == other.kind()
+    }
 }
 
 impl Range {
+    /// A range whose values must be of the same kind as this watermark.
+    pub fn new(watermark: Option<&str>) -> Range {
+        Range {
+            kind: watermark.map(|w| CursorValue::parse(w).kind()),
+            ..Range::default()
+        }
+    }
+
     pub fn observe(&mut self, v: &Value) {
         let Some(c) = CursorValue::from_json(v) else {
             return;
         };
-        if self.min.as_ref().is_none_or(|(m, _)| c < *m) {
-            self.min = Some((c.clone(), raw(v)));
+        let r = &mut self.by_kind[c.kind() as usize];
+        r.count += 1;
+        if r.min.as_ref().is_none_or(|(m, _)| c < *m) {
+            r.min = Some((c.clone(), raw(v)));
         }
-        if self.max.as_ref().is_none_or(|(m, _)| c > *m) {
-            self.max = Some((c, raw(v)));
+        if r.max.as_ref().is_none_or(|(m, _)| c > *m) {
+            r.max = Some((c, raw(v)));
         }
+    }
+
+    fn chosen(&self) -> &KindRange {
+        let kind = self.kind.unwrap_or_else(|| {
+            // Ties go to the first kind: a timestamp beats a number beats text.
+            [Kind::Time, Kind::Number, Kind::Text]
+                .into_iter()
+                .rev()
+                .max_by_key(|k| self.by_kind[*k as usize].count)
+                .unwrap_or(Kind::Time)
+        });
+        &self.by_kind[kind as usize]
+    }
+
+    /// Cursor values left out because their kind differs from the chosen one.
+    pub fn ignored(&self) -> usize {
+        let total: usize = self.by_kind.iter().map(|r| r.count).sum();
+        total - self.chosen().count
     }
 
     pub fn min_raw(&self) -> Option<String> {
-        self.min.as_ref().map(|(_, r)| r.clone())
+        self.chosen().min.as_ref().map(|(_, r)| r.clone())
     }
 
     pub fn max_raw(&self) -> Option<String> {
-        self.max.as_ref().map(|(_, r)| r.clone())
+        self.chosen().max.as_ref().map(|(_, r)| r.clone())
     }
 }
 
@@ -118,10 +179,18 @@ impl EarlyStop {
         }
     }
 
+    /// The record's cursor, when it is of the kind of the watermark (or of
+    /// the first cursor seen). Other values are kept but never compared.
+    fn cursor_of(&self, record: &Value) -> Option<CursorValue> {
+        let c = field(record, &self.cursor).and_then(CursorValue::from_json)?;
+        let reference = self.watermark.as_ref().or(self.previous.as_ref());
+        reference.is_none_or(|w| w.same_kind(&c)).then_some(c)
+    }
+
     /// Filters one page. Returns the records to keep and whether to stop paging.
     pub fn page(&mut self, records: Vec<Value>) -> (Vec<Value>, bool) {
         for r in &records {
-            if let Some(c) = field(r, &self.cursor).and_then(CursorValue::from_json) {
+            if let Some(c) = self.cursor_of(r) {
                 if self.previous.as_ref().is_some_and(|p| c > *p) && !self.unreliable {
                     tracing::warn!(
                         "cursor `{}` increased within a descending sort: the API does not sort as \
@@ -142,12 +211,10 @@ impl EarlyStop {
         let total = records.len();
         let kept: Vec<Value> = records
             .into_iter()
-            .filter(
-                |r| match field(r, &self.cursor).and_then(CursorValue::from_json) {
-                    Some(c) => c >= *wm,
-                    None => true,
-                },
-            )
+            .filter(|r| match self.cursor_of(r) {
+                Some(c) => c >= *wm,
+                None => true,
+            })
             .collect();
         // One page past the first old record is fetched on purpose: it gives
         // the guard one more page to check the sort on.
@@ -218,5 +285,37 @@ mod tests {
             ("1".into(), "7".into())
         );
         assert_eq!(field(&json!({"a": {"b": 1}}), "a.b"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn a_stray_text_value_never_becomes_the_watermark() {
+        let dates = [json!("2026-01-01T00:00:00Z"), json!("2026-01-02T00:00:00Z")];
+        // No watermark yet: the kind seen most often wins.
+        let mut r = Range::new(None);
+        for v in dates.iter().chain([&json!("N/A")]) {
+            r.observe(v);
+        }
+        assert_eq!(r.max_raw().as_deref(), Some("2026-01-02T00:00:00Z"));
+        assert_eq!(r.ignored(), 1);
+        // With a watermark, its kind wins even when outnumbered.
+        let mut r = Range::new(Some("2025-12-31T00:00:00Z"));
+        for v in [json!("N/A"), json!("unknown"), dates[0].clone()] {
+            r.observe(&v);
+        }
+        assert_eq!(r.max_raw().as_deref(), Some("2026-01-01T00:00:00Z"));
+        assert_eq!(r.ignored(), 2);
+    }
+
+    #[test]
+    fn early_stop_ignores_cursors_of_another_kind() {
+        let mut g = EarlyStop::new("updated_at", Some("2026-01-03T00:00:00Z"));
+        let page = vec![
+            json!({"id": 1, "updated_at": "2026-01-05T00:00:00Z"}),
+            json!({"id": 2, "updated_at": "N/A"}),
+            json!({"id": 3, "updated_at": "2026-01-04T00:00:00Z"}),
+        ];
+        let (kept, stop) = g.page(page);
+        assert_eq!((kept.len(), stop), (3, false));
+        assert!(!g.unreliable, "text vs time is not a sort violation");
     }
 }
