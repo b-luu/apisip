@@ -17,7 +17,7 @@ struct Cli {
     #[arg(short = 'C', global = true, value_name = "DIR")]
     dir: Option<PathBuf>,
 
-    /// More logging (-v info, -vv debug, -vvv trace). RUST_LOG overrides it.
+    /// More logging (-v info, -vv debug, -vvv trace). A non-empty RUST_LOG overrides it.
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     verbose: u8,
 
@@ -127,8 +127,12 @@ fn init_tracing(verbose: u8) {
         2 => "apisip=debug,info",
         _ => "trace",
     };
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
+    // An empty RUST_LOG counts as unset, so it does not silence -v.
+    let filter = std::env::var("RUST_LOG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .and_then(|v| tracing_subscriber::EnvFilter::try_new(v).ok())
+        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new(default));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)

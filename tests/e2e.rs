@@ -755,7 +755,12 @@ fn a_next_link_that_repeats_the_key_is_never_logged() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     init_keyed(d, &format!("http://{addr}"));
-    let a = apisip(d).args(["run", "-vv"]).assert().success();
+    // An empty RUST_LOG (the nix build sets one) must not silence -vv.
+    let a = apisip(d)
+        .args(["run", "-vv"])
+        .env("RUST_LOG", "")
+        .assert()
+        .success();
     let shown = stdout(&a) + &stderr(&a);
     assert!(shown.contains("already fetched"), "{shown}");
     assert!(!shown.contains(KEY), "the API key leaked:\n{shown}");
