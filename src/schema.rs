@@ -81,7 +81,7 @@ impl Shape {
         }
     }
 
-    fn label(&self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
             Shape::Int => "integer",
             Shape::Float => "number",

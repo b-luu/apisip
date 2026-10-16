@@ -185,7 +185,17 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 )
                 .await?,
             )),
-            Command::Update(_) => anyhow::bail!("update: not implemented yet"),
+            Command::Update(a) => Ok(exit(
+                cmd::update::run(
+                    &ws,
+                    cmd::update::UpdateOptions {
+                        spec: a.spec,
+                        check: a.check,
+                        yes: a.yes,
+                    },
+                )
+                .await?,
+            )),
         }
     })
 }

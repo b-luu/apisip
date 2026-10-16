@@ -2,6 +2,7 @@ pub mod check;
 pub mod init;
 pub mod list;
 pub mod run;
+pub mod update;
 
 use anyhow::{Result, bail};
 use url::Url;

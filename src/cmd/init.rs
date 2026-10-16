@@ -239,28 +239,7 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
     };
     config.validate()?;
 
-    // The baseline is what detection alone produced: `update` treats every
-    // difference between it and apisip.toml as a user edit to preserve.
-    let baseline = Config {
-        source: Source {
-            base_url: det.base_url.clone().unwrap_or(base_url),
-            rate_limit: if plans.is_empty() {
-                det.rate_limits.default_limit()
-            } else {
-                None
-            },
-            ..config.source.clone()
-        },
-        destination: Destination {
-            url: "file://.".into(),
-            format: Format::Jsonl,
-            rotate: Default::default(),
-            endpoint: None,
-            region: None,
-        },
-        streams: det.streams.iter().map(|s| s.config.clone()).collect(),
-    };
-
+    let baseline = baseline(&det, &config.source);
     write_files(
         ws,
         &spec,
@@ -273,6 +252,38 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
     print_summary(ws, &det, &config, &auth_vars, &env_updates);
     Ok(())
 }
+
+/// What detection alone produced, with the auth and source settings of the
+/// config: `update` treats every difference between it and apisip.toml as a
+/// user edit to preserve.
+pub(crate) fn baseline(det: &Detection, source: &Source) -> Config {
+    Config {
+        source: Source {
+            base_url: det
+                .base_url
+                .clone()
+                .unwrap_or_else(|| source.base_url.clone()),
+            // A plan picked at init is the user's choice, not detection's.
+            rate_limit: if det.rate_limits.plans().is_empty() {
+                det.rate_limits.default_limit()
+            } else {
+                None
+            },
+            ..source.clone()
+        },
+        destination: Destination {
+            url: "file://.".into(),
+            format: Format::Jsonl,
+            rotate: Default::default(),
+            endpoint: None,
+            region: None,
+        },
+        streams: det.streams.iter().map(|s| s.config.clone()).collect(),
+    }
+}
+
+pub(crate) const BASELINE_HEADER: &str =
+    "# Detected by apisip from the spec. Do not edit: apisip update compares against it.";
 
 type AuthPick = (
     Option<crate::config::AuthConfig>,
@@ -369,11 +380,7 @@ fn write_files(
     )?;
     ws.save_meta(
         spec,
-        &baseline.render(
-            "# Detected by apisip from the spec. Do not edit: apisip update compares against it.",
-            &BTreeMap::new(),
-            None,
-        ),
+        &baseline.render(BASELINE_HEADER, &BTreeMap::new(), None),
     )?;
 
     // Keys from the auth scheme, with values from the prompts or the process env.
