@@ -8,6 +8,8 @@ pub mod cmd;
 pub mod config;
 pub mod detect;
 pub mod envfile;
+pub mod http;
+pub mod incremental;
 pub mod prompt;
 pub mod spec;
 pub mod state;

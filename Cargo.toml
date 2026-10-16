@@ -41,5 +41,6 @@ assert_cmd = "2.2.2"
 axum = "0.8.9"
 predicates = "3.1.4"
 rexpect = "0.7.1"
+tokio = { version = "1.53.3", features = ["full", "test-util"] }
 tempfile = "3.27.0"
 wiremock = "0.6.5"
