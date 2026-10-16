@@ -358,6 +358,8 @@ fn a_crash_after_staging_commits_nothing() {
     assert_eq!(records(d, "users").len(), 25);
 }
 
+// Fail points exist in debug builds only.
+#[cfg(debug_assertions)]
 #[test]
 fn a_crash_after_the_move_only_repeats_records() {
     let mock = Mock::start();
@@ -381,6 +383,8 @@ fn a_crash_after_the_move_only_repeats_records() {
     }
 }
 
+// Fail points exist in debug builds only.
+#[cfg(debug_assertions)]
 #[test]
 fn an_uncommitted_snapshot_is_not_current_in_any_view() {
     let mock = Mock::start();
