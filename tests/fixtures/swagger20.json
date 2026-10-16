@@ -1,0 +1,22 @@
+{
+  "swagger": "2.0",
+  "info": {"title": "Legacy Ledger", "version": "1", "description": "Clients may send up to 1,000 requests per hour."},
+  "host": "ledger.example.test",
+  "basePath": "/api",
+  "schemes": ["https"],
+  "securityDefinitions": {"basic": {"type": "basic"}},
+  "definitions": {
+    "Entry": {"type": "object", "properties": {"id": {"type": "integer"}, "amount": {"type": "number"}, "booked_on": {"type": "string", "format": "date"}}}
+  },
+  "paths": {
+    "/entries": {
+      "get": {
+        "parameters": [
+          {"name": "skip", "in": "query", "type": "integer"},
+          {"name": "top", "in": "query", "type": "integer", "maximum": 500}
+        ],
+        "responses": {"200": {"description": "ok", "schema": {"type": "array", "items": {"$ref": "#/definitions/Entry"}}}}
+      }
+    }
+  }
+}

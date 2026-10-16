@@ -1,0 +1,159 @@
+openapi: 3.0.3
+info:
+  title: Acme Store API
+  version: "1.0"
+  description: |
+    Rate limits depend on your plan:
+
+    - Free plan: 60 requests per minute
+    - Pro plan: 600 requests per minute
+servers:
+  - url: https://api.acme.test/v1
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Personal access token.
+  schemas:
+    Timestamps:
+      type: object
+      properties:
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    User:
+      allOf:
+        - $ref: '#/components/schemas/Timestamps'
+        - type: object
+          properties:
+            id: {type: integer}
+            email: {type: string}
+    UserAlias:
+      $ref: '#/components/schemas/User'
+    Order:
+      type: object
+      properties:
+        order_id: {type: string}
+        total: {type: number}
+        updated_at: {type: string, format: date-time}
+    Product:
+      type: object
+      properties:
+        id: {type: integer}
+        name: {type: string}
+paths:
+  /users:
+    get:
+      parameters:
+        - {name: page, in: query, schema: {type: integer, minimum: 1}}
+        - {name: per_page, in: query, schema: {type: integer, maximum: 250}}
+        - {name: updated_since, in: query, schema: {type: string, format: date-time}}
+      responses:
+        200:
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/UserAlias'}
+                  total: {type: integer}
+  /users/{id}:
+    get:
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200": {description: ok}
+  /orders:
+    get:
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 50, maximum: 100}}
+        - name: sort
+          in: query
+          schema: {type: string, enum: [created_at, -created_at, updated_at, -updated_at]}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders:
+                    type: array
+                    items: {$ref: '#/components/schemas/Order'}
+                  meta:
+                    type: object
+                    properties:
+                      next_cursor: {type: string, nullable: true}
+  /products:
+    get:
+      parameters:
+        - {name: offset, in: query, schema: {type: integer}}
+        - {name: limit, in: query, schema: {type: integer}}
+        - {name: currency, in: query, required: true, schema: {type: string, default: EUR}}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Product'}
+  /events:
+    get:
+      responses:
+        "200":
+          description: ok
+          headers:
+            Link: {schema: {type: string}}
+            X-RateLimit-Remaining: {schema: {type: integer}}
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {type: object, properties: {id: {type: string}, kind: {type: string}}}
+  /search:
+    get:
+      parameters:
+        - {name: q, in: query, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: {type: array, items: {type: object}}
+  /me:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: {type: object, properties: {id: {type: integer}}}
+  /issues:
+    get:
+      parameters:
+        - {name: sort, in: query, schema: {type: string, enum: [created, updated, comments]}}
+        - {name: direction, in: query, schema: {type: string, enum: [asc, desc]}}
+        - {name: page, in: query, schema: {type: integer}}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: integer}
+                    updated_at: {type: string, format: date-time}
+    post:
+      responses:
+        "201": {description: created}

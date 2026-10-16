@@ -1,0 +1,50 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Northwind Telemetry", "version": "2"},
+  "servers": [{"url": "https://telemetry.northwind.test"}],
+  "x-ratelimit": {"limit": 10, "period": "second"},
+  "components": {
+    "securitySchemes": {
+      "apiKeyQuery": {"type": "apiKey", "in": "query", "name": "api_key"},
+      "machine": {
+        "type": "oauth2",
+        "flows": {"clientCredentials": {"tokenUrl": "https://telemetry.northwind.test/oauth/token", "scopes": {"read": "Read data"}}}
+      },
+      "browser": {
+        "type": "oauth2",
+        "flows": {"authorizationCode": {"authorizationUrl": "https://x.test/a", "tokenUrl": "https://x.test/t", "scopes": {}}}
+      }
+    },
+    "schemas": {
+      "Reading": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "value": {"type": ["number", "null"]},
+          "modified": {"type": "integer"},
+          "tags": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "Page": {
+        "type": "object",
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/Reading"}},
+          "links": {"type": "object", "properties": {"next": {"type": ["string", "null"], "format": "uri"}, "self": {"type": "string"}}}
+        }
+      }
+    }
+  },
+  "paths": {
+    "/readings": {
+      "get": {
+        "parameters": [{"name": "modified_after", "in": "query", "schema": {"type": "integer"}}],
+        "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Page"}}}}}
+      }
+    },
+    "/devices": {
+      "get": {
+        "responses": {"200": {"description": "no schema"}}
+      }
+    }
+  }
+}
