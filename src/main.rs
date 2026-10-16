@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use apisip::cmd;
+use apisip::workspace::Workspace;
 use clap::{Args, Parser, Subcommand};
 
 /// Point apisip at an OpenAPI spec, answer a few prompts, and get every data
@@ -100,6 +102,72 @@ struct UpdateArgs {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    eprintln!("apisip {:?}: not implemented yet", cli.command);
-    ExitCode::FAILURE
+    init_tracing(cli.verbose);
+    match run(cli) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn init_tracing(verbose: u8) {
+    let default = match verbose {
+        0 => "warn",
+        1 => "apisip=info,warn",
+        2 => "apisip=debug,info",
+        _ => "trace",
+    };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .init();
+}
+
+fn run(cli: Cli) -> anyhow::Result<ExitCode> {
+    let ws = Workspace::new(cli.dir)?;
+    // Load .env before the runtime starts any thread. Variables already set
+    // in the process environment win over the file.
+    let env = ws.env_path();
+    if env.exists() {
+        dotenvy::from_path(&env).map_err(|e| anyhow::anyhow!("reading {}: {e}", env.display()))?;
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async move {
+        match cli.command {
+            Command::Init(a) => {
+                cmd::init::run(
+                    &ws,
+                    cmd::init::InitOptions {
+                        spec: a.spec,
+                        force: a.force,
+                        yes: a.yes,
+                        destination: a.destination,
+                        format: a.format,
+                        auth: a.auth,
+                        plan: a.plan,
+                        streams: a.streams,
+                        base_url: a.base_url,
+                        s3_endpoint: a.s3_endpoint,
+                        s3_region: a.s3_region,
+                    },
+                )
+                .await?;
+                Ok(ExitCode::SUCCESS)
+            }
+            Command::List => {
+                cmd::list::run(&ws).await?;
+                Ok(ExitCode::SUCCESS)
+            }
+            Command::Check => anyhow::bail!("check: not implemented yet"),
+            Command::Run(_) => anyhow::bail!("run: not implemented yet"),
+            Command::Update(_) => anyhow::bail!("update: not implemented yet"),
+        }
+    })
 }

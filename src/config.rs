@@ -388,3 +388,249 @@ pub mod bytes_str {
             .map_err(|e| D::Error::custom(format!("invalid size {s:?}: {e}")))
     }
 }
+
+/// Replaces every `${VAR}` with the value of `VAR` from the environment
+/// (which includes `.env`, loaded at startup). A missing or empty variable is an error.
+pub fn interpolate(s: &str) -> anyhow::Result<String> {
+    static VAR: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap());
+    let mut missing = Vec::new();
+    let out = VAR.replace_all(s, |c: &regex::Captures| match std::env::var(&c[1]) {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            missing.push(c[1].to_string());
+            String::new()
+        }
+    });
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "{} not set: fill in {} in .env",
+            if missing.len() == 1 {
+                "variable is"
+            } else {
+                "variables are"
+            },
+            missing.join(", ")
+        );
+    }
+    Ok(out.into_owned())
+}
+
+/// Variable names referenced as `${VAR}` in a string.
+pub fn referenced_vars(s: &str) -> Vec<String> {
+    let re = regex::Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
+    re.captures_iter(s).map(|c| c[1].to_string()).collect()
+}
+
+impl Config {
+    pub fn parse(text: &str) -> anyhow::Result<Config> {
+        let config: Config = toml::from_str(text)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let mut seen = std::collections::BTreeSet::new();
+        for s in &self.streams {
+            if !seen.insert(&s.name) {
+                anyhow::bail!("stream `{}` is defined twice", s.name);
+            }
+            if s.name.is_empty() || s.name.contains(['/', '\\', '.']) {
+                anyhow::bail!(
+                    "invalid stream name {:?}: use letters, digits, `_` or `-`",
+                    s.name
+                );
+            }
+            if s.incremental.is_some() && s.primary_key.is_empty() {
+                // Allowed, but the generated views need a key to deduplicate.
+                tracing::debug!("stream {} has a cursor but no primary key", s.name);
+            }
+        }
+        if self.source.concurrency == 0 {
+            anyhow::bail!("source.concurrency must be at least 1");
+        }
+        if self.source.retry.max_tries == 0 {
+            anyhow::bail!("source.retry.max_tries must be at least 1");
+        }
+        Ok(())
+    }
+
+    /// Renders the config as TOML, with small tables inline and optional
+    /// comments: a header, a note per stream, and a note before `[destination]`.
+    pub fn render(
+        &self,
+        header: &str,
+        notes: &BTreeMap<String, String>,
+        source_note: Option<&str>,
+    ) -> String {
+        use toml_edit::{DocumentMut, Item, Value};
+        let text = toml::to_string(self).expect("config serializes");
+        let mut doc: DocumentMut = text.parse().expect("toml output parses");
+
+        fn inline(table: &mut toml_edit::Table, keys: &[&str]) {
+            for key in keys {
+                if let Some(item) = table.get_mut(key)
+                    && let Item::Table(t) = item
+                {
+                    let t = std::mem::take(t);
+                    *item = Item::Value(Value::InlineTable(t.into_inline_table()));
+                    if let Some(mut k) = table.key_mut(key) {
+                        k.leaf_decor_mut().set_suffix(" ");
+                    }
+                }
+            }
+            // Keep struct order: scalars and inlined tables interleaved as declared.
+            let order: Vec<String> = ORDER.iter().map(|s| s.to_string()).collect();
+            table.sort_values_by(|a, _, b, _| {
+                let rank = |k: &str| order.iter().position(|o| o == k).unwrap_or(usize::MAX);
+                rank(a.get()).cmp(&rank(b.get()))
+            });
+        }
+        const ORDER: [&str; 20] = [
+            "spec",
+            "base_url",
+            "auth",
+            "rate_limit",
+            "retry",
+            "concurrency",
+            "headers",
+            "url",
+            "format",
+            "rotate",
+            "endpoint",
+            "region",
+            "name",
+            "path",
+            "enabled",
+            "records",
+            "primary_key",
+            "params",
+            "pagination",
+            "incremental",
+        ];
+        if let Some(source) = doc.get_mut("source").and_then(Item::as_table_mut) {
+            inline(source, &["auth", "rate_limit", "retry", "headers"]);
+        }
+        if let Some(dest) = doc.get_mut("destination").and_then(Item::as_table_mut) {
+            inline(dest, &["rotate"]);
+            if let Some(note) = source_note {
+                dest.decor_mut().set_prefix(format!("{note}\n\n"));
+            }
+        }
+        if let Some(streams) = doc
+            .get_mut("streams")
+            .and_then(Item::as_array_of_tables_mut)
+        {
+            for t in streams.iter_mut() {
+                inline(t, &["params", "pagination", "incremental"]);
+                let name = t
+                    .get("name")
+                    .and_then(Item::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if let Some(note) = notes.get(&name) {
+                    t.decor_mut().set_prefix(format!("\n{note}\n"));
+                }
+            }
+        }
+        let body = doc.to_string();
+        if header.is_empty() {
+            body
+        } else {
+            format!("{header}\n\n{body}")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> Config {
+        Config::parse(
+            r#"
+[source]
+spec = "openapi.yaml"
+base_url = "https://api.example.test"
+auth = { type = "bearer", token = "${EXAMPLE_TOKEN}" }
+rate_limit = { max_calls = 100, period = "1m" }
+
+[destination]
+format = "parquet"
+rotate = { max_bytes = "64MiB" }
+
+[[streams]]
+name = "users"
+path = "/users"
+records = "/data"
+primary_key = "id"
+pagination = { type = "page_number", param = "page", size_param = "per_page", size = 100 }
+incremental = { cursor = "updated_at", sort = { param = "sort", value = "-updated_at" } }
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn parses_with_defaults() {
+        let c = sample();
+        assert_eq!(c.destination.url, "file://.");
+        assert_eq!(c.destination.rotate.max_bytes, 64 << 20);
+        assert_eq!(c.source.retry, RetryConfig::default());
+        assert_eq!(
+            c.source.rate_limit.as_ref().unwrap().period,
+            Duration::from_secs(60)
+        );
+        assert_eq!(c.streams[0].primary_key, ["id"]);
+        assert_eq!(c.streams[0].mode(), Mode::EarlyStop);
+        assert!(c.streams[0].enabled);
+    }
+
+    #[test]
+    fn render_round_trips_and_inlines() {
+        let c = sample();
+        let notes = BTreeMap::from([("users".to_string(), "# users: early stop".to_string())]);
+        let text = c.render("# header", &notes, Some("# no rate limit"));
+        assert!(text.starts_with("# header"));
+        assert!(text.contains("auth = { type = \"bearer\""), "{text}");
+        assert!(
+            text.contains("pagination = { type = \"page_number\""),
+            "{text}"
+        );
+        assert!(text.contains("# users: early stop\n[[streams]]"), "{text}");
+        assert!(text.contains("max_bytes = \"64MiB\""), "{text}");
+        assert_eq!(Config::parse(&text).unwrap(), c);
+    }
+
+    #[test]
+    fn rejects_unknown_fields_and_duplicates() {
+        assert!(
+            Config::parse("[source]\nspec='a'\nbase_url='b'\ntypo=1\n[destination]\n").is_err()
+        );
+        let dup = "[source]\nspec='a'\nbase_url='b'\n[destination]\n[[streams]]\nname='a'\npath='/a'\n[[streams]]\nname='a'\npath='/b'\n";
+        assert!(
+            Config::parse(dup)
+                .unwrap_err()
+                .to_string()
+                .contains("twice")
+        );
+    }
+
+    #[test]
+    fn interpolation() {
+        // SAFETY: test-only, single variable owned by this test.
+        unsafe { std::env::set_var("APISIP_TEST_INTERP", "s3cr3t") };
+        assert_eq!(
+            interpolate("Bearer ${APISIP_TEST_INTERP}").unwrap(),
+            "Bearer s3cr3t"
+        );
+        let err = interpolate("${APISIP_TEST_MISSING_ONE}")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("APISIP_TEST_MISSING_ONE") && err.contains(".env"),
+            "{err}"
+        );
+        assert_eq!(referenced_vars("${A}:${B_2}"), ["A", "B_2"]);
+    }
+}
