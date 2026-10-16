@@ -232,6 +232,7 @@ impl Authenticator {
         let body: serde_json::Value = resp
             .json()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("OAuth2 token response is not JSON")?;
         let access = body
             .get("access_token")
