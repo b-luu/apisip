@@ -457,8 +457,13 @@ fn lock(ws: &Workspace) -> Result<std::fs::File> {
         Err(std::fs::TryLockError::WouldBlock) => {
             bail!("another `apisip run` is in progress in this folder; wait for it to finish")
         }
+        // Some network filesystems cannot lock: run anyway, with a warning.
         Err(std::fs::TryLockError::Error(e)) => {
-            Err(e).with_context(|| format!("locking {}", path.display()))
+            eprintln!(
+                "warning: cannot lock {} ({e}); make sure no other run uses this folder",
+                path.display()
+            );
+            Ok(file)
         }
     }
 }
