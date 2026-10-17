@@ -3,8 +3,9 @@
 
 use anyhow::{Context, Result};
 
+use crate::config::Format;
 use crate::http::{ApiClient, Paginator, extract_records};
-use crate::schema::Drift;
+use crate::schema::{Drift, RecordSchema};
 use crate::sink::Store;
 use crate::state::{State, foreign_owner};
 use crate::workspace::Workspace;
@@ -63,28 +64,40 @@ pub async fn run(ws: &Workspace) -> Result<bool> {
         .await;
         match result {
             Ok(records) => {
-                let schema = load_schema(ws, spec.as_ref(), &s)?;
+                // As in `run`: casts and quarantine apply to Parquet only.
+                let parquet = config.destination.format == Format::Parquet;
+                let schema = load_schema(ws, spec.as_ref(), &s)?.map(|sc| RecordSchema {
+                    cast: parquet && sc.cast,
+                    ..sc
+                });
                 let mut line = format!(
                     "ok    {:<24} {} record(s) on the first page",
                     s.name,
                     records.len()
                 );
+                let mut details = Vec::new();
                 if let Some(schema) = &schema {
                     let mut d = Drift::new(schema);
+                    let mut violating = 0;
                     for r in &records {
-                        d.observe(&schema.conform(r));
+                        let c = schema.conform(r);
+                        violating += usize::from(!c.violations.is_empty());
+                        d.observe(&c);
                     }
-                    if !d.undeclared.is_empty() || !d.mistyped.is_empty() {
-                        line.push_str(&format!(
-                            ", drift: {} undeclared, {} mistyped field(s)",
-                            d.undeclared.len(),
-                            d.mistyped.len()
-                        ));
+                    if violating > 0 && parquet {
+                        line.push_str(&format!(", {violating} would be quarantined"));
+                    }
+                    if !d.is_empty() {
+                        line.push_str(", drift:");
+                        details = d.summary();
                     }
                 } else {
                     line.push_str(", schema inferred");
                 }
                 println!("{line}");
+                for l in details {
+                    println!("        {l}");
+                }
             }
             Err(e) => {
                 ok = false;

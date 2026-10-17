@@ -267,6 +267,24 @@ fn parquet_types_follow_the_spec_and_bad_records_are_quarantined() {
     let text = std::fs::read_to_string(&config).unwrap();
     let no_cast = text.replace("name = \"users\"\n", "name = \"users\"\ncast = \"none\"\n");
     assert_ne!(no_cast, text);
+    // check sees user 13 when the first page holds 20 users.
+    for (config_text, expected) in [
+        (&no_cast, "1 would be quarantined, drift:"),
+        (
+            &text,
+            "age: string -> integer, cast without loss (1 records)",
+        ),
+    ] {
+        let big_page = config_text.replace("size = 10, start", "size = 20, start");
+        assert_ne!(&big_page, config_text);
+        std::fs::write(&config, &big_page).unwrap();
+        apisip(d)
+            .arg("check")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(expected))
+            .stdout(predicate::str::contains("undeclared field nickname"));
+    }
     std::fs::write(&config, &no_cast).unwrap();
     let run = apisip(d).arg("run").assert().success();
     assert!(stdout(&run).contains("1 quarantined"), "{}", stdout(&run));
