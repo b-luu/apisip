@@ -20,6 +20,9 @@ pub const STATE_FILE: &str = "_apisip/state.json";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct State {
+    /// The `.apisip/folder-id` of the folder that writes this destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     #[serde(default)]
     pub streams: BTreeMap<String, StreamState>,
 }
@@ -64,6 +67,17 @@ impl StreamState {
             _ => false,
         }
     }
+}
+
+/// Why a folder may not write a destination another folder owns.
+pub fn foreign_owner(url: &str, owner: &str, this: Option<&str>) -> String {
+    format!(
+        "the destination {url} belongs to another apisip folder (folder id {owner}; this \
+         folder's is {}). Two folders writing one destination would mix their data. Use \
+         another destination, or, if this folder is a copy of that one, copy its \
+         .apisip/folder-id here.",
+        this.unwrap_or("not created yet")
+    )
 }
 
 pub fn sort_signature(s: &Sort) -> String {

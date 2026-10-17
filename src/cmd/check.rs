@@ -1,11 +1,13 @@
 //! `apisip check`: a dry run. Validates the config and the credentials with
 //! one request per stream, and writes nothing.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::detect::stream_record_schema;
 use crate::http::{ApiClient, Paginator, extract_records};
 use crate::schema::{Drift, RecordSchema};
+use crate::sink::Store;
+use crate::state::{State, foreign_owner};
 use crate::workspace::Workspace;
 
 use super::{first_url, print_rate_limit_warning, select_streams};
@@ -27,17 +29,30 @@ pub async fn run(ws: &Workspace) -> Result<bool> {
     let client = ApiClient::for_config(&config)?;
     let mut ok = true;
 
-    if config.destination.url.starts_with("s3://") {
-        let store = crate::sink::Store::open(&config.destination, &ws.dir)?;
-        match store.list(crate::sink::META_DIR).await {
-            Ok(_) => println!("ok    destination {} is reachable", store.url),
+    let url = crate::config::interpolate(&config.destination.url).context("destination.url")?;
+    if !url.starts_with("s3://") && !Store::local_dir(&url, &ws.dir)?.exists() {
+        println!("ok    destination {url} (the first run creates it)");
+    } else {
+        let store = Store::open(&config.destination, &ws.dir)?;
+        match State::load(&store).await {
+            Ok(state) => match (state.owner.as_deref(), ws.read_folder_id()?) {
+                (None, _) => println!(
+                    "ok    destination {} (the first run claims it for this folder)",
+                    store.url
+                ),
+                (Some(o), Some(id)) if o == id => {
+                    println!("ok    destination {} belongs to this folder", store.url)
+                }
+                (Some(o), id) => {
+                    ok = false;
+                    println!("FAIL  {}", foreign_owner(&store.url, o, id.as_deref()));
+                }
+            },
             Err(e) => {
                 ok = false;
                 println!("FAIL  destination {}: {e:#}", store.url);
             }
         }
-    } else {
-        println!("ok    destination {}", config.destination.url);
     }
 
     for s in select_streams(&config, &[])? {

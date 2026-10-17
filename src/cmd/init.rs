@@ -382,6 +382,7 @@ fn write_files(
         spec,
         &baseline.render(BASELINE_HEADER, &BTreeMap::new(), None),
     )?;
+    ws.folder_id()?;
 
     // Keys from the auth scheme, with values from the prompts or the process env.
     let mut updates: Vec<(String, Option<String>)> = env_updates.to_vec();

@@ -37,6 +37,30 @@ impl Workspace {
     pub fn baseline_path(&self) -> PathBuf {
         self.meta_dir().join("baseline.toml")
     }
+    pub fn folder_id_path(&self) -> PathBuf {
+        self.meta_dir().join("folder-id")
+    }
+
+    /// The id that marks this folder as the owner of its destination. Copies
+    /// of the folder (git clones) share it. Created when missing.
+    pub fn folder_id(&self) -> Result<String> {
+        if let Some(id) = self.read_folder_id()? {
+            return Ok(id);
+        }
+        let id = format!("{:016x}", rand::random::<u64>());
+        std::fs::create_dir_all(self.meta_dir())?;
+        std::fs::write(self.folder_id_path(), format!("{id}\n"))
+            .context("writing .apisip/folder-id")?;
+        Ok(id)
+    }
+
+    pub fn read_folder_id(&self) -> Result<Option<String>> {
+        match std::fs::read_to_string(self.folder_id_path()) {
+            Ok(t) => Ok(Some(t.trim().to_string()).filter(|id| !id.is_empty())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).context("reading .apisip/folder-id"),
+        }
+    }
 
     pub fn has_config(&self) -> bool {
         self.config_path().exists()
@@ -80,8 +104,9 @@ impl Workspace {
         std::fs::write(self.baseline_path(), baseline)?;
         std::fs::write(
             self.meta_dir().join("README"),
-            "Written by apisip init/update: the spec snapshot used for typing, and the\n\
-             config detected from it (the baseline `apisip update` merges against).\n\
+            "Written by apisip init/update: the spec snapshot used for typing, the\n\
+             config detected from it (the baseline `apisip update` merges against),\n\
+             and folder-id, which marks this folder as the owner of its destination.\n\
              Commit this folder with apisip.toml.\n",
         )?;
         Ok(())

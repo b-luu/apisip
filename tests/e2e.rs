@@ -493,6 +493,57 @@ fn records_already_written_at_the_watermark_are_not_written_again() {
 }
 
 #[test]
+fn a_destination_belongs_to_one_folder_and_its_copies() {
+    let mock = Mock::start();
+    let (dir_a, dir_b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (a, b) = (dir_a.path(), dir_b.path());
+    init(&mock, a, &["--streams", "users"]);
+    apisip(a).arg("run").assert().success();
+
+    // Another folder pointed at the same destination is refused before it writes.
+    let shared = format!("file://{}", a.join("data").display());
+    init(&mock, b, &["--streams", "users", "--destination", &shared]);
+    let runs = a.join("data/_apisip/runs");
+    let manifests = files(&runs, "json").len();
+    let check = apisip(b).arg("check").assert().failure();
+    assert!(
+        stdout(&check).contains("belongs to another apisip folder"),
+        "{}",
+        stdout(&check)
+    );
+    let refused = apisip(b).arg("run").assert().failure();
+    assert!(
+        stderr(&refused).contains("copy its .apisip/folder-id here"),
+        "{}",
+        stderr(&refused)
+    );
+    assert_eq!(files(&runs, "json").len(), manifests, "nothing written");
+
+    // With the owner's folder id, it is a copy and may write.
+    std::fs::copy(a.join(".apisip/folder-id"), b.join(".apisip/folder-id")).unwrap();
+    let check = apisip(b).arg("check").assert().success();
+    assert!(stdout(&check).contains("belongs to this folder"));
+    mock.post("/_admin/touch/users/3");
+    apisip(b).arg("run").assert().success();
+    apisip(a).arg("run").assert().success();
+    if let Some(n) = duckdb(a, "select count(*), count(distinct id) from users_current") {
+        assert_eq!(n, "25,25");
+    }
+
+    // A state written before destinations had an owner is adopted.
+    let state_path = a.join("data/_apisip/state.json");
+    let mut state: Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    state.as_object_mut().unwrap().remove("owner").unwrap();
+    std::fs::write(&state_path, state.to_string()).unwrap();
+    apisip(a).arg("run").assert().success();
+    let state: Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    let id = std::fs::read_to_string(a.join(".apisip/folder-id")).unwrap();
+    assert_eq!(state["owner"].as_str(), Some(id.trim()));
+}
+
+#[test]
 fn an_empty_stream_does_not_break_the_views() {
     let mock = Mock::start();
     let dir = tempfile::tempdir().unwrap();

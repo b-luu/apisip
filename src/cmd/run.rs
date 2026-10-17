@@ -23,7 +23,8 @@ use crate::schema::{Drift, EXTRACTED_AT, RUN_ID, RecordSchema, wrap};
 use crate::sink::{JsonlWriter, Layout, ParquetWriter, StagedFile, Store};
 use crate::spec::Spec;
 use crate::state::{
-    CursorRange, Manifest, Overlap, RunStatus, State, StreamReport, StreamStatus, sort_signature,
+    CursorRange, Manifest, Overlap, RunStatus, State, StreamReport, StreamStatus, foreign_owner,
+    sort_signature,
 };
 use crate::workspace::Workspace;
 
@@ -46,6 +47,27 @@ struct Ctx {
     options: RunOptions,
 }
 
+/// Stops before anything is written when another folder owns the
+/// destination; claims it for this folder when nobody does.
+async fn claim(store: &Store, folder_id: &str) -> Result<State> {
+    let state = State::load(store).await?;
+    let state = match &state.owner {
+        Some(_) => state,
+        None => {
+            let _commit = store.commit_lock().await?;
+            State::update(store, |s| {
+                s.owner.get_or_insert_with(|| folder_id.to_string());
+            })
+            .await
+            .context("claiming the destination for this folder")?
+        }
+    };
+    match state.owner.as_deref() {
+        Some(o) if o != folder_id => bail!(foreign_owner(&store.url, o, Some(folder_id))),
+        _ => Ok(state),
+    }
+}
+
 /// Returns false when a stream failed.
 pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
     let config = ws.load_config()?;
@@ -65,9 +87,9 @@ pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
     let client = ApiClient::for_config(&config)?;
     let store = Arc::new(Store::open(&config.destination, &ws.dir)?);
     let layout = Layout::new(Utc::now());
+    let state = claim(&store, &ws.folder_id()?).await?;
     // Leftovers of an interrupted run were never committed: drop them.
     store.delete_stale_staging(layout.started).await?;
-    let state = State::load(&store).await?;
 
     let manifest = Mutex::new(Manifest {
         run_id: layout.run_id.clone(),

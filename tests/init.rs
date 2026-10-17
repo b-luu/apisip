@@ -56,6 +56,8 @@ fn init_yes_writes_the_folder() {
     assert!(gitignore.lines().any(|l| l == ".env"));
     assert!(gitignore.lines().any(|l| l == "/data/"), "{gitignore}");
     assert!(config.contains("url = \"file://data\""), "{config}");
+    let id = std::fs::read_to_string(dir.path().join(".apisip/folder-id")).unwrap();
+    assert_eq!(id.trim().len(), 16, "{id}");
     assert!(
         std::fs::read_to_string(dir.path().join(".env.example"))
             .unwrap()

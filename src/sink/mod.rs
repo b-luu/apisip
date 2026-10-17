@@ -62,15 +62,7 @@ impl Store {
                 url,
             });
         }
-        if url.contains("://") && !url.starts_with("file://") {
-            bail!("destination.url {url:?}: use a folder, file://<folder> or s3://bucket/prefix");
-        }
-        let dir = url.strip_prefix("file://").unwrap_or(&url);
-        let dir = if FsPath::new(dir).is_absolute() {
-            PathBuf::from(dir)
-        } else {
-            base_dir.join(dir)
-        };
+        let dir = Store::local_dir(&url, base_dir)?;
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let dir = std::fs::canonicalize(&dir)?;
         let fs = object_store::local::LocalFileSystem::new_with_prefix(&dir)?;
@@ -78,6 +70,19 @@ impl Store {
             inner: Arc::new(fs),
             local_root: Some(dir),
             url,
+        })
+    }
+
+    /// The folder a local destination URL points to.
+    pub fn local_dir(url: &str, base_dir: &FsPath) -> Result<PathBuf> {
+        if url.contains("://") && !url.starts_with("file://") {
+            bail!("destination.url {url:?}: use a folder, file://<folder> or s3://bucket/prefix");
+        }
+        let dir = url.strip_prefix("file://").unwrap_or(url);
+        Ok(if FsPath::new(dir).is_absolute() {
+            PathBuf::from(dir)
+        } else {
+            base_dir.join(dir)
         })
     }
 
