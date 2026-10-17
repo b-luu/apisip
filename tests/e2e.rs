@@ -1060,6 +1060,54 @@ fn s3_destination() {
     mock.post("/_admin/add/users");
     apisip(d).arg("run").assert().success();
 
+    // Two copies of the folder run at once: both commit, and neither moves
+    // the other's watermark back, so a third run finds nothing new.
+    let copy = tempfile::tempdir().unwrap();
+    let cp = std::process::Command::new("cp")
+        .arg("-a")
+        .arg(format!("{}/.", d.display()))
+        .arg(copy.path())
+        .status()
+        .unwrap();
+    assert!(cp.success());
+    mock.post("/_admin/add/users");
+    let spawn = |dir: &Path| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_apisip"))
+            .arg("-C")
+            .arg(dir)
+            .arg("run")
+            .env_remove("MOCKSHOP_TOKEN")
+            .env_remove("APISIP_FAIL_POINT")
+            .output()
+            .unwrap()
+    };
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| spawn(d));
+        let b = s.spawn(|| spawn(copy.path()));
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    for out in [&a, &b] {
+        let text = String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{text}");
+        if text.contains("conditional writes") {
+            eprintln!("this store has no conditional writes: the fallback ran");
+        }
+    }
+    let third = apisip(d).arg("run").assert().success();
+    assert!(
+        predicate::str::is_match(r"users\s+filter\s+0 records")
+            .unwrap()
+            .eval(&stdout(&third)),
+        "{}",
+        stdout(&third)
+    );
+    apisip(d)
+        .args(["inspect", "users"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Last runs:"));
+
     // Read the data back from the bucket with DuckDB's httpfs.
     let host = endpoint
         .trim_start_matches("http://")
@@ -1078,14 +1126,15 @@ fn s3_destination() {
         .arg(&setup)
         .arg("-c")
         .arg(format!(
-            "select count(*) from read_parquet('{prefix}/users/dt=*/**/*.parquet')"
+            "select count(distinct id) from read_parquet('{prefix}/users/dt=*/**/*.parquet')"
         ))
         .output();
     match sql {
         Ok(out) if out.status.success() => {
             let n = String::from_utf8_lossy(&out.stdout);
-            // 24 + the inclusive boundary record + the new user (user 13 is quarantined).
-            assert_eq!(n.lines().last().unwrap().trim(), "26", "{n}");
+            // The 25 users, the one added between runs and the one added
+            // before the concurrent runs.
+            assert_eq!(n.lines().last().unwrap().trim(), "27", "{n}");
         }
         Ok(out) => panic!("duckdb: {}", String::from_utf8_lossy(&out.stderr)),
         Err(_) => eprintln!("duckdb not found: skipping the read-back"),
