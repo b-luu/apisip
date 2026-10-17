@@ -310,12 +310,14 @@ manifest flags any overlap with an earlier run.
   would mix their data. A copy of a folder carries its id, since `.apisip/` is
   committed.
 
-On an S3-compatible store without conditional writes, apisip warns once per
-run and falls back to plain writes: two copies running at once can then move
+On an S3-compatible store that refuses conditional writes, apisip warns once
+per run and falls back to plain writes (a store that accepts them but ignores
+them gets no warning): two copies running at once can then move
 a watermark back, which gives duplicates, never a loss. On a local filesystem
 that cannot lock files, such as some network mounts, apisip warns and commits
 without the lock: two copies running at once can then also lose JSONL rows,
-so run one copy at a time there. The streams of a single run always take
+so run one copy at a time there. On such stores, two different folders
+starting on a new destination at the same moment can also both claim it. The streams of a single run always take
 turns, whatever the store.
 
 ### Generated views
@@ -418,9 +420,10 @@ were fetched with, so the views place them as if they had never been
 quarantined. The others stay in their quarantine file with the new reason,
 and a file left empty is deleted. Watermarks do not move, and the manifest
 records the run with `"kind": "replay"`. A replay that stops halfway can be
-run again: the data files it writes are named after the quarantine file and
-its content, so the second replay overwrites them and commits no record
-twice.
+run again with the same schema and `cast` setting: the data files it writes
+are named after the quarantine file and its content, so the second replay
+overwrites them and commits no record twice. Replay from one copy of a
+folder at a time.
 
 ## Following API changes with `update`
 
