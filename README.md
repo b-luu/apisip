@@ -35,6 +35,7 @@ It is a single binary written in Rust. No Python, no platform, no daemon.
 - [Configuration](#configuration)
 - [Understanding the output](#understanding-the-output)
 - [Types come from the spec](#types-come-from-the-spec)
+- [Quarantine and `replay`](#quarantine-and-replay)
 - [Following API changes with `update`](#following-api-changes-with-update)
 - [Alternatives](#alternatives)
 - [Works well with](#works-well-with)
@@ -72,7 +73,7 @@ apisip init http://127.0.0.1:8080/openapi.json
 ```
 
 `init` asks for the base URL (default: the spec's server), where to write data
-(default: this folder), the output format, the auth scheme and the token. The
+(default: `data/` in this folder), the output format, the auth scheme and the token. The
 mock API uses a bearer token: pick `bearerAuth` and type `mock-token` at the
 token prompt. It is stored in `.env` with mode 600 and never echoed. Then it lists what it found:
 
@@ -113,11 +114,12 @@ The mock API lies on purpose:
 - **users:** one user carries a field the spec does not declare, and another
   has a mistyped value. Both are reported as drift.
 
-Run `apisip run` again: `users` and `orders` now fetch only what changed. Query
-the result with [DuckDB](https://duckdb.org):
+Run `apisip run` again: `users` and `orders` now fetch only what changed, and
+records already written are not written again. `apisip inspect` shows what the
+destination holds. Query the result with [DuckDB](https://duckdb.org):
 
 ```sh
-duckdb -c ".read _apisip/views/all.sql" -c "select * from users_current limit 5"
+duckdb -c ".read data/_apisip/views/all.sql" -c "select * from users_current limit 5"
 ```
 
 ## One folder per API
@@ -129,14 +131,22 @@ apisip works like git: each folder holds one API. Every command reads
 apisip -C ~/data/mockshop run
 ```
 
-`init` writes:
+The folder holds the configuration at its root and, by default, the data in
+`data/`:
 
-| File | Commit it? | What |
-|---|---|---|
-| `apisip.toml` | yes | streams, pagination, auth references, destination |
-| `.env` | **no** | secrets, mode 600; `.gitignore` lists it |
-| `.env.example` | yes | the variable names, empty |
-| `.apisip/` | yes | the spec snapshot and baseline used by `update` |
+```text
+mockshop/
+├── apisip.toml          # streams, pagination, auth references, destination
+├── .env                 # secrets, mode 600, never committed
+├── .env.example         # the variable names, empty
+├── .gitignore           # lists .env and /data/
+├── schemas/users.json   # one record schema per stream, editable
+├── .apisip/             # spec snapshot and baselines for `update`, folder id
+└── data/                # the output: streams, quarantine, state, views
+```
+
+Commit everything except `.env` and `data/`. With an `s3://` destination,
+`data/` is not created and the same layout lives under the bucket prefix.
 
 `init` refuses to overwrite an existing `apisip.toml` without `--force`.
 
@@ -147,10 +157,12 @@ All subcommands are verbs.
 | Command | What it does |
 |---|---|
 | `apisip init <spec>` | Reads a spec (URL or file, JSON or YAML; OpenAPI 3.0, 3.1 or Swagger 2.0), asks a few questions, writes the folder. |
-| `apisip list` | The configured streams, their mode, pagination, schema source and key. |
-| `apisip check` | A dry run: validates the config, the credentials and the destination with one request per stream. Writes nothing. |
+| `apisip list` | The configured streams, their mode, pagination, schema source and key. Reads only the folder. |
+| `apisip check` | A dry run: validates the config, the credentials and the destination with one request per stream, and checks the first page against the schema. Writes nothing. |
 | `apisip run` | Downloads every enabled stream. `--stream a,b`, `--full-refresh`, `--strict`. |
-| `apisip update [<spec>]` | Diffs a new version of the spec against the config and merges it. `--check` only prints the diff. |
+| `apisip inspect [<stream>]` | What the destination holds: watermarks, last runs, drift, quarantined records, views. No API calls. |
+| `apisip replay` | Checks quarantined records again against the current schema and moves those that now pass into the data. `--stream a,b`. |
+| `apisip update [<spec>]` | Diffs a new version of the spec against the config and the schema files, and merges it. `--check` only prints the diff. |
 
 Every prompt has a default and a matching flag, so `init --yes` runs without a
 terminal, for scripts and CI. Credentials are then read from the environment:
@@ -175,7 +187,7 @@ retry = { max_tries = 8, max_backoff = "1m", on_status = [429, 500, 502, 503, 50
 concurrency = 4
 
 [destination]
-url = "file://."                  # or s3://bucket/prefix
+url = "file://data"               # relative to this folder, or s3://bucket/prefix
 format = "jsonl"                  # or parquet
 rotate = { max_bytes = "128MiB" }
 
@@ -186,6 +198,7 @@ records = "/data"                 # JSON pointer to the record array
 primary_key = "id"
 pagination = { type = "page_number", param = "page", size_param = "per_page", size = 10, start = 1 }
 incremental = { cursor = "updated_at", param = "updated_since" }
+cast = "lossless"                 # default; "none" quarantines every mistyped value
 ```
 
 - **Secrets:** `${VAR}` is read from `.env`, then from the process
@@ -226,7 +239,18 @@ one of three modes:
    snapshot.
 
 The comparison with the watermark is inclusive, so delivery is **at least
-once**. Losing a record at the boundary is worse than repeating one.
+once**. Losing a record at the boundary is worse than repeating one: many APIs
+return timestamps to the second, and a record updated in the same second as
+the watermark would be missed by a strict comparison. To avoid writing the
+boundary records again on every run, the state keeps a fingerprint of each
+record written at the watermark (up to 10,000). A record with the same cursor
+and the same content is skipped and counted as `unchanged`; a changed or new
+record at that cursor is kept. A run against an API where nothing changed
+writes nothing.
+
+One limit remains in filter mode: the API applies the filter itself. If it
+treats `since` as strictly after, a record written in the same second as the
+watermark can still be missed, and nothing on the client side can see it.
 A cursor value that breaks the spec, or whose type differs from the others
 (such as `"N/A"` among timestamps), never moves the watermark. The manifest
 counts those records.
@@ -234,13 +258,13 @@ counts those records.
 ## Understanding the output
 
 apisip never updates or deletes a row it has written. Each run appends what it
-captured:
+captured. Inside the destination (`data/` by default):
 
 ```text
 users/dt=2026-10-16/users-<run_id>-0000.jsonl
 plans/dt=2026-10-16/run_id=<run_id>/plans-<run_id>-0000.jsonl     # full refresh: one snapshot per run
-users/_quarantine/<run_id>.jsonl                                  # Parquet only: records that break the spec
-_apisip/state.json                                                # watermarks
+users/_quarantine/<run_id>.jsonl                                  # Parquet only: records that break the schema
+_apisip/state.json                                                # watermarks, owner folder id
 _apisip/runs/<run_id>.json                                        # manifest: counts, files, ranges, drift
 _apisip/views/*.sql                                               # generated views
 ```
@@ -269,8 +293,25 @@ between steps 1 and 2 leaves the files in place but not the watermark, so the
 next run fetches those records again; the views remove the duplicates. The
 manifest flags any overlap with an earlier run.
 
-Run one `apisip run` at a time: a second run in the same folder stops with an
-error. Two folders must not share a destination path.
+### Sharing a destination
+
+- **One folder, one run at a time:** a second `run` in the same folder stops
+  with an error.
+- **Copies of one folder may run at once,** for example a git clone on two
+  machines, or a cron job that overlaps the previous one. Each run stages its
+  files under its own run id. The watermark update is a compare-and-swap on
+  `state.json` (an `If-Match` write on S3, a file lock on local disk), so no
+  run moves another's watermark back. Overlapping runs give duplicates, which
+  the views remove.
+- **Other folders are refused.** `init` writes a random id to
+  `.apisip/folder-id`, and the first run records it in `state.json`. A folder
+  with another id stops before fetching: two configurations writing one path
+  would mix their data. A copy of a folder carries its id, since `.apisip/` is
+  committed.
+
+On an S3-compatible store without conditional writes, apisip warns once per
+run and falls back to plain writes: two concurrent runs can then move a
+watermark back, which gives duplicates, never a loss.
 
 ### Generated views
 
@@ -283,7 +324,7 @@ key, plus `all.sql` that creates them all:
   full-refresh streams, it compares consecutive snapshots.
 
 ```sh
-duckdb -c ".read _apisip/views/all.sql" \
+duckdb -c ".read data/_apisip/views/all.sql" \
   -c "select id, name, valid_from, valid_to, is_current from users_history where id = 3"
 ```
 
@@ -313,8 +354,10 @@ and the [secrets manager](https://duckdb.org/docs/current/configuration/secrets_
 
 ## Types come from the spec
 
-The spec is the source of truth. Parquet columns come from the response
-schema, before any request is made, so types are stable across files and runs:
+The spec is the source of truth. `init` writes the response schema of each
+stream to `schemas/<stream>.json`, fully inlined JSON Schema, and Parquet
+columns come from that file, before any request is made. Types are therefore
+stable across files and runs:
 
 | Spec | Parquet |
 |---|---|
@@ -324,17 +367,52 @@ schema, before any request is made, so types are stable across files and runs:
 | object with properties / array | Struct / List |
 | `oneOf`, `anyOf`, free-form object | JSON string |
 
-All columns are nullable. Fields the spec does not declare go into one
+All columns are nullable. Fields the schema does not declare go into one
 `_apisip_extra` JSON column, so no data is lost.
 
-A record whose value breaks the spec, such as `"41"` where `integer` is
-declared, is never silently cast. It goes to `<stream>/_quarantine/` with the
-reason, and is counted as drift. `_quarantine/` is a dead-letter queue: records
-that broke the spec, kept whole with the reason, so nothing is lost. `run --strict` fails instead. JSONL keeps
-records exactly as received: drift is reported, and nothing is quarantined.
+**The schema files are yours to edit.** Change a type, add a field the API
+sends but the spec forgot, and the next run writes it. `list` then shows
+`schema: edited`, and `update` keeps your edits (see below). When an endpoint
+declares JSON but no schema, the first run infers one from the first page and
+writes it to `schemas/<stream>.json`; later runs reuse that file, so the types
+no longer depend on which records came first. `list` shows `schema: inferred`.
 
-When an endpoint declares JSON but no schema, the types are inferred from the
-first records, and `list` shows `schema: inferred`.
+**Casts are lossless or not done.** With the default `cast = "lossless"`, a
+value of the wrong type is converted only when the conversion keeps it exactly:
+
+- a string to an integer when it reads back the same (`"41"`, not `"007"`);
+- a string to a number when it is a finite number;
+- an integer to a number when it is exact in Float64 (below 2^53);
+- `"true"` / `"false"` to a boolean;
+- a number or a boolean to a string.
+
+Timestamps are never cast from numbers: the unit is ambiguous. Each cast is
+counted per field in the manifest and the run summary. `cast = "none"`
+disables them. Casts and quarantine apply to Parquet only: JSONL keeps records
+exactly as received, and drift is reported.
+
+## Quarantine and `replay`
+
+A Parquet record that the schema cannot hold, even after a lossless cast, goes
+to `<stream>/_quarantine/<run_id>.jsonl`. `_quarantine/` is a dead-letter
+queue: the records are kept whole, with the reason, so nothing is lost. They
+count as drift, and `apisip inspect` shows how many wait. `run --strict` fails
+the stream instead.
+
+Once you have fixed the cause, by editing `schemas/<stream>.json` or the
+`cast` setting, run:
+
+```sh
+apisip replay                 # or --stream users
+```
+
+`replay` checks every quarantined record against the current schema. Records
+that now pass are committed as data with the run id and extraction time they
+were fetched with, so the views place them as if they had never been
+quarantined. The others go to a new quarantine file with the new reason. The
+replayed files are then deleted. Watermarks do not move, and the manifest
+records the run with `"kind": "replay"`. A crash between the commit and the
+delete repeats records, which the views remove.
 
 ## Following API changes with `update`
 
@@ -355,10 +433,29 @@ new spec, and your current `apisip.toml`. Then it applies these rules:
 - **New endpoints** are offered, unselected by default.
 - **Auth** is always re-confirmed. Enter keeps the current scheme and each
   current secret, shown masked.
-- **Response schema changes** are listed field by field (`+ phone (string)`),
-  along with the drift seen by the last run.
+- **A primary key or cursor change** always asks, even if you never edited
+  that value: the views deduplicate and order on it.
 
 Comments and formatting in `apisip.toml` are kept.
+
+The schema files get the same three-way merge, field by field, against the
+version apisip last wrote (kept in `.apisip/schemas/`):
+
+- **Compatible changes** to a field you never edited are applied: a new
+  field, `integer` to `number`, required to optional, a removed field (old
+  files keep the column; new files leave it null).
+- **Incompatible changes** ask, because the files already written keep the
+  old type: a narrowing such as `number` to `integer`, or any other type
+  change. `--yes` refuses them and writes nothing; run `update` in a terminal
+  to choose.
+- **A field both you and the spec changed** is a conflict that asks; the
+  default keeps yours.
+- **Undeclared fields** seen in each recent run (the last three, or all of
+  them if there are fewer) are offered for declaration with their observed
+  type, unselected by default.
+
+`update --check` lists every change and exits 1 when the spec changed.
+Undeclared fields alone do not make it fail.
 
 ## Alternatives
 

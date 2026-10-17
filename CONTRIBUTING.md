@@ -65,7 +65,9 @@ mkdir /tmp/try && cd /tmp/try
 cargo run --manifest-path <repo>/Cargo.toml -- init http://127.0.0.1:8080/openapi.json
 ```
 
-The README quickstart walks through the rest.
+The README quickstart walks through the rest. The output lands in `data/`
+inside that folder; `apisip inspect` shows what it holds without calling the
+API.
 
 ## Tests for bug fixes
 

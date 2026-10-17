@@ -1,6 +1,6 @@
 # Roadmap
 
-Not in v1. Each item becomes a GitHub issue labelled `roadmap`.
+Not in 0.1.0. Each item becomes a GitHub issue labelled `roadmap`.
 
 - **Child streams:** endpoints with path parameters (`/users/{id}/orders`), fed
   by the records of a parent stream. Today `init` lists them as skipped.
@@ -16,8 +16,11 @@ Not in v1. Each item becomes a GitHub issue labelled `roadmap`.
 - **Renamed streams in `update`:** a stream the user renamed in `apisip.toml`
   is offered again as a new endpoint, because streams are matched by name. Match
   them by path as well.
-- **One lock per destination:** `run` locks its folder, but two folders that
-  write to the same destination path are not detected.
+- **Lookback window:** an optional `lookback = "5m"` per stream that extends
+  the fingerprint check at the watermark to a time window, to catch records
+  whose transaction committed after a later record was already read.
+- **A lease for stores without conditional writes:** only if the plain-write
+  fallback proves common.
 - **Cap far-future cursors:** a record whose cursor is far in the future (bad
   source data) moves the watermark past later records, which filter mode then
   never fetches. Cap the watermark at the run time plus a configurable skew.

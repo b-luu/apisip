@@ -52,4 +52,4 @@ people do.
 - **Stay in scope.** Do not refactor, rename or add features beyond the task,
   and match the comment density and naming of the code around your change.
 - **Do not edit `Cargo.lock` by hand,** and do not commit generated output
-  (`target/`, run folders, `_apisip/`).
+  (`target/`, run folders, `data/`, `_apisip/`).

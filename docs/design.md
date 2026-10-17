@@ -1,17 +1,19 @@
 # apisip design
 
-How apisip v1 behaves and why. The README is the user guide; this is the
+How apisip 0.1.0 behaves and why. The README is the user guide; this is the
 reference for contributors.
 
 ## User experience
 
 ```sh
 mkdir my-api && cd my-api                           # one folder per API
-apisip init https://api.example.com/openapi.json   # interactive; writes apisip.toml, .env, .env.example, .gitignore, .apisip/
+apisip init https://api.example.com/openapi.json   # interactive; writes apisip.toml, .env, .env.example, .gitignore, schemas/, .apisip/
 apisip list                                         # streams configured in this folder: enabled, mode, schema source
 apisip check                                        # dry run: validates config + creds, 1 request per stream, writes nothing
 apisip run [--stream users] [--full-refresh] [--strict]
-apisip update [<new-spec-url-or-file>] [--check]    # diffs a new spec version against the config and merges it
+apisip inspect [users]                              # what the destination holds; no API calls
+apisip replay [--stream users]                      # re-checks quarantined records against the current schema
+apisip update [<new-spec-url-or-file>] [--check]    # diffs a new spec version against the config and schema files, and merges it
 ```
 
 - **Verbs only.** Every subcommand is a verb. Later modes follow the same rule, for example `push` for reverse mode and `listen` for webhooks.
@@ -20,7 +22,7 @@ apisip update [<new-spec-url-or-file>] [--check]    # diffs a new spec version a
   - Without a config, the error says to run `apisip init`. `init` refuses to overwrite an existing config without `--force`.
   - The README quickstart and the `init` output both state this layout.
 - **Interactive `init`.** It prompts with `inquire`. Each prompt has a default and a matching flag, so `--yes` plus flags runs with no prompts for scripts and CI.
-  1. **Destination:** the current directory by default, or an `s3://bucket/prefix` URL. S3 triggers prompts for the endpoint URL, region and keys.
+  1. **Destination:** `data/` inside the folder by default (`file://data`, and `/data/` goes to `.gitignore`), or an `s3://bucket/prefix` URL. S3 triggers prompts for the endpoint URL, region and keys.
   2. **Format:** `jsonl` (default) or `parquet`.
   3. **Auth scheme:** a picker when the spec declares several, preselected when it declares one.
   4. **Credentials for that scheme:**
@@ -34,8 +36,8 @@ apisip update [<new-spec-url-or-file>] [--check]    # diffs a new spec version a
   7. **Rate-limit plan,** asked only when the spec documents several tiers.
 
   At the end, `init` prints a summary with each stream's mode, any rate-limit warning, and the next commands to run.
-- **Auth in v1:** bearer, API key (header, query or cookie), HTTP basic, and OAuth2 client credentials. Client credentials fetches a token from the spec's `tokenUrl`, caches it, and refreshes it on expiry or on a 401.
-- **Retry and pagination** are in v1. `[source.retry]` sets the number of tries, the backoff cap and the retryable statuses.
+- **Auth:** bearer, API key (header, query or cookie), HTTP basic, and OAuth2 client credentials. Client credentials fetches a token from the spec's `tokenUrl`, caches it, and refreshes it on expiry or on a 401.
+- **Retry and pagination** are built in. `[source.retry]` sets the number of tries, the backoff cap and the retryable statuses.
 
 ### `apisip.toml`
 
@@ -50,7 +52,7 @@ rate_limit = { max_calls = 100, period = "1m" }     # from the spec or the plan 
 retry = { max_tries = 8, max_backoff = "60s", on_status = [429, 500, 502, 503, 504] }
 
 [destination]
-url = "file://."                                    # default: this folder; or s3://bucket/prefix
+url = "file://data"                                 # default: data/ in this folder; or s3://bucket/prefix
 format = "jsonl"                                    # jsonl | parquet
 rotate = { max_bytes = "128MiB" }
 
@@ -62,6 +64,7 @@ primary_key = "id"
 pagination = { type = "page_number", param = "page", size_param = "per_page", size = 100 }
 incremental = { cursor = "updated_at", param = "since" }                         # server-side filter
 # incremental = { cursor = "updated_at", sort = { param = "sort", value = "-updated_at" } }   # early stop
+cast = "lossless"                                    # lossless (default) | none
 ```
 
 - **Variables:** `${VAR}` is interpolated from `.env` and the process env.
@@ -97,7 +100,12 @@ In every case the runtime also adapts to live headers.
    - When both a filter and a sort exist, filter mode wins.
 3. **Full refresh.** Nothing usable exists, so every run re-downloads the stream. Each run's output is a complete snapshot under its own `run_id=` sub-partition.
 
-Delivery is **at least once**. The comparison against the watermark is inclusive (`≥`), because losing a record at the boundary is worse than repeating one.
+Delivery is **at least once**. The comparison against the watermark is inclusive (`≥`), because losing a record at the boundary is worse than repeating one: the cursor is compared at the precision the API returns, often the second, and a record updated in the watermark's second, or a bulk update stamped with one second, would be lost by a strict comparison.
+
+- **Unchanged boundary records are skipped.** At each commit, the stream state stores `boundary`: the 64-bit FNV-1a fingerprints of the written records whose cursor equals the new watermark. A fingerprint hashes the record with keys sorted recursively, without the `_apisip_*` fields. FNV-1a is written inline and is stable across Rust versions. On the next run, a record whose cursor equals the watermark and whose fingerprint is in the set counts as `unchanged` and is not written. A changed or new record at that cursor is kept, so a run where nothing changed writes nothing.
+- **Cap:** above 10,000 boundary records the set is not stored; the run keeps the duplicates and warns.
+- **Scope:** filter and early-stop streams. `--full-refresh` ignores the set as it ignores the watermark.
+- **Limit:** in filter mode the API applies `since` itself. If it treats it as exclusive, a record in the watermark's second can still be missed. A `lookback` window is on the roadmap.
 
 ### Output model: an append-only change log
 
@@ -141,9 +149,19 @@ Duplicates have three sources: the inclusive boundary, a re-run after a crash, a
 
    A run that fails before step 1 leaves no data and no moved watermark. A crash between steps 1 and 2 leaves the files without the watermark: the next run fetches them again, and the views remove the duplicates.
 
-   Only one run at a time works on a folder: `run` holds an OS lock on `.apisip/run.lock`.
+   Only one run at a time works on a folder: `run` holds an OS lock on `.apisip/run.lock`. See "Concurrent runs on one destination" for copies of a folder.
 2. **Ranges and overlaps in the manifest.** The run manifest records per stream the status, the requested range and the cursor range actually observed. An overlap with an earlier committed run is flagged in the manifest and printed by `run`.
 3. **Primary key detection.** OpenAPI has no primary-key marker. `init` picks `id` when it is present and asks otherwise, and the value stays editable in `apisip.toml`.
+
+### Concurrent runs on one destination
+
+There is no lock on the destination. A lease on S3 needs an expiry, so a crashed runner would block every other one until it ends, and the expiry depends on clocks; all of that would only prevent duplicates, which the views already remove. Instead:
+
+- **Staging per run.** Each run stages under `_apisip/staging/<run_id>/`. At start, a run deletes only staging folders whose run id timestamp is more than 24 hours old, never a live run's.
+- **State as compare-and-swap.** `State::update` reads `state.json` with its version, applies one stream's change, and writes with `PutMode::Update(version)`, or `PutMode::Create` when absent. On a precondition failure it re-reads and re-applies, up to 10 tries. Watermarks take the max, `unreliable_sort` is sticky, and the boundary sets of equal watermarks are united.
+- **Local destinations** have no conditional update in `object_store`, so an exclusive `flock` on `_apisip/commit.lock` guards the read-modify-write and the JSONL merge in `promote`.
+- **S3-compatible stores without conditional writes:** a plain write, with one warning per run. Two concurrent runs can then move a watermark back: duplicates, no loss.
+- **Ownership.** `init` writes a random id to `.apisip/folder-id`; `.apisip/` is committed, so clones share it. The first commit records it as `owner` in `state.json`, and a run with another id stops before fetching, as does `check`. A state without an owner is adopted.
 
 ### `update`: follow API changes
 
@@ -165,11 +183,16 @@ Duplicates have three sources: the inclusive boundary, a re-run after a crash, a
      - `--yes` keeps the current auth, and fails with a clear error if the scheme in use was dropped.
 4. It rewrites `apisip.toml` with `toml_edit`, which keeps the user's comments and formatting. Then it refreshes the snapshot and the baseline.
 
-`update --check` prints the diff only, and exits with code 1 when something changed, so a CI job can flag a spec change.
+- **Primary key and cursor changes** always ask, even when the user never edited them, because the views deduplicate and order on them. `--yes` refuses them.
+- **Schema files** get the same three-way merge per field, between `.apisip/schemas/<stream>.json` (the version apisip last wrote), the new spec and `schemas/<stream>.json`. Each change is classed against the current file: a new field, `integer` to `number`, a required change and a removed field are compatible and applied; any other type change is incompatible and asks, because files already written keep the old type. `--yes` refuses incompatible changes before writing anything. A field changed on both sides is a conflict; the default keeps the user's version.
+- **Undeclared fields** seen in every recent run (the drift of the last three manifests) are offered for declaration, unselected by default.
+
+`update --check` prints the diff only, and exits with code 1 when something changed, so a CI job can flag a spec change. Undeclared candidates alone do not count.
 
 ### Schema: the spec is the source of truth
 
-- **Parquet columns come from the endpoint's response schema,** built before the first request. The schema is stable across files and runs, and numbers never decay into strings.
+- **Schema files.** `init` writes each stream's response schema, fully inlined, to `schemas/<stream>.json` with `"x-apisip-source": "spec"`. A stream without a spec schema gets an inferred file on its first run (`"inferred"`), reused by later runs. From then on the file is the schema, and the user may edit it; `list` shows `edited` when it differs from the baseline. A missing file falls back to the spec, with a hint to run `update`.
+- **Parquet columns come from the schema file,** built before the first request. The schema is stable across files and runs, and numbers never decay into strings.
   - `integer` gives Int64, and `number` gives Float64.
   - `boolean` gives Boolean.
   - `string` with `format: date-time` gives Timestamp(µs, UTC), and with `format: date` gives Date32. Other strings, enums included, give Utf8.
@@ -177,12 +200,14 @@ Duplicates have three sources: the inclusive boundary, a re-run after a crash, a
   - `oneOf`, `anyOf`, free-form objects and an empty schema give a JSON string.
 - **All columns are nullable,** because specs under-declare `nullable` and `required`.
 - **Undeclared fields** go into one `_apisip_extra` JSON-string column, so no data is lost.
-- **Values that violate the spec** (e.g. `"123"` where `integer` is declared) are never silently cast.
-  - The whole record goes to `<stream>/_quarantine/<run_id>.jsonl` with the reason.
+- **Lossless casts** (`cast = "lossless"`, the default, per stream): a value of the wrong type is converted only when it survives a round trip. A string to an integer when it prints back the same (`"007"` does not); a string to a finite number; an integer to a number below 2^53; `"true"`/`"false"` to a boolean; a number or boolean to a string. No epoch-to-timestamp cast: the unit is ambiguous. Casts are counted per field and type pair in the manifest; `--strict` accepts them. `cast = "none"` disables them.
+- **Values that still violate the schema** are never silently changed.
+  - The whole record goes to `<stream>/_quarantine/<run_id>.jsonl` with the reason, the run id and the extraction time.
   - It is counted in the manifest and reported as drift.
   - `run --strict` fails instead.
-- **No response schema at all:** the stream falls back to inference from the first records. Int plus float widens to float, and any other conflict widens to string. `list` shows `schema: inferred`.
-- **JSONL** keeps records exactly as received, plus the metadata fields. The drift check still runs, but nothing is quarantined.
+  - `replay` conforms each quarantined record again with the current schema file and cast setting. Records that pass are committed through the usual staged commit, keeping their original `_apisip_run_id` and `_apisip_extracted_at` (a snapshot record goes back to its run's `run_id=` folder), so the views order them as if never quarantined. The rest go to a new quarantine file. The replayed files are deleted after the commit. Watermarks do not move, and the manifest has `"kind": "replay"`. It takes the folder lock and the ownership check, like `run`.
+- **Inference:** int plus float widens to float, and any other conflict widens to string.
+- **JSONL** keeps records exactly as received, plus the metadata fields. The drift check still runs, but nothing is cast or quarantined.
 - **Drift report:** `run` compares every record with the spec. Undeclared, missing and mistyped fields go into the manifest with counts and one example each. A summary prints at the end of the run, and `update` refers to it.
 
 ## Architecture
@@ -214,7 +239,8 @@ One crate, a lib plus the `apisip` binary:
   - **Parquet:** row groups of about 10k rows, written with `AsyncArrowWriter` to an `object_store` writer. The file rotates at `max_bytes`.
 - **`state/`:** the staged commit, the watermarks in `<destination>/_apisip/state.json`, and the run manifests in `_apisip/runs/<run_id>.json`.
 - **`views/`:** generation of the current-state and history SQL files.
-- **`update/`:** the spec diff, the three-way merge against `.apisip/baseline.toml`, and in-place edits with `toml_edit`.
+- **`cmd/update.rs`, `cmd/schema_merge.rs`:** the spec diff, the three-way merges against `.apisip/baseline.toml` and `.apisip/schemas/`, and in-place edits with `toml_edit`.
+- **`cmd/inspect.rs`, `cmd/replay.rs`:** read the destination's state, manifests and quarantine; replay commits through the same staged path as `run`.
 
 Main crates: `tokio`, `reqwest` (rustls), `serde`, `serde_json`, `serde_yaml_ng` (reads YAML specs), `toml`, `toml_edit`, `clap`, `inquire`, `dotenvy`, `object_store` (aws), `arrow`, `parquet` (async, object_store), `futures`, `async-stream`, `tracing`, `thiserror`, `anyhow`, `chrono`, `url`, `rand`. Dev crates: `wiremock`, `tempfile`, `assert_cmd`, `rexpect`.
 
@@ -268,7 +294,11 @@ Main crates: `tokio`, `reqwest` (rustls), `serde`, `serde_json`, `serde_yaml_ng`
   - Mutating records in the mock and re-running produces several versions per key. `_current.sql` returns exactly one row per key with the latest values, and `_history.sql` returns correct `valid_from` / `valid_to` values.
   - A missing token produces a clear error from `check`. A missing rate limit produces the warning with its hint.
   - The undeclared field lands in `_apisip_extra`, and the mistyped record in quarantine. `--strict` fails.
-  - `update` from v1 to v2: unedited values change, an edited value prompts, the removed endpoint is disabled, comments survive, and `--check` exits 1 or 0.
+  - `update` from v1 to v2: unedited values change, an edited value prompts, the removed endpoint is disabled, comments survive, and `--check` exits 1 or 0. Schema files: a compatible change is applied, an incompatible one asks and is refused by `--yes`, an edited field conflicts, and an undeclared field is adopted.
+  - A second run against an unchanged API writes no row; a changed or new record at the watermark is kept.
+  - A second folder on the same destination is refused; a copy with the same folder id runs, and the views keep one row per key.
+  - `replay` keeps a still-failing record quarantined, then moves it into the data once the cast allows it, with its original run id, and leaves the watermark.
+  - `inspect` reads the destination with the API stopped.
 - **S3:** any S3-compatible server (the test was run against SeaweedFS), with `run` to `s3://` and a read-back through DuckDB `httpfs`. The test is gated behind `APISIP_TEST_S3=1`.
 - **Real specs:**
   - `init --yes` + `run` against the live Petstore v3 server.
