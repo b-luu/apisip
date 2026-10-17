@@ -2,10 +2,11 @@
 //! with the current schema file and cast setting.
 //!
 //! Records that now pass are committed as data with the run id and
-//! extraction time they were fetched with, so the views order them as if
-//! they had never been quarantined. The rest go to a new quarantine file.
-//! The replayed quarantine files are deleted after the commit; a crash in
-//! between leaves duplicates, which the views remove. Watermarks do not move.
+//! extraction time they were fetched with, in the folder of that run, so the
+//! views order them as if they had never been quarantined. The records that
+//! still fail replace the quarantine file. A replay that stops halfway can
+//! run again: it writes the same data files over the first ones, so no
+//! record is committed twice. Watermarks do not move.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -64,14 +65,12 @@ pub async fn run(ws: &Workspace, o: ReplayOptions) -> Result<bool> {
     };
     m.save(&store).await?;
     let format = config.destination.format;
-    let max_bytes = config.destination.rotate.max_bytes;
     let ctx = Replay {
         ws,
         spec: spec.as_ref(),
         store: &store,
         layout: &layout,
         format,
-        max_bytes,
     };
     for (s, files) in &todo {
         let mut report = StreamReport {
@@ -168,7 +167,6 @@ struct Replay<'a> {
     store: &'a Arc<Store>,
     layout: &'a Layout,
     format: Format,
-    max_bytes: u64,
 }
 
 enum Writer {
@@ -191,102 +189,121 @@ impl Replay<'_> {
             bail!("schemas/{name}.json is missing: replay needs the schema to type the records");
         }
         report.schema = schema.as_ref().map(|sc| sc.source);
-        let snapshot = s.mode() == Mode::FullRefresh;
-        // One writer per data folder: a snapshot's records go back to their run's folder.
-        let mut writers: BTreeMap<String, Writer> = BTreeMap::new();
-        let mut quarantine: Option<JsonlWriter> = None;
-
         for file in files {
-            let bytes = self.store.get(file).await?.unwrap_or_default();
-            for (i, line) in bytes
-                .split(|b| *b == b'\n')
-                .filter(|l| !l.is_empty())
-                .enumerate()
-            {
-                let entry: Value = serde_json::from_slice(line)
-                    .with_context(|| format!("{file}, line {}: not JSON", i + 1))?;
-                let record = entry
-                    .get("record")
-                    .cloned()
-                    .with_context(|| format!("{file}, line {}: no `record`", i + 1))?;
-                let run_id = entry
-                    .get(RUN_ID)
-                    .and_then(Value::as_str)
-                    .unwrap_or(&self.layout.run_id)
-                    .to_string();
-                let extracted = entry
-                    .get(EXTRACTED_AT)
-                    .and_then(Value::as_str)
-                    .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-                    .map(|t| t.with_timezone(&Utc))
-                    .unwrap_or(self.layout.started);
-                let extracted_text = extracted.to_rfc3339_opts(SecondsFormat::Micros, true);
+            self.file(s, schema.as_ref(), file, report).await?;
+        }
+        Ok(())
+    }
 
-                let conformed = schema.as_ref().map(|sc| sc.conform(&record));
-                let violations = conformed
-                    .as_ref()
-                    .map(|c| c.violations.as_slice())
-                    .unwrap_or_default();
-                if parquet && !violations.is_empty() {
-                    let q = quarantine.get_or_insert_with(|| {
-                        JsonlWriter::single(
-                            self.store.clone(),
-                            self.layout,
-                            self.layout.quarantine(name),
-                        )
-                    });
-                    let reason: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
-                    q.write(&json!({
-                        "reason": reason.join("; "),
-                        RUN_ID: run_id,
-                        EXTRACTED_AT: extracted_text,
-                        "record": record,
-                    }))
-                    .await?;
-                    report.quarantined += 1;
-                    continue;
+    /// Replays one quarantine file. The data files are named after the file
+    /// and its content, and the records that still fail replace the file: a
+    /// replay that crashed before its end, run again, writes the same files
+    /// over the first ones instead of adding duplicates.
+    async fn file(
+        &self,
+        s: &StreamConfig,
+        schema: Option<&RecordSchema>,
+        file: &str,
+        report: &mut StreamReport,
+    ) -> Result<()> {
+        let name = &s.name;
+        let parquet = self.format == Format::Parquet;
+        let snapshot = s.mode() == Mode::FullRefresh;
+        let bytes = self.store.get(file).await?.unwrap_or_default();
+        let stem = file
+            .rsplit_once('/')
+            .map_or(file, |(_, f)| f)
+            .trim_end_matches(".jsonl");
+        let tag = format!("replay-{stem}-{}", fnv(&bytes));
+        // One writer per data folder: records go back to their run's folder.
+        let mut writers: BTreeMap<String, Writer> = BTreeMap::new();
+        let mut remaining: Option<JsonlWriter> = None;
+        let mut kept = 0;
+
+        for (i, line) in bytes
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .enumerate()
+        {
+            let mut entry: Value = serde_json::from_slice(line)
+                .with_context(|| format!("{file}, line {}: not JSON", i + 1))?;
+            let record = entry
+                .get("record")
+                .cloned()
+                .with_context(|| format!("{file}, line {}: no `record`", i + 1))?;
+            let run_id = entry.get(RUN_ID).and_then(Value::as_str).map(String::from);
+            let extracted = entry
+                .get(EXTRACTED_AT)
+                .and_then(Value::as_str)
+                .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+                .map(|t| t.with_timezone(&Utc));
+            let conformed = schema.map(|sc| sc.conform(&record));
+            let reason = match (&run_id, extracted, &conformed) {
+                // Without them the record cannot go back to the run it was fetched in.
+                (None, _, _) | (_, None, _) => {
+                    Some(format!("no {RUN_ID} or {EXTRACTED_AT} to replay it with"))
                 }
-
-                let dir = if snapshot {
-                    let day = Layout::started_at(&run_id).unwrap_or(extracted);
-                    format!("{name}/dt={}/run_id={run_id}", day.format("%Y-%m-%d"))
-                } else {
-                    self.layout.data_dir(name, false)
-                };
-                let w = writers.entry(dir.clone()).or_insert_with(|| match &schema {
-                    Some(sc) if parquet => Writer::Parquet(Box::new(ParquetWriter::new(
-                        self.store.clone(),
-                        self.layout,
-                        name,
-                        dir.clone(),
-                        sc.arrow(),
-                        self.max_bytes,
-                    ))),
-                    _ => Writer::Jsonl(Box::new(JsonlWriter::new(
-                        self.store.clone(),
-                        self.layout,
-                        name,
-                        dir.clone(),
-                        self.max_bytes,
-                    ))),
+                (_, _, Some(c)) if parquet && !c.violations.is_empty() => Some(
+                    c.violations
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                ),
+                _ => None,
+            };
+            let (Some(run_id), Some(extracted), None) = (run_id, extracted, &reason) else {
+                entry["reason"] = json!(reason);
+                let q = remaining.get_or_insert_with(|| {
+                    JsonlWriter::single(self.store.clone(), self.layout, file.to_string())
                 });
-                match w {
-                    Writer::Parquet(w) => {
-                        let mut row = conformed.expect("parquet has a schema").row;
-                        row.insert(RUN_ID.into(), Value::String(run_id));
-                        row.insert(EXTRACTED_AT.into(), json!(extracted.timestamp_micros()));
-                        w.write(row).await?;
-                    }
-                    Writer::Jsonl(w) => {
-                        let mut v = wrap(record);
-                        let obj = v.as_object_mut().expect("wrapped");
-                        obj.insert(RUN_ID.into(), Value::String(run_id));
-                        obj.insert(EXTRACTED_AT.into(), Value::String(extracted_text));
-                        w.write(&v).await?;
-                    }
-                }
-                report.records += 1;
+                q.write(&entry).await?;
+                kept += 1;
+                continue;
+            };
+
+            let day = Layout::started_at(&run_id).unwrap_or(extracted);
+            let mut dir = format!("{name}/dt={}", day.format("%Y-%m-%d"));
+            if snapshot {
+                dir.push_str(&format!("/run_id={run_id}"));
             }
+            // No rotation: the same records always give the same files.
+            let w = writers.entry(dir.clone()).or_insert_with(|| match schema {
+                Some(sc) if parquet => Writer::Parquet(Box::new(ParquetWriter::new(
+                    self.store.clone(),
+                    self.layout,
+                    name,
+                    dir.clone(),
+                    sc.arrow(),
+                    u64::MAX,
+                ))),
+                _ => Writer::Jsonl(Box::new(JsonlWriter::new(
+                    self.store.clone(),
+                    self.layout,
+                    name,
+                    dir.clone(),
+                    u64::MAX,
+                ))),
+            });
+            match w {
+                Writer::Parquet(w) => {
+                    let mut row = conformed.expect("parquet has a schema").row;
+                    row.insert(RUN_ID.into(), Value::String(run_id));
+                    row.insert(EXTRACTED_AT.into(), json!(extracted.timestamp_micros()));
+                    w.write(row).await?;
+                }
+                Writer::Jsonl(w) => {
+                    let mut v = wrap(record);
+                    let obj = v.as_object_mut().expect("wrapped");
+                    obj.insert(RUN_ID.into(), Value::String(run_id));
+                    obj.insert(
+                        EXTRACTED_AT.into(),
+                        Value::String(extracted.to_rfc3339_opts(SecondsFormat::Micros, true)),
+                    );
+                    w.write(&v).await?;
+                }
+            }
+            report.records += 1;
         }
 
         let mut data_files: Vec<StagedFile> = Vec::new();
@@ -296,27 +313,54 @@ impl Replay<'_> {
                 Writer::Parquet(w) => w.finish().await?,
             });
         }
-        let quarantine_files = match quarantine {
+        for f in &mut data_files {
+            // `<stream>-<run id>-0000.parquet` becomes `<stream>-<tag>-0000.parquet`.
+            if let Some((dir, base)) = f.target.rsplit_once('/') {
+                f.target = format!("{dir}/{}", base.replacen(&self.layout.run_id, &tag, 1));
+            }
+        }
+        let remaining = match remaining {
             Some(q) => q.finish().await?,
             None => Vec::new(),
         };
 
         let _commit = self.store.commit_lock().await?;
-        let prefix = Layout::part_prefix(name);
-        let merge = (!parquet && !snapshot).then_some((prefix.as_str(), self.max_bytes));
         for f in &data_files {
-            let target = self.store.promote(f, merge).await?;
+            let target = self.store.promote(f, None).await?;
             if !report.files.contains(&target) {
                 report.files.push(target);
             }
         }
-        for f in &quarantine_files {
-            report.files.push(self.store.promote(f, None).await?);
-        }
         fail_point("replay_after_move")?;
-        for f in files {
-            self.store.delete(f).await?;
+        if remaining.is_empty() {
+            match self.store.delete(file).await {
+                Ok(()) => {}
+                Err(e) if is_not_found(&e) => {}
+                Err(e) => return Err(e),
+            }
+        } else {
+            for f in &remaining {
+                report.files.push(self.store.promote(f, None).await?);
+            }
+            report.quarantined += kept;
         }
         Ok(())
     }
+}
+
+/// FNV-1a of a file's bytes, to name what a replay of it writes.
+fn fnv(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+fn is_not_found(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<object_store::Error>(),
+        Some(object_store::Error::NotFound { .. })
+    )
 }

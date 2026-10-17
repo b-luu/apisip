@@ -355,7 +355,7 @@ fn replay_moves_records_that_now_pass_into_the_data() {
         serde_json::from_str(std::fs::read_to_string(&first[0]).unwrap().trim()).unwrap();
     let state = std::fs::read_to_string(d.join("data/_apisip/state.json")).unwrap();
 
-    // Still cast = "none": the record fails again and moves to a new file.
+    // Still cast = "none": the record fails again and stays in its file.
     let replay = apisip(d).arg("replay").assert().success();
     let out = stdout(&replay);
     assert!(
@@ -363,8 +363,7 @@ fn replay_moves_records_that_now_pass_into_the_data() {
         "{out}"
     );
     let second = files(&d.join("data/users/_quarantine"), "jsonl");
-    assert_eq!(second.len(), 1);
-    assert_ne!(second, first);
+    assert_eq!(second, first);
     let again: Value =
         serde_json::from_str(std::fs::read_to_string(&second[0]).unwrap().trim()).unwrap();
     for k in ["record", "_apisip_run_id", "_apisip_extracted_at"] {
@@ -594,6 +593,55 @@ fn a_crash_after_the_move_only_repeats_records() {
     assert_eq!(records(d, "users").len(), 50);
     if let Some(n) = duckdb(d, "select count(*) from users_current") {
         assert_eq!(n, "25");
+    }
+}
+
+// Fail points exist in debug builds only.
+#[cfg(debug_assertions)]
+#[test]
+fn a_replay_that_stops_halfway_commits_each_record_once() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init(&mock, d, &["--format", "parquet", "--streams", "users"]);
+    // users as a snapshot, whose current view keeps every row of the last run.
+    let config = d.join("apisip.toml");
+    let text = std::fs::read_to_string(&config).unwrap().replacen(
+        "incremental = { cursor = \"updated_at\", param = \"updated_since\" }\n",
+        "",
+        1,
+    );
+    let no_cast = text.replace("name = \"users\"\n", "name = \"users\"\ncast = \"none\"\n");
+    std::fs::write(&config, &no_cast).unwrap();
+    apisip(d).arg("run").assert().success();
+    assert_eq!(files(&d.join("data/users/_quarantine"), "jsonl").len(), 1);
+
+    std::fs::write(&config, &text).unwrap();
+    apisip(d)
+        .arg("replay")
+        .env("APISIP_FAIL_POINT", "replay_after_move")
+        .assert()
+        .failure();
+    assert_eq!(
+        files(&d.join("data/users/_quarantine"), "jsonl").len(),
+        1,
+        "the quarantine file outlives a replay that stopped"
+    );
+    let out = stdout(&apisip(d).arg("replay").assert().success());
+    assert!(out.contains("1 record(s) moved into the data"), "{out}");
+    assert!(files(&d.join("data/users/_quarantine"), "jsonl").is_empty());
+
+    let replayed: Vec<PathBuf> = files(&d.join("data/users"), "parquet")
+        .into_iter()
+        .filter(|f| f.to_string_lossy().contains("replay-"))
+        .collect();
+    assert_eq!(replayed.len(), 1, "{replayed:?}");
+    if let Some(n) = duckdb(d, "select count(*) from users_current") {
+        assert_eq!(n, "25");
+        assert_eq!(
+            duckdb(d, "select count(*) from users_current where id = 13").unwrap(),
+            "1"
+        );
     }
 }
 
