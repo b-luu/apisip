@@ -136,6 +136,8 @@ pub enum SchemaSource {
 pub struct RecordSchema {
     pub fields: Vec<(String, Shape)>,
     pub source: SchemaSource,
+    /// Whether `conform` applies lossless casts (see `config::Cast`).
+    pub cast: bool,
 }
 
 impl RecordSchema {
@@ -145,6 +147,7 @@ impl RecordSchema {
             Shape::Struct(fields) => Some(RecordSchema {
                 fields,
                 source: SchemaSource::Spec,
+                cast: true,
             }),
             _ => None,
         }
@@ -184,6 +187,7 @@ impl RecordSchema {
         RecordSchema {
             fields: fields.into_iter().map(|(n, s)| (n, finalize(s))).collect(),
             source: SchemaSource::Inferred,
+            cast: true,
         }
     }
 
@@ -210,6 +214,7 @@ impl RecordSchema {
     pub fn conform(&self, record: &Value) -> Conformed {
         let mut ctx = Ctx {
             lenient: self.source == SchemaSource::Inferred,
+            cast: self.cast,
             ..Ctx::default()
         };
         let record = wrap(record.clone());
@@ -245,6 +250,7 @@ impl RecordSchema {
             extra: ctx.extra,
             violations: ctx.violations,
             absent: ctx.absent,
+            casts: ctx.casts,
         }
     }
 }
@@ -265,6 +271,15 @@ pub struct Conformed {
     pub violations: Vec<Violation>,
     /// Declared top-level fields absent from the record.
     pub absent: Vec<String>,
+    /// Values converted to the declared type without loss.
+    pub casts: Vec<Cast>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cast {
+    pub path: String,
+    pub from: &'static str,
+    pub to: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -289,6 +304,8 @@ impl std::fmt::Display for Violation {
 #[derive(Default)]
 struct Ctx {
     lenient: bool,
+    cast: bool,
+    casts: Vec<Cast>,
     extra: Map<String, Value>,
     violations: Vec<Violation>,
     absent: Vec<String>,
@@ -298,8 +315,38 @@ fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
     if v.is_null() {
         return Value::Null;
     }
+    // Largest integer an f64 holds exactly.
+    const EXACT: u64 = 1 << 53;
+    let mut cast_from = None;
     let ok = match (shape, v) {
         (Shape::Json, v) => Some(Value::String(v.to_string())),
+        // Lossless casts: only when the value reads back the same.
+        (Shape::Int, Value::String(s)) if ctx.cast => {
+            cast_from = Some("string");
+            s.parse::<i64>()
+                .ok()
+                .filter(|n| n.to_string() == *s)
+                .map(Value::from)
+        }
+        (Shape::Float, Value::String(s)) if ctx.cast => {
+            cast_from = Some("string");
+            s.parse::<f64>()
+                .ok()
+                .filter(|f| f.is_finite())
+                .map(Value::from)
+        }
+        (Shape::Bool, Value::String(s)) if ctx.cast => {
+            cast_from = Some("string");
+            match s.as_str() {
+                "true" => Some(Value::Bool(true)),
+                "false" => Some(Value::Bool(false)),
+                _ => None,
+            }
+        }
+        (Shape::Str, Value::Number(_) | Value::Bool(_)) if ctx.cast => {
+            cast_from = Some(if v.is_number() { "number" } else { "boolean" });
+            Some(Value::String(v.to_string()))
+        }
         (Shape::Int, Value::Number(n)) => n
             .as_i64()
             .or_else(|| {
@@ -308,7 +355,12 @@ fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
                     .map(|f| f as i64)
             })
             .map(Value::from),
-        (Shape::Float, Value::Number(n)) => n.as_f64().map(Value::from),
+        // An integer too large for a double would come out rounded.
+        (Shape::Float, Value::Number(n)) => match (n.as_i64(), n.as_u64()) {
+            (Some(i), _) if i.unsigned_abs() > EXACT => None,
+            (None, Some(u)) if u > EXACT => None,
+            _ => n.as_f64().map(Value::from),
+        },
         (Shape::Bool, Value::Bool(_)) => Some(v.clone()),
         (Shape::Str, Value::String(_)) => Some(v.clone()),
         (Shape::Str, other) if ctx.lenient => Some(Value::String(match other {
@@ -347,6 +399,15 @@ fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
         )),
         _ => None,
     };
+    if ok.is_some()
+        && let Some(from) = cast_from
+    {
+        ctx.casts.push(Cast {
+            path: path.to_string(),
+            from,
+            to: shape.label(),
+        });
+    }
     ok.unwrap_or_else(|| {
         ctx.violations.push(Violation {
             path: path.to_string(),
@@ -444,6 +505,9 @@ pub struct Drift {
     /// Declared top-level fields that no record of the run carried.
     #[serde(default)]
     pub missing: Vec<String>,
+    /// Values converted without loss, by `field: from -> to`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub casts: BTreeMap<String, u64>,
     #[serde(skip)]
     seen: BTreeSet<String>,
     #[serde(skip)]
@@ -493,6 +557,10 @@ impl Drift {
                 });
             e.count += 1;
         }
+        for cast in &c.casts {
+            let key = format!("{}: {} -> {}", generic_path(&cast.path), cast.from, cast.to);
+            *self.casts.entry(key).or_default() += 1;
+        }
         for name in &self.declared {
             if !c.absent.contains(name) {
                 self.seen.insert(name.clone());
@@ -513,7 +581,10 @@ impl Drift {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.undeclared.is_empty() && self.mistyped.is_empty() && self.missing.is_empty()
+        self.undeclared.is_empty()
+            && self.mistyped.is_empty()
+            && self.missing.is_empty()
+            && self.casts.is_empty()
     }
 
     pub fn summary(&self) -> Vec<String> {
@@ -535,6 +606,9 @@ impl Drift {
         }
         for p in &self.missing {
             out.push(format!("declared field {p} never present"));
+        }
+        for (c, n) in &self.casts {
+            out.push(format!("{c}, cast without loss ({n} records)"));
         }
         out
     }
@@ -606,7 +680,7 @@ mod tests {
         let extra: Value = serde_json::from_str(c.row[EXTRA].as_str().unwrap()).unwrap();
         assert_eq!(extra, json!({"nickname": "ada", "address.zip": "75001"}));
 
-        let c = user_schema().conform(&json!({"id": "123", "tags": ["a", 2]}));
+        let c = user_schema().conform(&json!({"id": "12x", "tags": ["a", {"k": 1}]}));
         let paths: Vec<_> = c.violations.iter().map(|v| v.path.as_str()).collect();
         assert_eq!(paths, vec!["id", "tags[1]"]);
     }
@@ -636,12 +710,15 @@ mod tests {
     fn drift_aggregates() {
         let schema = user_schema();
         let mut d = Drift::new(&schema);
-        for r in [json!({"id": 1, "x": 1}), json!({"id": "2", "x": 2})] {
+        for r in [json!({"id": 1, "x": 1}), json!({"id": "two", "x": 2})] {
             d.observe(&schema.conform(&r));
         }
         d.finish(2);
         assert_eq!(d.undeclared["x"].count, 2);
         assert_eq!(d.mistyped["id"].count, 1);
+        d.observe(&schema.conform(&json!({"id": "3", "score": "1.5"})));
+        assert_eq!(d.casts["id: string -> integer"], 1);
+        assert_eq!(d.casts["score: string -> number"], 1);
         assert!(d.missing.contains(&"name".to_string()) && !d.missing.contains(&"id".to_string()));
     }
 
@@ -655,5 +732,50 @@ mod tests {
         let back = RecordSchema::from_file(&inferred.to_file()).unwrap();
         assert_eq!(back.fields, inferred.fields);
         assert_eq!(back.source, SchemaSource::Inferred);
+    }
+
+    #[test]
+    fn only_casts_that_read_back_the_same_apply() {
+        let schema = user_schema();
+        let row = |r: Value| {
+            let c = schema.conform(&r);
+            (c.row, c.violations.len(), c.casts.len())
+        };
+        let (r, bad, casts) = row(json!({"id": "123", "score": "2.5", "active": "true"}));
+        assert_eq!((bad, casts), (0, 3));
+        assert_eq!(
+            (&r["id"], &r["score"], &r["active"]),
+            (&json!(123), &json!(2.5), &json!(true))
+        );
+        let (r, bad, casts) = row(json!({"name": 42, "role": false}));
+        assert_eq!((bad, casts), (0, 2));
+        assert_eq!((&r["name"], &r["role"]), (&json!("42"), &json!("false")));
+
+        // Each of these would change the value: quarantined, not cast.
+        for r in [
+            json!({"id": "007"}),
+            json!({"id": "1.0"}),
+            json!({"id": " 1"}),
+            json!({"score": "NaN"}),
+            json!({"score": "1e999"}),
+            json!({"score": 9007199254740993u64}),
+            json!({"active": "yes"}),
+            json!({"updated_at": 1767225600}),
+        ] {
+            assert_eq!(row(r.clone()).1, 1, "{r}");
+        }
+        assert_eq!(
+            row(json!({"score": 9007199254740992u64})).1,
+            0,
+            "2^53 is exact"
+        );
+
+        let strict = RecordSchema {
+            cast: false,
+            ..user_schema()
+        };
+        let c = strict.conform(&json!({"id": "123", "name": 42}));
+        assert_eq!(c.violations.len(), 2);
+        assert!(c.casts.is_empty());
     }
 }

@@ -240,6 +240,7 @@ fn detect_stream(spec: &Spec, op: &Operation) -> Result<DetectedStream, String> 
             params,
             pagination,
             incremental,
+            cast: Default::default(),
         },
         method: op.method,
         record_schema,

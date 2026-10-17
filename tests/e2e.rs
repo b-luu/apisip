@@ -262,6 +262,12 @@ fn parquet_types_follow_the_spec_and_bad_records_are_quarantined() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     init(&mock, d, &["--format", "parquet", "--streams", "users"]);
+    // User 13's age is the string "41": without casts, it is quarantined.
+    let config = d.join("apisip.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    let no_cast = text.replace("name = \"users\"\n", "name = \"users\"\ncast = \"none\"\n");
+    assert_ne!(no_cast, text);
+    std::fs::write(&config, &no_cast).unwrap();
     let run = apisip(d).arg("run").assert().success();
     assert!(stdout(&run).contains("1 quarantined"), "{}", stdout(&run));
     assert_eq!(files(&d.join("data/users"), "parquet").len(), 1);
@@ -296,6 +302,22 @@ fn parquet_types_follow_the_spec_and_bad_records_are_quarantined() {
         .stdout(predicate::str::contains(
             "FAILED: a record does not match the spec",
         ));
+
+    // With the default lossless casts, "41" becomes 41, and --strict accepts it.
+    std::fs::write(&config, &text).unwrap();
+    let run = apisip(d)
+        .args(["run", "--full-refresh", "--strict"])
+        .assert()
+        .success();
+    let out = stdout(&run);
+    assert!(!out.contains("quarantined"), "{out}");
+    assert!(
+        out.contains("age: string -> integer, cast without loss (1 records)"),
+        "{out}"
+    );
+    if let Some(age) = duckdb(d, "select age from users_current where id = 13") {
+        assert_eq!(age, "41");
+    }
 }
 
 #[test]
@@ -441,7 +463,7 @@ fn a_stray_cursor_value_never_moves_the_watermark() {
         if format == "jsonl" {
             assert!(manifest.contains("do not move the watermark"), "{manifest}");
         } else {
-            assert!(manifest.contains("\"quarantined\": 2"), "{manifest}");
+            assert!(manifest.contains("\"quarantined\": 1"), "{manifest}");
         }
 
         // A later change is still picked up.

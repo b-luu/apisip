@@ -7,7 +7,7 @@ pub mod update;
 use anyhow::{Result, bail};
 use url::Url;
 
-use crate::config::{Config, Pagination, StreamConfig, interpolate};
+use crate::config::{Cast, Config, Pagination, StreamConfig, interpolate};
 use crate::detect::stream_record_schema;
 use crate::http::ApiClient;
 use crate::schema::{RecordSchema, SOURCE_KEY};
@@ -50,9 +50,10 @@ pub fn load_schema(
     spec: Option<&Spec>,
     s: &StreamConfig,
 ) -> Result<Option<RecordSchema>> {
+    let cast = s.cast == Cast::Lossless;
     if let Some(v) = ws.read_schema(&s.name)? {
         return match RecordSchema::from_file(&v) {
-            Some(schema) => Ok(Some(schema)),
+            Some(schema) => Ok(Some(RecordSchema { cast, ..schema })),
             None => bail!(
                 "schemas/{}.json has no `properties`: it must describe one record as an object",
                 s.name
@@ -61,7 +62,8 @@ pub fn load_schema(
     }
     let schema = spec
         .and_then(|sp| stream_record_schema(sp, s))
-        .and_then(|i| RecordSchema::from_spec(&i));
+        .and_then(|i| RecordSchema::from_spec(&i))
+        .map(|schema| RecordSchema { cast, ..schema });
     if schema.is_some() {
         eprintln!(
             "warning: schemas/{}.json is missing, so the spec's schema is used; `apisip update` writes the file",

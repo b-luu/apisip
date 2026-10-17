@@ -13,7 +13,7 @@ use futures::{StreamExt, TryStreamExt};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use crate::config::{Config, Format, Mode, StreamConfig};
+use crate::config::{Cast, Config, Format, Mode, StreamConfig};
 use crate::http::{self, ApiClient};
 use crate::incremental::{
     Boundary, BoundaryTracker, CursorValue, EarlyStop, MAX_BOUNDARY, Range, field,
@@ -257,7 +257,10 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
     let snapshot = mode == Mode::FullRefresh;
     let dir = ctx.layout.data_dir(name, snapshot);
 
-    let mut schema = load_schema(&ctx.ws, ctx.spec.as_ref(), s)?;
+    // JSONL keeps records as received, so nothing is cast there.
+    let cast = format == Format::Parquet && s.cast == Cast::Lossless;
+    let mut schema =
+        load_schema(&ctx.ws, ctx.spec.as_ref(), s)?.map(|sc| RecordSchema { cast, ..sc });
     let mut drift = schema.as_ref().map(Drift::new);
     let mut writer = match format {
         Format::Jsonl => Some(DataWriter::Jsonl(Box::new(JsonlWriter::new(
@@ -300,7 +303,10 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
         }
         if schema.is_none() && format == Format::Parquet && !records.is_empty() {
             // Written once: later runs type their columns the same way.
-            let inferred = RecordSchema::infer(&records);
+            let inferred = RecordSchema {
+                cast,
+                ..RecordSchema::infer(&records)
+            };
             ctx.ws.write_schema(name, &inferred.to_file())?;
             drift = Some(Drift::new(&inferred));
             schema = Some(inferred);

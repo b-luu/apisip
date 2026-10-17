@@ -228,6 +228,23 @@ pub struct StreamConfig {
     pub pagination: Option<Pagination>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub incremental: Option<Incremental>,
+    /// What to do with a value of the wrong JSON type, in Parquet output.
+    #[serde(default, skip_serializing_if = "is_lossless")]
+    pub cast: Cast,
+}
+
+/// `lossless` converts a value whose conversion reads back the same, such
+/// as `"42"` for an integer column; `none` quarantines the record instead.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Cast {
+    #[default]
+    Lossless,
+    None,
+}
+
+fn is_lossless(c: &Cast) -> bool {
+    *c == Cast::Lossless
 }
 
 fn yes() -> bool {
