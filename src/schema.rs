@@ -330,9 +330,15 @@ fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
         }
         (Shape::Float, Value::String(s)) if ctx.cast => {
             cast_from = Some("string");
+            // Trailing zeros aside, the double must print back the same
+            // digits: "12345678901234567890" would come out rounded.
+            let digits = match s.contains('.') && !s.contains(['e', 'E']) {
+                true => s.trim_end_matches('0').trim_end_matches('.'),
+                false => s.as_str(),
+            };
             s.parse::<f64>()
                 .ok()
-                .filter(|f| f.is_finite())
+                .filter(|f| f.is_finite() && f.to_string() == digits)
                 .map(Value::from)
         }
         (Shape::Bool, Value::String(s)) if ctx.cast => {
@@ -758,6 +764,8 @@ mod tests {
             json!({"id": " 1"}),
             json!({"score": "NaN"}),
             json!({"score": "1e999"}),
+            json!({"score": "12345678901234567890"}),
+            json!({"score": "0.30000000000000000001"}),
             json!({"score": 9007199254740993u64}),
             json!({"active": "yes"}),
             json!({"updated_at": 1767225600}),
@@ -769,6 +777,9 @@ mod tests {
             0,
             "2^53 is exact"
         );
+        for score in ["2.50", "-0.125", "3"] {
+            assert_eq!(row(json!({"score": score})).1, 0, "{score}");
+        }
 
         let strict = RecordSchema {
             cast: false,
