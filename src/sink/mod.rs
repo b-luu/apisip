@@ -107,6 +107,13 @@ impl Store {
         Ok(self.inner.list(Some(&prefix)).try_collect().await?)
     }
 
+    pub async fn delete(&self, path: &str) -> Result<()> {
+        self.inner
+            .delete(&Path::from(path))
+            .await
+            .with_context(|| format!("deleting {path} from {}", self.url))
+    }
+
     pub async fn delete_prefix(&self, prefix: &str) -> Result<()> {
         for meta in self.list(prefix).await? {
             self.inner.delete(&meta.location).await?;

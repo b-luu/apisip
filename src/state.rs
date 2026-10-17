@@ -194,6 +194,23 @@ pub struct Manifest {
     pub full_refresh: bool,
     pub format: String,
     pub streams: BTreeMap<String, StreamReport>,
+    #[serde(default, skip_serializing_if = "RunKind::is_fetch")]
+    pub kind: RunKind,
+}
+
+/// A run fetches from the API; a replay re-reads quarantined records.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunKind {
+    #[default]
+    Fetch,
+    Replay,
+}
+
+impl RunKind {
+    fn is_fetch(&self) -> bool {
+        *self == RunKind::Fetch
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -22,8 +22,8 @@ use crate::schema::{Drift, EXTRACTED_AT, RUN_ID, RecordSchema, wrap};
 use crate::sink::{JsonlWriter, Layout, ParquetWriter, StagedFile, Store};
 use crate::spec::Spec;
 use crate::state::{
-    CursorRange, Manifest, Overlap, RunStatus, State, StreamReport, StreamStatus, foreign_owner,
-    sort_signature,
+    CursorRange, Manifest, Overlap, RunKind, RunStatus, State, StreamReport, StreamStatus,
+    foreign_owner, sort_signature,
 };
 use crate::workspace::Workspace;
 
@@ -49,7 +49,7 @@ struct Ctx {
 
 /// Stops before anything is written when another folder owns the
 /// destination; claims it for this folder when nobody does.
-async fn claim(store: &Store, folder_id: &str) -> Result<State> {
+pub(super) async fn claim(store: &Store, folder_id: &str) -> Result<State> {
     let state = State::load(store).await?;
     let state = match &state.owner {
         Some(_) => state,
@@ -99,6 +99,7 @@ pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
         full_refresh: options.full_refresh,
         format: config.destination.format.extension().into(),
         streams: BTreeMap::new(),
+        kind: RunKind::Fetch,
     });
     manifest.lock().await.save(&store).await?;
     eprintln!(
@@ -153,21 +154,25 @@ pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
     let state = ctx.state.lock().await;
     let views = crate::views::write_all(&store, &ctx.config, &state).await;
     print_summary(&m, &store);
+    print_views(views, &ctx.config, &store);
+    Ok(failed == 0)
+}
+
+pub(super) fn print_views(views: Result<Vec<String>>, config: &Config, store: &Store) {
     match views {
         Ok(v) if !v.is_empty() => println!(
             "Views: {}/{}/all.sql (duckdb -c \".read {}/all.sql\")",
-            ctx.config
+            config
                 .destination
                 .url
                 .trim_start_matches("file://")
                 .trim_end_matches('/'),
             crate::views::VIEWS_DIR,
-            view_dir_hint(&store)
+            view_dir_hint(store)
         ),
         Ok(_) => {}
         Err(e) => eprintln!("warning: could not write the views: {e:#}"),
     }
-    Ok(failed == 0)
 }
 
 async fn run_stream(ctx: &Ctx, s: &StreamConfig) -> StreamReport {
@@ -524,7 +529,7 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
 
 /// One run at a time per folder: a second run would delete the first one's
 /// staging files and overwrite its watermarks.
-fn lock(ws: &Workspace) -> Result<std::fs::File> {
+pub(super) fn lock(ws: &Workspace) -> Result<std::fs::File> {
     let dir = ws.meta_dir();
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("run.lock");
@@ -551,7 +556,7 @@ fn lock(ws: &Workspace) -> Result<std::fs::File> {
 }
 
 /// Debug builds fail on purpose at a named point, for the crash tests.
-fn fail_point(name: &str) -> Result<()> {
+pub(super) fn fail_point(name: &str) -> Result<()> {
     if cfg!(debug_assertions) && std::env::var("APISIP_FAIL_POINT").as_deref() == Ok(name) {
         bail!("injected failure at {name}");
     }

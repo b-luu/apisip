@@ -37,6 +37,8 @@ enum Command {
     Run(RunArgs),
     /// Diff a new version of the spec against the config, and merge it.
     Update(UpdateArgs),
+    /// Conform quarantined records again with the current schema and move the ones that pass into the data.
+    Replay(ReplayArgs),
 }
 
 #[derive(Args, Debug)]
@@ -86,6 +88,13 @@ struct RunArgs {
     /// Fail on records that do not match the spec instead of quarantining them.
     #[arg(long)]
     strict: bool,
+}
+
+#[derive(Args, Debug)]
+struct ReplayArgs {
+    /// Only replay these streams (repeatable or comma-separated).
+    #[arg(long, value_delimiter = ',')]
+    stream: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -206,6 +215,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     },
                 )
                 .await?,
+            )),
+            Command::Replay(a) => Ok(exit(
+                cmd::replay::run(&ws, cmd::replay::ReplayOptions { streams: a.stream }).await?,
             )),
         }
     })

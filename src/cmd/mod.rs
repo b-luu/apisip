@@ -1,6 +1,7 @@
 pub mod check;
 pub mod init;
 pub mod list;
+pub mod replay;
 pub mod run;
 pub mod schema_merge;
 pub mod update;

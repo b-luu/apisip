@@ -339,6 +339,94 @@ fn parquet_types_follow_the_spec_and_bad_records_are_quarantined() {
 }
 
 #[test]
+fn replay_moves_records_that_now_pass_into_the_data() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init(&mock, d, &["--format", "parquet", "--streams", "users"]);
+    let config = d.join("apisip.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    let no_cast = text.replace("name = \"users\"\n", "name = \"users\"\ncast = \"none\"\n");
+    std::fs::write(&config, &no_cast).unwrap();
+    apisip(d).arg("run").assert().success();
+    let first = files(&d.join("data/users/_quarantine"), "jsonl");
+    assert_eq!(first.len(), 1);
+    let entry: Value =
+        serde_json::from_str(std::fs::read_to_string(&first[0]).unwrap().trim()).unwrap();
+    let state = std::fs::read_to_string(d.join("data/_apisip/state.json")).unwrap();
+
+    // Still cast = "none": the record fails again and moves to a new file.
+    let replay = apisip(d).arg("replay").assert().success();
+    let out = stdout(&replay);
+    assert!(
+        out.contains("0 record(s) moved into the data, 1 still quarantined"),
+        "{out}"
+    );
+    let second = files(&d.join("data/users/_quarantine"), "jsonl");
+    assert_eq!(second.len(), 1);
+    assert_ne!(second, first);
+    let again: Value =
+        serde_json::from_str(std::fs::read_to_string(&second[0]).unwrap().trim()).unwrap();
+    for k in ["record", "_apisip_run_id", "_apisip_extracted_at"] {
+        assert_eq!(again[k], entry[k], "{k}");
+    }
+
+    // With the default lossless cast, "41" passes.
+    std::fs::write(&config, &text).unwrap();
+    let replay = apisip(d).arg("replay").assert().success();
+    let out = stdout(&replay);
+    assert!(
+        out.contains("1 record(s) moved into the data, 0 still quarantined"),
+        "{out}"
+    );
+    assert!(files(&d.join("data/users/_quarantine"), "jsonl").is_empty());
+    assert_eq!(
+        std::fs::read_to_string(d.join("data/_apisip/state.json")).unwrap(),
+        state,
+        "replay never moves a watermark"
+    );
+    let manifests = files(&d.join("data/_apisip/runs"), "json");
+    assert!(
+        manifests
+            .iter()
+            .filter(|m| std::fs::read_to_string(m)
+                .unwrap()
+                .contains("\"kind\": \"replay\""))
+            .count()
+            == 2,
+        "{manifests:?}"
+    );
+    apisip(d)
+        .arg("replay")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Nothing to replay"));
+
+    if let Some(row) = duckdb(
+        d,
+        "select age || ' ' || _apisip_run_id || ' ' || strftime(_apisip_extracted_at, '%Y-%m-%dT%H:%M:%S.%f') \
+         from users_current where id = 13",
+    ) {
+        let extracted = entry["_apisip_extracted_at"].as_str().unwrap();
+        assert_eq!(
+            row,
+            format!(
+                "41 {} {}",
+                entry["_apisip_run_id"].as_str().unwrap(),
+                &extracted[..extracted.len() - 1]
+            ),
+            "the replayed row keeps the run it was fetched in"
+        );
+        assert_eq!(
+            duckdb(d, "select count(*) from users_current").unwrap(),
+            "25"
+        );
+    } else {
+        eprintln!("duckdb not found: skipping the view checks");
+    }
+}
+
+#[test]
 fn check_explains_a_missing_token() {
     let mock = Mock::start();
     let dir = tempfile::tempdir().unwrap();
