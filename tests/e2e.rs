@@ -427,6 +427,80 @@ fn replay_moves_records_that_now_pass_into_the_data() {
 }
 
 #[test]
+fn inspect_reads_the_destination_without_the_api() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init(
+        &mock,
+        d,
+        &["--format", "parquet", "--streams", "users,plans"],
+    );
+    apisip(d)
+        .arg("inspect")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Nothing written yet to file://data",
+        ));
+    let config = d.join("apisip.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        text.replace("name = \"users\"\n", "name = \"users\"\ncast = \"none\"\n"),
+    )
+    .unwrap();
+    apisip(d).arg("run").assert().success();
+    // The second run writes nothing new: the table shows it, the quarantine stays.
+    apisip(d).arg("run").assert().success();
+    let state: Value =
+        serde_json::from_str(&std::fs::read_to_string(d.join("data/_apisip/state.json")).unwrap())
+            .unwrap();
+    let watermark = state["streams"]["users"]["watermark"].as_str().unwrap();
+    drop(mock);
+
+    let out = stdout(&apisip(d).arg("inspect").assert().success());
+    let row = |name: &str| {
+        out.lines()
+            .find(|l| l.starts_with(&format!("{name} ")))
+            .unwrap_or_else(|| panic!("no {name} row: {out}"))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let users = row("users");
+    assert!(
+        users.starts_with(&format!("users filter {watermark} ")),
+        "{users}"
+    );
+    assert!(
+        users.ends_with(" ok 0 1 0"),
+        "records, quarantined, drift: {users}"
+    );
+    assert!(row("plans").ends_with(" ok 6 0 0"), "{out}");
+    assert_eq!(row("orders"), "orders early stop (disabled) - never - 0 -");
+
+    let out = stdout(&apisip(d).args(["inspect", "users"]).assert().success());
+    for expected in [
+        "Cursor:     updated_at".to_string(),
+        format!("Watermark:  {watermark}"),
+        "Schema:     schemas/users.json (spec)".into(),
+        "24 records, 1 quarantined".into(),
+        "0 records, 0 quarantined, 1 unchanged".into(),
+        "data/users/_quarantine/".into(),
+        "(1 records)".into(),
+        "data/_apisip/views/users_current.sql".into(),
+    ] {
+        assert!(out.contains(&expected), "missing {expected:?}:\n{out}");
+    }
+    apisip(d)
+        .args(["inspect", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no stream `nope`"));
+}
+
+#[test]
 fn check_explains_a_missing_token() {
     let mock = Mock::start();
     let dir = tempfile::tempdir().unwrap();

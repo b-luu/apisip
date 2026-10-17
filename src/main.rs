@@ -39,6 +39,8 @@ enum Command {
     Update(UpdateArgs),
     /// Conform quarantined records again with the current schema and move the ones that pass into the data.
     Replay(ReplayArgs),
+    /// Show what the destination holds for each stream: watermarks, last runs, quarantine. No API calls.
+    Inspect(InspectArgs),
 }
 
 #[derive(Args, Debug)]
@@ -88,6 +90,12 @@ struct RunArgs {
     /// Fail on records that do not match the spec instead of quarantining them.
     #[arg(long)]
     strict: bool,
+}
+
+#[derive(Args, Debug)]
+struct InspectArgs {
+    /// Show one stream in full.
+    stream: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -216,6 +224,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 )
                 .await?,
             )),
+            Command::Inspect(a) => cmd::inspect::run(&ws, a.stream)
+                .await
+                .map(|_| ExitCode::SUCCESS),
             Command::Replay(a) => Ok(exit(
                 cmd::replay::run(&ws, cmd::replay::ReplayOptions { streams: a.stream }).await?,
             )),

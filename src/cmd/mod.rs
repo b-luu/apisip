@@ -1,5 +1,6 @@
 pub mod check;
 pub mod init;
+pub mod inspect;
 pub mod list;
 pub mod replay;
 pub mod run;
@@ -13,6 +14,7 @@ use crate::config::{Cast, Config, Pagination, StreamConfig, interpolate};
 use crate::detect::stream_record_schema;
 use crate::http::ApiClient;
 use crate::schema::{RecordSchema, SOURCE_KEY};
+use crate::sink::Store;
 use crate::spec::Spec;
 use crate::workspace::Workspace;
 
@@ -42,6 +44,30 @@ pub fn select_streams(config: &Config, names: &[String]) -> Result<Vec<StreamCon
             ),
         })
         .collect()
+}
+
+/// Where a stream's schema comes from: `spec`, `inferred`, `edited` (the
+/// file differs from what apisip wrote), or `?` when the spec is unreadable.
+pub fn schema_label(ws: &Workspace, spec: Option<&Spec>, s: &StreamConfig) -> &'static str {
+    match ws.read_schema(&s.name).ok().flatten() {
+        Some(_) if ws.schema_edited(&s.name).unwrap_or(false) => "edited",
+        Some(v) if v.get(SOURCE_KEY).and_then(|v| v.as_str()) == Some("inferred") => "inferred",
+        Some(_) => "spec",
+        None => match spec {
+            Some(spec) if stream_record_schema(spec, s).is_some() => "spec",
+            Some(_) => "inferred",
+            None => "?",
+        },
+    }
+}
+
+/// The destination, or `None` when it is a local folder nothing was written to yet.
+pub fn open_existing_store(ws: &Workspace, config: &Config) -> Option<Store> {
+    let url = interpolate(&config.destination.url).ok()?;
+    if !url.starts_with("s3://") && !Store::local_dir(&url, &ws.dir).ok()?.exists() {
+        return None;
+    }
+    Store::open(&config.destination, &ws.dir).ok()
 }
 
 /// A stream's record schema: `schemas/<stream>.json`, or the spec's when

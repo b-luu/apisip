@@ -376,15 +376,6 @@ fn plan_schemas(
     Ok(out)
 }
 
-/// The destination, when there is one to read: a local folder is not created.
-fn open_store(ws: &Workspace, config: &Config) -> Option<Store> {
-    let url = crate::config::interpolate(&config.destination.url).ok()?;
-    if !url.starts_with("s3://") && !Store::local_dir(&url, &ws.dir).ok()?.exists() {
-        return None;
-    }
-    Store::open(&config.destination, &ws.dir).ok()
-}
-
 /// Top-level fields undeclared in each of the last runs of a stream (up to
 /// `RECENT_RUNS`), with the latest example.
 async fn recent_undeclared(store: &Store) -> BTreeMap<String, Vec<(String, Value)>> {
@@ -462,7 +453,7 @@ pub async fn run(ws: &Workspace, o: UpdateOptions) -> Result<bool> {
     let theirs = baseline(&det, &mine.source);
     let d = diff(&base, &theirs, &mine);
 
-    let store = open_store(ws, &mine);
+    let store = super::open_existing_store(ws, &mine);
     let undeclared = match &store {
         Some(s) => recent_undeclared(s).await,
         None => BTreeMap::new(),
