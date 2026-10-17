@@ -39,6 +39,10 @@ pub struct StreamState {
     /// Cursor range of the last committed run, to flag overlaps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_range: Option<CursorRange>,
+    /// Fingerprints of the records written at the watermark: the next run
+    /// asks from the watermark inclusive and skips them when unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boundary: Vec<String>,
     /// Set when a run saw the cursor go up under a descending sort. Holds the
     /// sort it was seen with: changing the sort in apisip.toml clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,6 +163,10 @@ impl State {
 }
 
 const MAX_STATE_TRIES: u32 = 10;
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
 static NO_CONDITIONAL_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// What one run did, written to `_apisip/runs/<run_id>.json`.
@@ -201,6 +209,9 @@ pub struct StreamReport {
     pub observed: Option<CursorRange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlap: Option<Overlap>,
+    /// Records at the watermark skipped because an earlier run wrote them unchanged.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unchanged: u64,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unreliable_sort: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

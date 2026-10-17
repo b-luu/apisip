@@ -11,7 +11,8 @@
 //!   - `/events`: cursor, claims to sort by `-updated_at` but does not;
 //!   - `/plans`: next URL, no cursor (full refresh).
 //! - Not in the spec: `POST /_admin/touch/{resource}/{id}` updates a record,
-//!   `POST /_admin/add/users` adds one, `POST /_admin/stray/{resource}/{id}`
+//!   `POST /_admin/add/users` adds one (both take `?at=<updated_at>` to reuse
+//!   a timestamp instead of advancing the clock), `POST /_admin/stray/{resource}/{id}`
 //!   sets a record's `updated_at` to `"N/A"`, `POST /_admin/clear/{resource}`
 //!   empties a list, `GET /_admin/requests` counts calls.
 
@@ -280,9 +281,13 @@ async fn projects() -> Response {
     Json(json!([{"id": 1, "title": "alpha"}, {"id": 2, "title": "beta"}])).into_response()
 }
 
-async fn touch(State(app): State<App>, Path((resource, id)): Path<(String, i64)>) -> Response {
+async fn touch(
+    State(app): State<App>,
+    Path((resource, id)): Path<(String, i64)>,
+    Query(q): Query<BTreeMap<String, String>>,
+) -> Response {
     let mut d = app.data.lock().unwrap();
-    let now = d.tick();
+    let now = q.get("at").cloned().unwrap_or_else(|| d.tick());
     let list = match resource.as_str() {
         "users" => &mut d.users,
         "orders" => &mut d.orders,
@@ -335,10 +340,10 @@ async fn clear(State(app): State<App>, Path(resource): Path<String>) -> Response
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn add_user(State(app): State<App>) -> Response {
+async fn add_user(State(app): State<App>, Query(q): Query<BTreeMap<String, String>>) -> Response {
     let mut d = app.data.lock().unwrap();
     let id = d.users.len() as i64 + 1;
-    let now = d.tick();
+    let now = q.get("at").cloned().unwrap_or_else(|| d.tick());
     let u = json!({
         "id": id, "name": format!("user {id}"), "email": format!("user{id}@example.test"),
         "age": 30, "address": {"city": "Lille"}, "updated_at": now,

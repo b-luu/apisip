@@ -461,6 +461,38 @@ fn a_stray_cursor_value_never_moves_the_watermark() {
 }
 
 #[test]
+fn records_already_written_at_the_watermark_are_not_written_again() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init(&mock, d, &["--streams", "users,orders"]);
+    apisip(d).arg("run").assert().success();
+
+    // Nothing changed: the records at the watermark come back, and are skipped.
+    let again = apisip(d).arg("run").assert().success();
+    assert!(stdout(&again).contains("unchanged"), "{}", stdout(&again));
+    assert_eq!(records(d, "users").len(), 25);
+    assert_eq!(records(d, "orders").len(), 30);
+
+    // A change and a new record within the watermark's timestamp are kept.
+    let state: Value =
+        serde_json::from_str(&std::fs::read_to_string(d.join("data/_apisip/state.json")).unwrap())
+            .unwrap();
+    let wm = state["streams"]["users"]["watermark"].as_str().unwrap();
+    mock.post(&format!("/_admin/touch/users/3?at={wm}"));
+    mock.post(&format!("/_admin/add/users?at={wm}"));
+    apisip(d).arg("run").assert().success();
+    let users = records(d, "users");
+    assert_eq!(users.len(), 27, "the edited user 3 and the new user 26");
+    assert!(users.iter().any(|u| u["name"] == "user 3 (edited)"));
+    assert!(users.iter().any(|u| u["id"] == 26));
+
+    // Both runs' records at that timestamp are now known.
+    apisip(d).arg("run").assert().success();
+    assert_eq!(records(d, "users").len(), 27);
+}
+
+#[test]
 fn an_empty_stream_does_not_break_the_views() {
     let mock = Mock::start();
     let dir = tempfile::tempdir().unwrap();

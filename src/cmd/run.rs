@@ -2,7 +2,8 @@
 //! them in order: move into place, advance the watermark, write the manifest,
 //! clean up staging.
 
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
 use std::pin::pin;
 use std::sync::Arc;
 
@@ -15,7 +16,9 @@ use tokio::sync::Mutex;
 use crate::config::{Config, Format, Mode, StreamConfig};
 use crate::detect::stream_record_schema;
 use crate::http::{self, ApiClient};
-use crate::incremental::{CursorValue, EarlyStop, Range, field};
+use crate::incremental::{
+    Boundary, BoundaryTracker, CursorValue, EarlyStop, MAX_BOUNDARY, Range, field,
+};
 use crate::schema::{Drift, EXTRACTED_AT, RUN_ID, RecordSchema, wrap};
 use crate::sink::{JsonlWriter, Layout, ParquetWriter, StagedFile, Store};
 use crate::spec::Spec;
@@ -151,6 +154,7 @@ async fn run_stream(ctx: &Ctx, s: &StreamConfig) -> StreamReport {
         error: None,
         records: 0,
         quarantined: 0,
+        unchanged: 0,
         pages: 0,
         files: Vec::new(),
         requested_from: None,
@@ -248,6 +252,12 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
     };
     let mut quarantine: Option<JsonlWriter> = None;
     let mut range = Range::new(watermark.as_deref());
+    // Snapshots keep every row; incremental runs skip what the last run wrote at the watermark.
+    let boundary = watermark
+        .as_deref()
+        .filter(|_| !snapshot)
+        .and_then(|w| Boundary::new(w, &previous.boundary));
+    let mut tracker = BoundaryTracker::default();
     let mut mistyped_cursors = 0usize;
 
     let mut pages = pin!(http::pages(
@@ -260,10 +270,15 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
         report.pages += 1;
         let extracted = Utc::now();
         let extracted_text = extracted.to_rfc3339_opts(SecondsFormat::Micros, true);
-        let (records, stop) = match &mut early {
+        let (mut records, stop) = match &mut early {
             Some(g) => g.page(records),
             None => (records, false),
         };
+        if let (Some(b), Some(c)) = (&boundary, cursor) {
+            let before = records.len();
+            records.retain(|r| !b.unchanged(r, c));
+            report.unchanged += (before - records.len()) as u64;
+        }
         if schema.is_none() && format == Format::Parquet && !records.is_empty() {
             let inferred = RecordSchema::infer(&records);
             drift = Some(Drift::new(&inferred));
@@ -300,6 +315,7 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
                     mistyped_cursors += 1;
                 } else {
                     range.observe(v);
+                    tracker.observe(&record, v);
                 }
             }
             if !violations.is_empty() && ctx.options.strict {
@@ -415,6 +431,18 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
         (Some(min), Some(max)) => Some(CursorRange { min, max }),
         _ => None,
     };
+    if tracker.overflow && !snapshot {
+        report.warnings.push(format!(
+            "more than {MAX_BOUNDARY} records share the newest `{}` value: the next run writes \
+             them again (the views deduplicate them)",
+            cursor.unwrap_or_default()
+        ));
+    }
+    let written_at_max = observed
+        .as_ref()
+        .filter(|_| !snapshot)
+        .map(|o| tracker.finish(&o.max))
+        .unwrap_or_default();
     let committed_at = Utc::now();
     let mut overlap = None;
     let fresh = State::update(&ctx.store, |state| {
@@ -429,9 +457,24 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
             });
         }
         if let (Some(c), Some(obs)) = (cursor, &observed) {
-            let current = entry.watermark_for(c).map(CursorValue::parse);
-            if current.is_none_or(|w| CursorValue::parse(&obs.max) > w) {
-                entry.watermark = Some(obs.max.clone());
+            let new = CursorValue::parse(&obs.max);
+            match entry
+                .watermark_for(c)
+                .map(|w| new.partial_cmp(&CursorValue::parse(w)))
+            {
+                None | Some(Some(Ordering::Greater)) => {
+                    entry.watermark = Some(obs.max.clone());
+                    entry.boundary = written_at_max.clone();
+                }
+                // Another run committed the same watermark: keep both sets.
+                Some(Some(Ordering::Equal)) => {
+                    let mut all: BTreeSet<String> = entry.boundary.drain(..).collect();
+                    all.extend(written_at_max.iter().cloned());
+                    if all.len() <= MAX_BOUNDARY {
+                        entry.boundary = all.into_iter().collect();
+                    }
+                }
+                Some(_) => {}
             }
             entry.cursor = Some(c.to_string());
         }
@@ -512,6 +555,9 @@ fn print_summary(m: &Manifest, store: &Store) {
                 );
                 if let Some(from) = &r.requested_from {
                     line.push_str(&format!("  since {from}"));
+                }
+                if r.unchanged > 0 {
+                    line.push_str(&format!("  {} unchanged", r.unchanged));
                 }
                 if r.quarantined > 0 {
                     line.push_str(&format!("  {} quarantined", r.quarantined));

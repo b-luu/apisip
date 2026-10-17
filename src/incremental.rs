@@ -1,6 +1,7 @@
 //! Cursor values, watermarks and the early-stop guard.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -155,6 +156,103 @@ impl Range {
 
     pub fn max_raw(&self) -> Option<String> {
         self.chosen().max.as_ref().map(|(_, r)| r.clone())
+    }
+}
+
+/// Most fingerprints kept for one watermark. Past this, none are kept and
+/// the next run writes the boundary records again.
+pub const MAX_BOUNDARY: usize = 10_000;
+
+/// A stable fingerprint of a record as received: FNV-1a over its JSON with
+/// object keys sorted, apisip's own `_apisip_*` fields left out.
+pub fn fingerprint(record: &Value) -> String {
+    fn canonical(v: &Value, top: bool) -> Value {
+        match v {
+            Value::Object(m) => {
+                let mut keys: Vec<&String> = m
+                    .keys()
+                    .filter(|k| !(top && k.starts_with("_apisip_")))
+                    .collect();
+                keys.sort();
+                Value::Object(
+                    keys.into_iter()
+                        .map(|k| (k.clone(), canonical(&m[k], false)))
+                        .collect(),
+                )
+            }
+            Value::Array(a) => Value::Array(a.iter().map(|x| canonical(x, false)).collect()),
+            other => other.clone(),
+        }
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in canonical(record, true).to_string().bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// The records an earlier run wrote at the watermark. The watermark check
+/// is inclusive, so the next run gets them again: unchanged ones are skipped.
+#[derive(Debug)]
+pub struct Boundary {
+    watermark: CursorValue,
+    written: HashSet<String>,
+}
+
+impl Boundary {
+    pub fn new(watermark: &str, fingerprints: &[String]) -> Option<Boundary> {
+        (!fingerprints.is_empty()).then(|| Boundary {
+            watermark: CursorValue::parse(watermark),
+            written: fingerprints.iter().cloned().collect(),
+        })
+    }
+
+    /// Whether this record is at the watermark and was written unchanged.
+    pub fn unchanged(&self, record: &Value, cursor: &str) -> bool {
+        field(record, cursor)
+            .and_then(CursorValue::from_json)
+            .is_some_and(|c| c == self.watermark)
+            && self.written.contains(&fingerprint(record))
+    }
+}
+
+/// Collects the fingerprints of the written records at the highest cursor.
+#[derive(Debug, Default)]
+pub struct BoundaryTracker {
+    max: Option<CursorValue>,
+    fingerprints: Vec<String>,
+    pub overflow: bool,
+}
+
+impl BoundaryTracker {
+    pub fn observe(&mut self, record: &Value, cursor: &Value) {
+        let Some(c) = CursorValue::from_json(cursor) else {
+            return;
+        };
+        match self.max.as_ref().map(|m| c.partial_cmp(m)) {
+            Some(Some(Ordering::Less)) | Some(None) => return,
+            Some(Some(Ordering::Equal)) => {}
+            _ => {
+                self.max = Some(c);
+                self.fingerprints.clear();
+                self.overflow = false;
+            }
+        }
+        if self.fingerprints.len() < MAX_BOUNDARY {
+            self.fingerprints.push(fingerprint(record));
+        } else {
+            self.overflow = true;
+        }
+    }
+
+    /// The fingerprints at `max`, the watermark this run commits. Empty when
+    /// they do not fit, or when `max` is not the value tracked here.
+    pub fn finish(self, max: &str) -> Vec<String> {
+        match self.max {
+            Some(m) if !self.overflow && m == CursorValue::parse(max) => self.fingerprints,
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -323,5 +421,70 @@ mod tests {
         let (kept, stop) = g.page(page);
         assert_eq!((kept.len(), stop), (3, false));
         assert!(!g.unreliable, "text vs time is not a sort violation");
+    }
+
+    #[test]
+    fn a_fingerprint_ignores_key_order_and_apisip_fields() {
+        // Pinned: stored fingerprints must stay valid across releases.
+        assert_eq!(fingerprint(&json!({"b": [2], "a": 1})), "ebd041daaff112f9");
+        assert_eq!(
+            fingerprint(&json!({"a": 1, "b": [2], "_apisip_extracted_at": "now"})),
+            "ebd041daaff112f9"
+        );
+        assert_ne!(
+            fingerprint(&json!({"a": 1, "b": {"_apisip_x": 1}})),
+            fingerprint(&json!({"a": 1, "b": {}})),
+            "only apisip's own top-level fields are left out"
+        );
+    }
+
+    #[test]
+    fn only_unchanged_records_at_the_watermark_are_skipped() {
+        let a = json!({"id": 1, "name": "a", "updated_at": "2026-01-01T00:00:00Z"});
+        let b = Boundary::new("2026-01-01T00:00:00Z", &[fingerprint(&a)]).unwrap();
+        assert!(b.unchanged(&a, "updated_at"));
+        let edited = json!({"id": 1, "name": "a2", "updated_at": "2026-01-01T00:00:00Z"});
+        assert!(!b.unchanged(&edited, "updated_at"));
+        let later = json!({"id": 1, "name": "a", "updated_at": "2026-01-01T00:00:01Z"});
+        assert!(!b.unchanged(&later, "updated_at"));
+        assert!(Boundary::new("2026-01-01T00:00:00Z", &[]).is_none());
+    }
+
+    #[test]
+    fn the_tracker_keeps_the_records_at_the_highest_cursor() {
+        let mut t = BoundaryTracker::default();
+        for r in recs(&["2026-01-02", "2026-01-01", "2026-01-02", "2026-01-03"]) {
+            t.observe(&r, &r["updated_at"]);
+        }
+        let top = recs(&["2026-01-03"]).pop().unwrap();
+        assert_eq!(t.finish("2026-01-03"), vec![fingerprint(&top)]);
+
+        let mut t = BoundaryTracker::default();
+        for r in recs(&["2026-01-03"]) {
+            t.observe(&r, &r["updated_at"]);
+        }
+        assert!(t.finish("2026-01-04").is_empty(), "not the committed max");
+    }
+
+    #[test]
+    fn past_the_cap_no_fingerprint_is_kept() {
+        let mut t = BoundaryTracker::default();
+        for i in 0..=MAX_BOUNDARY {
+            let r = json!({"id": i, "updated_at": "2026-01-01"});
+            t.observe(&r, &r["updated_at"]);
+        }
+        assert!(t.overflow);
+        assert!(t.finish("2026-01-01").is_empty());
+
+        // A higher value starts over.
+        let mut t = BoundaryTracker::default();
+        for i in 0..=MAX_BOUNDARY {
+            let r = json!({"id": i, "updated_at": "2026-01-01"});
+            t.observe(&r, &r["updated_at"]);
+        }
+        let r = json!({"id": 0, "updated_at": "2026-01-02"});
+        t.observe(&r, &r["updated_at"]);
+        assert!(!t.overflow);
+        assert_eq!(t.finish("2026-01-02").len(), 1);
     }
 }

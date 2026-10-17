@@ -160,7 +160,7 @@ primary_key = "id"
     .unwrap();
     assert!(first["_apisip_run_id"].is_string() && first["_apisip_extracted_at"].is_string());
 
-    // Second run sends the watermark; the boundary record comes back (at least once).
+    // Second run sends the watermark; the boundary record comes back unchanged.
     Mock::given(method("GET"))
         .and(path("/users"))
         .and(query_param("updated_since", "2026-01-02T00:00:00Z"))
@@ -186,10 +186,11 @@ primary_key = "id"
         "staging is cleaned up"
     );
 
-    // The retry commits, merging into the existing local part.
+    // The retry commits, merging into the existing local part, and skips the
+    // boundary record it already wrote.
     assert!(run(&ws, RunOptions::default()).await.unwrap());
     assert_eq!(data_files(dir).len(), 1);
-    assert_eq!(lines(&data_files(dir)), 4);
+    assert_eq!(lines(&data_files(dir)), 3);
     let st = state(dir).await;
     assert_eq!(
         st.streams["users"].watermark.as_deref(),
@@ -202,6 +203,7 @@ primary_key = "id"
     .unwrap();
     let r = &m.streams["users"];
     assert_eq!(r.requested_from.as_deref(), Some("2026-01-02T00:00:00Z"));
+    assert_eq!(r.unchanged, 1);
     assert!(r.overlap.is_none(), "an equal boundary is not an overlap");
 
     // A full refresh re-reads old records: the manifest flags the overlap.
