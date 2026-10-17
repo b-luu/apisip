@@ -72,8 +72,9 @@ apisip init http://127.0.0.1:8080/openapi.json
 ```
 
 `init` asks for the base URL (default: the spec's server), where to write data
-(default: this folder), the output format, the auth scheme and the token. Type `mock-token` at the token prompt. It is stored
-in `.env` with mode 600 and never echoed. Then it lists what it found:
+(default: this folder), the output format, the auth scheme and the token. The
+mock API uses a bearer token: pick `bearerAuth` and type `mock-token` at the
+token prompt. It is stored in `.env` with mode 600 and never echoed. Then it lists what it found:
 
 ```text
 4 stream(s) enabled:
@@ -303,8 +304,12 @@ select * exclude (_apisip_rn) from (
 To port it to a warehouse, replace the `read_json` / `read_parquet` call with
 your external table. Replace `select * exclude (...)` with the column list, or
 use `qualify row_number() over (...) = 1` where the engine supports it. For an
-S3 destination, the views point at the `s3://` paths. Load DuckDB's `httpfs`
-and create an S3 secret first.
+S3 destination, the views point at the `s3://` paths. DuckDB reads them through
+its [`httpfs` extension](https://duckdb.org/docs/current/core_extensions/httpfs/overview.html),
+which loads on first use, once you create an S3 secret with your keys,
+region and, for an S3-compatible store, `ENDPOINT` and `URL_STYLE 'path'`. See
+[S3 API support](https://duckdb.org/docs/current/core_extensions/httpfs/s3api.html)
+and the [secrets manager](https://duckdb.org/docs/current/configuration/secrets_manager.html).
 
 ## Types come from the spec
 
@@ -324,7 +329,8 @@ All columns are nullable. Fields the spec does not declare go into one
 
 A record whose value breaks the spec, such as `"41"` where `integer` is
 declared, is never silently cast. It goes to `<stream>/_quarantine/` with the
-reason, and is counted as drift. `run --strict` fails instead. JSONL keeps
+reason, and is counted as drift. `_quarantine/` is a dead-letter queue: records
+that broke the spec, kept whole with the reason, so nothing is lost. `run --strict` fails instead. JSONL keeps
 records exactly as received: drift is reported, and nothing is quarantined.
 
 When an endpoint declares JSON but no schema, the types are inferred from the
