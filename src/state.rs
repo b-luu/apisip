@@ -102,8 +102,8 @@ impl State {
     /// Reads the state, applies `change` and writes it back without losing a
     /// concurrent run's update. On an object store the write is conditional
     /// on the version read, and a conflict re-reads and re-applies `change`.
-    /// A local destination has no conditional writes: the caller holds
-    /// `Store::commit_lock` instead. Returns the state as written.
+    /// A local destination has no conditional writes and relies on
+    /// `Store::commit_lock`, which every caller holds. Returns the state as written.
     pub async fn update(store: &Store, mut change: impl FnMut(&mut State)) -> Result<State> {
         let path = Path::from(STATE_FILE);
         for attempt in 0..MAX_STATE_TRIES {
@@ -148,7 +148,7 @@ impl State {
                     let ms = rand::random_range(10..50u64) << attempt.min(5);
                     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
                 }
-                Err(e) if conditional => {
+                Err(e) if conditional && rejects_conditional_writes(&e) => {
                     // Some S3-compatible stores reject conditional writes.
                     store.put(STATE_FILE, bytes).await.map_err(|plain| {
                         plain.context(format!("conditional write failed first: {e}"))
@@ -282,6 +282,23 @@ impl Manifest {
     }
 }
 
+/// An S3-compatible store without conditional writes answers 501 Not
+/// Implemented (or a similar refusal). Any other error, such as a timeout or
+/// a denied access, is a failure, not a reason to write without the condition.
+fn rejects_conditional_writes(e: &object_store::Error) -> bool {
+    match e {
+        object_store::Error::NotImplemented { .. } | object_store::Error::NotSupported { .. } => {
+            true
+        }
+        e => {
+            let text = format!("{e:?}").to_lowercase();
+            ["notimplemented", "not implemented", "not supported"]
+                .iter()
+                .any(|t| text.contains(t))
+        }
+    }
+}
+
 /// Streams whose descending sort was found unreliable by an earlier run.
 pub async fn unreliable_streams(ws: &Workspace, config: &Config) -> Result<BTreeSet<String>> {
     if let Some(dir) = config
@@ -323,7 +340,7 @@ mod tests {
     async fn commit_streams(store: &Store, lock: bool) -> State {
         let commits = (0..5).map(|i| async move {
             let _guard = if lock {
-                store.commit_lock().await.unwrap()
+                Some(store.commit_lock().await.unwrap())
             } else {
                 None
             };
@@ -343,6 +360,7 @@ mod tests {
             inner: Arc::new(object_store::memory::InMemory::new()),
             local_root: None,
             url: "memory://".into(),
+            commits: Default::default(),
         };
         State::update(&store, |_| {}).await.unwrap();
         let mut raced = false;
@@ -386,5 +404,103 @@ mod tests {
         .unwrap();
         let state = commit_streams(&store, true).await;
         assert_eq!(state.streams.len(), 5, "{state:?}");
+    }
+
+    /// An S3-compatible store that refuses conditional writes, and yields on
+    /// each read and write so that concurrent commits interleave.
+    #[derive(Debug)]
+    struct NoConditionalWrites(object_store::memory::InMemory);
+
+    impl std::fmt::Display for NoConditionalWrites {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("NoConditionalWrites")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for NoConditionalWrites {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            opts: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            tokio::task::yield_now().await;
+            if opts.mode != PutMode::Overwrite {
+                return Err(object_store::Error::NotImplemented {
+                    operation: "conditional put".into(),
+                    implementer: self.to_string(),
+                });
+            }
+            self.0.put_opts(location, payload, opts).await
+        }
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.0.put_multipart_opts(location, opts).await
+        }
+        async fn get_opts(
+            &self,
+            location: &Path,
+            options: GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            tokio::task::yield_now().await;
+            self.0.get_opts(location, options).await
+        }
+        fn delete_stream(
+            &self,
+            locations: futures::stream::BoxStream<'static, object_store::Result<Path>>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<Path>> {
+            self.0.delete_stream(locations)
+        }
+        fn list(
+            &self,
+            prefix: Option<&Path>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            self.0.list(prefix)
+        }
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&Path>,
+        ) -> object_store::Result<object_store::ListResult> {
+            self.0.list_with_delimiter(prefix).await
+        }
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.0.copy_opts(from, to, options).await
+        }
+    }
+
+    #[tokio::test]
+    async fn streams_of_one_run_keep_their_state_without_conditional_writes() {
+        let store = Store {
+            inner: Arc::new(NoConditionalWrites(object_store::memory::InMemory::new())),
+            local_root: None,
+            url: "memory://".into(),
+            commits: Default::default(),
+        };
+        let state = commit_streams(&store, true).await;
+        assert_eq!(state.streams.len(), 5, "{state:?}");
+    }
+
+    #[test]
+    fn a_failed_conditional_write_is_not_retried_without_the_condition() {
+        let e = object_store::Error::Generic {
+            store: "S3",
+            source: "request timed out".into(),
+        };
+        assert!(!rejects_conditional_writes(&e));
+        let e = object_store::Error::Generic {
+            store: "S3",
+            source: "Received 501 Not Implemented: NotImplemented".into(),
+        };
+        assert!(rejects_conditional_writes(&e));
     }
 }

@@ -27,6 +27,14 @@ pub struct Store {
     pub local_root: Option<PathBuf>,
     /// The destination as configured, for messages.
     pub url: String,
+    /// Makes the commits of one process take turns: see `Store::commit_lock`.
+    pub commits: tokio::sync::Mutex<()>,
+}
+
+/// Held while a commit moves files and updates the state.
+pub struct CommitGuard<'a> {
+    _turn: tokio::sync::MutexGuard<'a, ()>,
+    _file: Option<std::fs::File>,
 }
 
 impl Store {
@@ -60,6 +68,7 @@ impl Store {
                 inner,
                 local_root: None,
                 url,
+                commits: Default::default(),
             });
         }
         let dir = Store::local_dir(&url, base_dir)?;
@@ -70,6 +79,7 @@ impl Store {
             inner: Arc::new(fs),
             local_root: Some(dir),
             url,
+            commits: Default::default(),
         })
     }
 
@@ -127,15 +137,21 @@ impl Store {
         Ok(())
     }
 
-    /// Makes commits to a local destination take turns, across processes:
-    /// an exclusive lock on `_apisip/commit.lock`, released when dropped.
-    /// Object stores need none, since state writes there are conditional.
-    pub async fn commit_lock(&self) -> Result<Option<std::fs::File>> {
+    /// Makes commits take turns. The streams of one run commit in parallel:
+    /// they take turns on an in-process lock, so they never overwrite each
+    /// other's state even where the cross-process protection below is missing.
+    /// Across processes, a local destination adds an exclusive lock on
+    /// `_apisip/commit.lock`; object stores rely on conditional state writes.
+    pub async fn commit_lock(&self) -> Result<CommitGuard<'_>> {
+        let turn = self.commits.lock().await;
         let Some(root) = &self.local_root else {
-            return Ok(None);
+            return Ok(CommitGuard {
+                _turn: turn,
+                _file: None,
+            });
         };
         let dir = root.join(META_DIR);
-        tokio::task::spawn_blocking(move || {
+        let file = tokio::task::spawn_blocking(move || -> Result<Option<std::fs::File>> {
             std::fs::create_dir_all(&dir)?;
             let path = dir.join("commit.lock");
             let file = std::fs::OpenOptions::new()
@@ -149,14 +165,20 @@ impl Store {
                 // Some network filesystems cannot lock: commit anyway.
                 Err(e) => {
                     tracing::warn!(
-                        "cannot lock {} ({e}); committing without it",
+                        "cannot lock {} ({e}); committing without it. A run of a copy of \
+                         this folder at the same time can lose JSONL rows or move a \
+                         watermark back",
                         path.display()
                     );
                     Ok(None)
                 }
             }
         })
-        .await?
+        .await??;
+        Ok(CommitGuard {
+            _turn: turn,
+            _file: file,
+        })
     }
 
     /// Removes the staging folders of runs that started more than a day
