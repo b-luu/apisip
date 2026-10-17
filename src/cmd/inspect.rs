@@ -81,7 +81,8 @@ pub async fn run(ws: &Workspace, stream: Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// The last runs of each stream, newest first.
+/// The last runs of each stream, newest first, and always its last fetch
+/// even when more replays followed it.
 async fn runs_by_stream(store: &Store) -> Result<BTreeMap<String, Vec<Run>>> {
     let mut metas = store.list(&format!("{META_DIR}/runs")).await?;
     // Run ids start with their timestamp.
@@ -97,7 +98,8 @@ async fn runs_by_stream(store: &Store) -> Result<BTreeMap<String, Vec<Run>>> {
         };
         for (name, report) in m.streams {
             let runs = out.entry(name).or_default();
-            if runs.len() < LAST_RUNS {
+            let first_fetch = m.kind == RunKind::Fetch && last_fetch(runs).is_none();
+            if runs.len() < LAST_RUNS || first_fetch {
                 runs.push(Run {
                     run_id: m.run_id.clone(),
                     kind: m.kind,
@@ -125,6 +127,12 @@ async fn quarantine_files(store: &Store, stream: &str) -> Result<Vec<Quarantine>
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
+}
+
+/// Replays move quarantined records only: the state of a stream is that of
+/// its last fetch.
+fn last_fetch(runs: &[Run]) -> Option<&Run> {
+    runs.iter().find(|r| r.kind == RunKind::Fetch)
 }
 
 fn mode(s: &StreamConfig, state: &State) -> String {
@@ -187,7 +195,7 @@ fn table(
         "STREAM", "MODE", "WATERMARK", "LAST RUN", "RECORDS", "QUARANTINED", "DRIFT"
     );
     for s in streams {
-        let last = runs.get(&s.name).and_then(|r| r.first());
+        let last = runs.get(&s.name).and_then(|r| last_fetch(r));
         let quarantined: usize = quarantine[&s.name].iter().map(|q| q.records).sum();
         println!(
             "{:<24} {:<26} {:<26} {:<26} {:>8} {:>11} {:>6}",
@@ -203,7 +211,7 @@ fn table(
         );
     }
     println!(
-        "\nRECORDS and DRIFT are from the last run; QUARANTINED counts every quarantine file."
+        "\nLAST RUN, RECORDS and DRIFT are from the last fetch; QUARANTINED counts every quarantine file."
     );
 }
 
@@ -252,10 +260,10 @@ async fn detail(
             println!("      error: {e}");
         }
     }
-    if let Some(drift) = runs.first().and_then(|r| r.report.drift.as_ref()) {
+    if let Some(drift) = last_fetch(runs).and_then(|r| r.report.drift.as_ref()) {
         let lines = drift.summary();
         if !lines.is_empty() {
-            println!("\nDrift in the last run:");
+            println!("\nDrift in the last fetch:");
             for l in lines {
                 println!("  {l}");
             }

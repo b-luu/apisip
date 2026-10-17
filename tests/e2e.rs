@@ -493,6 +493,18 @@ fn inspect_reads_the_destination_without_the_api() {
     ] {
         assert!(out.contains(&expected), "missing {expected:?}:\n{out}");
     }
+
+    // A replay is listed, but the summary stays that of the last fetch.
+    std::fs::write(&config, &text).unwrap();
+    apisip(d).arg("replay").assert().success();
+    let out = stdout(&apisip(d).arg("inspect").assert().success());
+    let users = out.lines().find(|l| l.starts_with("users ")).unwrap();
+    let users = users.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(users.ends_with(" ok 0 0 0"), "{users}");
+    let out = stdout(&apisip(d).args(["inspect", "users"]).assert().success());
+    assert!(out.contains("ok (replay)"), "{out}");
+    assert!(out.contains("1 records, 0 quarantined"), "{out}");
+    assert!(out.contains("Quarantine:\n  empty"), "{out}");
     apisip(d)
         .args(["inspect", "nope"])
         .assert()
