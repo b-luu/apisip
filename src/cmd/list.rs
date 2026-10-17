@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use crate::detect::stream_record_schema;
+use crate::schema::SOURCE_KEY;
 use crate::workspace::Workspace;
 
 use super::pagination_label;
@@ -16,10 +17,15 @@ pub async fn run(ws: &Workspace) -> Result<()> {
         "STREAM", "ENABLED", "MODE", "PAGINATION", "SCHEMA", "KEY"
     );
     for s in &config.streams {
-        let schema = match &spec {
-            Some(spec) if stream_record_schema(spec, s).is_some() => "spec",
-            Some(_) => "inferred",
-            None => "?",
+        let schema = match ws.read_schema(&s.name).ok().flatten() {
+            Some(_) if ws.schema_edited(&s.name).unwrap_or(false) => "edited",
+            Some(v) if v.get(SOURCE_KEY).and_then(|v| v.as_str()) == Some("inferred") => "inferred",
+            Some(_) => "spec",
+            None => match &spec {
+                Some(spec) if stream_record_schema(spec, s).is_some() => "spec",
+                Some(_) => "inferred",
+                None => "?",
+            },
         };
         let mut mode = s.mode().label().to_string();
         if unreliable.contains(&s.name) {

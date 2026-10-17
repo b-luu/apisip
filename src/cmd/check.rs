@@ -3,14 +3,13 @@
 
 use anyhow::{Context, Result};
 
-use crate::detect::stream_record_schema;
 use crate::http::{ApiClient, Paginator, extract_records};
-use crate::schema::{Drift, RecordSchema};
+use crate::schema::Drift;
 use crate::sink::Store;
 use crate::state::{State, foreign_owner};
 use crate::workspace::Workspace;
 
-use super::{first_url, print_rate_limit_warning, select_streams};
+use super::{first_url, load_schema, print_rate_limit_warning, select_streams};
 
 /// Returns false when a check failed.
 pub async fn run(ws: &Workspace) -> Result<bool> {
@@ -64,10 +63,7 @@ pub async fn run(ws: &Workspace) -> Result<bool> {
         .await;
         match result {
             Ok(records) => {
-                let schema = spec
-                    .as_ref()
-                    .and_then(|sp| stream_record_schema(sp, &s))
-                    .and_then(|i| RecordSchema::from_spec(&i));
+                let schema = load_schema(ws, spec.as_ref(), &s)?;
                 let mut line = format!(
                     "ok    {:<24} {} record(s) on the first page",
                     s.name,

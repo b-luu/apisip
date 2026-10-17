@@ -383,6 +383,11 @@ fn write_files(
         &baseline.render(BASELINE_HEADER, &BTreeMap::new(), None),
     )?;
     ws.folder_id()?;
+    for s in &config.streams {
+        if let Some(schema) = super::spec_schema_file(spec, s) {
+            ws.write_schema(&s.name, &schema)?;
+        }
+    }
 
     // Keys from the auth scheme, with values from the prompts or the process env.
     let mut updates: Vec<(String, Option<String>)> = env_updates.to_vec();

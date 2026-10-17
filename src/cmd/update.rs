@@ -434,6 +434,7 @@ pub async fn run(ws: &Workspace, o: UpdateOptions) -> Result<bool> {
         &new_spec,
         &new_base.render(BASELINE_HEADER, &BTreeMap::new(), None),
     )?;
+    let edited = refresh_schemas(ws, &Config::parse(&merged)?, &new_spec)?;
     let updates: Vec<(String, Option<String>)> =
         creds.into_iter().filter(|(_, v)| v.is_some()).collect();
     if !updates.is_empty() {
@@ -465,7 +466,29 @@ pub async fn run(ws: &Workspace, o: UpdateOptions) -> Result<bool> {
             d.removed.join(", ")
         );
     }
+    for name in edited {
+        println!(
+            "schemas/{name}.json was edited here: left as is, apply the spec's changes by hand"
+        );
+    }
     Ok(true)
+}
+
+/// Writes the spec's schema for each stream whose file is missing or was
+/// never edited. Returns the streams whose edited file differs from it.
+fn refresh_schemas(ws: &Workspace, config: &Config, spec: &Spec) -> Result<Vec<String>> {
+    let mut edited = Vec::new();
+    for s in &config.streams {
+        let Some(new) = super::spec_schema_file(spec, s) else {
+            continue;
+        };
+        match ws.read_schema(&s.name)? {
+            Some(current) if current == new => ws.write_schema(&s.name, &new)?,
+            Some(_) if ws.schema_edited(&s.name)? => edited.push(s.name.clone()),
+            _ => ws.write_schema(&s.name, &new)?,
+        }
+    }
+    Ok(edited)
 }
 
 fn auth_names(options: &[AuthOption]) -> BTreeSet<String> {

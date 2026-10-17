@@ -15,6 +15,8 @@ use crate::spec::schema_type;
 pub const EXTRA: &str = "_apisip_extra";
 pub const RUN_ID: &str = "_apisip_run_id";
 pub const EXTRACTED_AT: &str = "_apisip_extracted_at";
+/// Top-level key of a schema file that says where the schema came from.
+pub const SOURCE_KEY: &str = "x-apisip-source";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Shape {
@@ -81,6 +83,25 @@ impl Shape {
         }
     }
 
+    /// The JSON schema `from_schema` maps back to this shape.
+    pub fn json_schema(&self) -> Value {
+        let t = |t: &str| Value::Object(Map::from_iter([("type".into(), Value::from(t))]));
+        match self {
+            Shape::Int => t("integer"),
+            Shape::Float => t("number"),
+            Shape::Bool => t("boolean"),
+            Shape::Str => t("string"),
+            Shape::Timestamp => serde_json::json!({"type": "string", "format": "date-time"}),
+            Shape::Date => serde_json::json!({"type": "string", "format": "date"}),
+            Shape::Json => Value::Object(Map::new()),
+            Shape::Struct(fields) => serde_json::json!({
+                "type": "object",
+                "properties": Map::from_iter(fields.iter().map(|(n, s)| (n.clone(), s.json_schema()))),
+            }),
+            Shape::List(item) => serde_json::json!({"type": "array", "items": item.json_schema()}),
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Shape::Int => "integer",
@@ -127,6 +148,22 @@ impl RecordSchema {
             }),
             _ => None,
         }
+    }
+
+    /// From a `schemas/<stream>.json` file.
+    pub fn from_file(v: &Value) -> Option<RecordSchema> {
+        let mut s = RecordSchema::from_spec(v)?;
+        if v.get(SOURCE_KEY).and_then(Value::as_str) == Some("inferred") {
+            s.source = SchemaSource::Inferred;
+        }
+        Some(s)
+    }
+
+    /// The content of a `schemas/<stream>.json` file for this schema.
+    pub fn to_file(&self) -> Value {
+        let mut v = Shape::Struct(self.fields.clone()).json_schema();
+        v[SOURCE_KEY] = serde_json::to_value(self.source).unwrap_or_default();
+        v
     }
 
     /// Infers a schema from sample records: integers and floats widen to
@@ -606,5 +643,17 @@ mod tests {
         assert_eq!(d.undeclared["x"].count, 2);
         assert_eq!(d.mistyped["id"].count, 1);
         assert!(d.missing.contains(&"name".to_string()) && !d.missing.contains(&"id".to_string()));
+    }
+
+    #[test]
+    fn an_inferred_schema_file_reads_back_the_same() {
+        let records = vec![json!({
+            "id": 1, "price": 2.5, "ok": true, "at": "2026-01-01T00:00:00Z",
+            "day": "2026-01-01", "tags": ["a"], "address": {"city": "Lille"}, "any": null
+        })];
+        let inferred = RecordSchema::infer(&records);
+        let back = RecordSchema::from_file(&inferred.to_file()).unwrap();
+        assert_eq!(back.fields, inferred.fields);
+        assert_eq!(back.source, SchemaSource::Inferred);
     }
 }

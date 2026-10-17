@@ -544,6 +544,68 @@ fn a_destination_belongs_to_one_folder_and_its_copies() {
 }
 
 #[test]
+fn schema_files_are_written_once_and_edits_change_the_types() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init(&mock, d, &["--streams", "users", "--format", "parquet"]);
+    let read = |p: &str| -> Value {
+        serde_json::from_str(&std::fs::read_to_string(d.join(p)).unwrap()).unwrap()
+    };
+    assert_eq!(read("schemas/users.json")["x-apisip-source"], "spec");
+    assert_eq!(
+        read("schemas/users.json"),
+        read(".apisip/schemas/users.json")
+    );
+
+    // A stream the spec does not describe gets its schema from the first run.
+    let config = d.join("apisip.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        text + "\n[[streams]]\nname = \"projects\"\npath = \"/projects\"\n",
+    )
+    .unwrap();
+    apisip(d).arg("run").assert().success();
+    let mut projects = read("schemas/projects.json");
+    assert_eq!(projects["x-apisip-source"], "inferred");
+    assert_eq!(projects["properties"]["id"]["type"], "integer");
+    let list = apisip(d).arg("list").assert().success();
+    assert!(
+        stdout(&list)
+            .lines()
+            .any(|l| l.starts_with("projects") && l.contains("inferred")),
+        "{}",
+        stdout(&list)
+    );
+
+    // The file is the schema from now on: an edit changes the next run's
+    // columns, and the run does not infer again.
+    projects["properties"]["id"] = serde_json::json!({"type": "string"});
+    std::fs::write(d.join("schemas/projects.json"), projects.to_string()).unwrap();
+    let list = apisip(d).arg("list").assert().success();
+    assert!(
+        stdout(&list)
+            .lines()
+            .any(|l| l.starts_with("projects") && l.contains("edited")),
+        "{}",
+        stdout(&list)
+    );
+    apisip(d).arg("run").assert().success();
+    assert_eq!(read("schemas/projects.json"), projects);
+    let last = files(&d.join("data/projects"), "parquet").pop().unwrap();
+    if let Some(t) = duckdb(
+        d,
+        &format!(
+            "select typeof(id) from read_parquet('{}') limit 1",
+            last.display()
+        ),
+    ) {
+        assert_eq!(t, "VARCHAR");
+    }
+}
+
+#[test]
 fn an_empty_stream_does_not_break_the_views() {
     let mock = Mock::start();
     let dir = tempfile::tempdir().unwrap();
@@ -600,6 +662,12 @@ fn update_merges_the_v2_spec() {
     assert_ne!(edited, text);
     std::fs::write(&config, &edited).unwrap();
     let env_before = std::fs::read_to_string(d.join(".env")).unwrap();
+    // And the orders schema.
+    let orders_schema = d.join("schemas/orders.json");
+    let mut orders: Value =
+        serde_json::from_str(&std::fs::read_to_string(&orders_schema).unwrap()).unwrap();
+    orders["description"] = "my edit".into();
+    std::fs::write(&orders_schema, orders.to_string()).unwrap();
 
     let v2 = format!("{}/v2/openapi.json", mock.base);
     let check = apisip(d).args(["update", "--check", &v2]).assert().code(1);
@@ -634,6 +702,14 @@ fn update_merges_the_v2_spec() {
     p.send_line("").unwrap();
     let out = p.exp_eof().unwrap();
     assert!(!out.contains(mock::TOKEN), "the token must never be echoed");
+    assert!(out.contains("schemas/orders.json was edited here"), "{out}");
+    let users_schema = std::fs::read_to_string(d.join("schemas/users.json")).unwrap();
+    assert!(users_schema.contains("\"phone\""), "unedited, updated");
+    assert_eq!(
+        serde_json::from_str::<Value>(&std::fs::read_to_string(&orders_schema).unwrap()).unwrap(),
+        orders,
+        "edited, kept"
+    );
 
     let merged = std::fs::read_to_string(&config).unwrap();
     assert!(

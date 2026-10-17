@@ -1,9 +1,11 @@
-//! The API folder: `apisip.toml`, `.env`, and the `.apisip/` metadata that
-//! `init` writes for `update` (the spec snapshot and the baseline config).
+//! The API folder: `apisip.toml`, `.env`, `schemas/`, and the `.apisip/`
+//! metadata that `init` writes for `update` (the spec snapshot, the baseline
+//! config and schemas, the folder id).
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use serde_json::Value;
 
 use crate::config::{CONFIG_FILE, Config};
 use crate::spec::Spec;
@@ -62,6 +64,36 @@ impl Workspace {
         }
     }
 
+    /// The editable record schema of a stream.
+    pub fn schema_path(&self, stream: &str) -> PathBuf {
+        self.dir.join("schemas").join(format!("{stream}.json"))
+    }
+    /// The schema apisip last wrote for a stream, to tell edits apart.
+    pub fn schema_baseline_path(&self, stream: &str) -> PathBuf {
+        self.meta_dir()
+            .join("schemas")
+            .join(format!("{stream}.json"))
+    }
+
+    pub fn read_schema(&self, stream: &str) -> Result<Option<Value>> {
+        read_json(&self.schema_path(stream))
+    }
+
+    /// Writes a stream's schema file and its baseline.
+    pub fn write_schema(&self, stream: &str, schema: &Value) -> Result<()> {
+        let text = serde_json::to_string_pretty(schema)? + "\n";
+        for path in [self.schema_path(stream), self.schema_baseline_path(stream)] {
+            std::fs::create_dir_all(path.parent().expect("a schema path has a parent"))?;
+            std::fs::write(&path, &text).with_context(|| format!("writing {}", path.display()))?;
+        }
+        Ok(())
+    }
+
+    /// Whether the schema file differs from the one apisip wrote.
+    pub fn schema_edited(&self, stream: &str) -> Result<bool> {
+        Ok(self.read_schema(stream)? != read_json(&self.schema_baseline_path(stream))?)
+    }
+
     pub fn has_config(&self) -> bool {
         self.config_path().exists()
     }
@@ -110,6 +142,16 @@ impl Workspace {
              Commit this folder with apisip.toml.\n",
         )?;
         Ok(())
+    }
+}
+
+fn read_json(path: &Path) -> Result<Option<Value>> {
+    match std::fs::read_to_string(path) {
+        Ok(t) => serde_json::from_str(&t)
+            .map(Some)
+            .with_context(|| format!("{} is not valid JSON", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
 }
 

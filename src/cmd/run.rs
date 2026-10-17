@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::config::{Config, Format, Mode, StreamConfig};
-use crate::detect::stream_record_schema;
 use crate::http::{self, ApiClient};
 use crate::incremental::{
     Boundary, BoundaryTracker, CursorValue, EarlyStop, MAX_BOUNDARY, Range, field,
@@ -28,7 +27,7 @@ use crate::state::{
 };
 use crate::workspace::Workspace;
 
-use super::{first_url, print_rate_limit_warning, select_streams};
+use super::{first_url, load_schema, print_rate_limit_warning, select_streams};
 
 #[derive(Debug, Default, Clone)]
 pub struct RunOptions {
@@ -38,6 +37,7 @@ pub struct RunOptions {
 }
 
 struct Ctx {
+    ws: Workspace,
     config: Config,
     spec: Option<Spec>,
     client: Arc<ApiClient>,
@@ -110,6 +110,7 @@ pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
 
     let concurrency = config.source.concurrency;
     let ctx = Arc::new(Ctx {
+        ws: ws.clone(),
         config,
         spec,
         client,
@@ -256,11 +257,7 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
     let snapshot = mode == Mode::FullRefresh;
     let dir = ctx.layout.data_dir(name, snapshot);
 
-    let mut schema = ctx
-        .spec
-        .as_ref()
-        .and_then(|sp| stream_record_schema(sp, s))
-        .and_then(|item| RecordSchema::from_spec(&item));
+    let mut schema = load_schema(&ctx.ws, ctx.spec.as_ref(), s)?;
     let mut drift = schema.as_ref().map(Drift::new);
     let mut writer = match format {
         Format::Jsonl => Some(DataWriter::Jsonl(Box::new(JsonlWriter::new(
@@ -302,7 +299,9 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
             report.unchanged += (before - records.len()) as u64;
         }
         if schema.is_none() && format == Format::Parquet && !records.is_empty() {
+            // Written once: later runs type their columns the same way.
             let inferred = RecordSchema::infer(&records);
+            ctx.ws.write_schema(name, &inferred.to_file())?;
             drift = Some(Drift::new(&inferred));
             schema = Some(inferred);
         }

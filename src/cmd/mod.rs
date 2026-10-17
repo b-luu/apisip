@@ -8,7 +8,11 @@ use anyhow::{Result, bail};
 use url::Url;
 
 use crate::config::{Config, Pagination, StreamConfig, interpolate};
+use crate::detect::stream_record_schema;
 use crate::http::ApiClient;
+use crate::schema::{RecordSchema, SOURCE_KEY};
+use crate::spec::Spec;
+use crate::workspace::Workspace;
 
 /// The streams to run: the named ones, or every enabled one.
 pub fn select_streams(config: &Config, names: &[String]) -> Result<Vec<StreamConfig>> {
@@ -39,6 +43,42 @@ pub fn select_streams(config: &Config, names: &[String]) -> Result<Vec<StreamCon
 }
 
 /// The endpoint URL with the stream's fixed params, before paging and incremental params.
+/// A stream's record schema: `schemas/<stream>.json`, or the spec's when
+/// the file is missing. `None` when there is neither: the run infers one.
+pub fn load_schema(
+    ws: &Workspace,
+    spec: Option<&Spec>,
+    s: &StreamConfig,
+) -> Result<Option<RecordSchema>> {
+    if let Some(v) = ws.read_schema(&s.name)? {
+        return match RecordSchema::from_file(&v) {
+            Some(schema) => Ok(Some(schema)),
+            None => bail!(
+                "schemas/{}.json has no `properties`: it must describe one record as an object",
+                s.name
+            ),
+        };
+    }
+    let schema = spec
+        .and_then(|sp| stream_record_schema(sp, s))
+        .and_then(|i| RecordSchema::from_spec(&i));
+    if schema.is_some() {
+        eprintln!(
+            "warning: schemas/{}.json is missing, so the spec's schema is used; `apisip update` writes the file",
+            s.name
+        );
+    }
+    Ok(schema)
+}
+
+/// The content of a schema file for a stream the spec describes.
+pub fn spec_schema_file(spec: &Spec, s: &StreamConfig) -> Option<serde_json::Value> {
+    let mut item = stream_record_schema(spec, s)?;
+    RecordSchema::from_spec(&item)?;
+    item[SOURCE_KEY] = "spec".into();
+    Some(item)
+}
+
 pub fn first_url(client: &ApiClient, s: &StreamConfig) -> Result<Url> {
     let mut url = client.endpoint(&s.path)?;
     for (k, v) in &s.params {
