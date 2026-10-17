@@ -63,9 +63,7 @@ pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
     let store = Arc::new(Store::open(&config.destination, &ws.dir)?);
     let layout = Layout::new(Utc::now());
     // Leftovers of an interrupted run were never committed: drop them.
-    store
-        .delete_prefix(&format!("{}/staging", crate::sink::META_DIR))
-        .await?;
+    store.delete_stale_staging(layout.started).await?;
     let state = State::load(&store).await?;
 
     let manifest = Mutex::new(Manifest {
@@ -393,6 +391,10 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
     };
     fail_point("after_staging")?;
 
+    // Copies of this folder may commit to the same destination at the same
+    // time. A local destination has no conditional writes: commits take turns.
+    let _commit = ctx.store.commit_lock().await?;
+
     // 1. Move the files into the data path.
     let prefix = Layout::part_prefix(name);
     let merge = (format == Format::Jsonl && !snapshot).then_some((prefix.as_str(), max_bytes));
@@ -407,40 +409,45 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
     }
     fail_point("after_move")?;
 
-    // 2. Advance the watermark.
+    // 2. Advance the watermark, on the state as it is now: another run may
+    // have committed since this one started.
     let observed = match (range.min_raw(), range.max_raw()) {
         (Some(min), Some(max)) => Some(CursorRange { min, max }),
         _ => None,
     };
-    let mut state = ctx.state.lock().await;
-    let entry = state.streams.entry(name.clone()).or_default();
-    if let (Some(prev), Some(obs)) = (&entry.last_range, &observed)
-        && CursorValue::parse(&obs.min) < CursorValue::parse(&prev.max)
-    {
-        report.overlap = Some(Overlap {
-            previous_run_id: entry.last_run_id.clone(),
-            previous_max: prev.max.clone(),
-        });
-    }
-    if let (Some(c), Some(obs)) = (cursor, &observed) {
-        let current = entry.watermark_for(c).map(CursorValue::parse);
-        if current.is_none_or(|w| CursorValue::parse(&obs.max) > w) {
-            entry.watermark = Some(obs.max.clone());
+    let committed_at = Utc::now();
+    let mut overlap = None;
+    let fresh = State::update(&ctx.store, |state| {
+        let entry = state.streams.entry(name.clone()).or_default();
+        overlap = None;
+        if let (Some(prev), Some(obs)) = (&entry.last_range, &observed)
+            && CursorValue::parse(&obs.min) < CursorValue::parse(&prev.max)
+        {
+            overlap = Some(Overlap {
+                previous_run_id: entry.last_run_id.clone(),
+                previous_max: prev.max.clone(),
+            });
         }
-        entry.cursor = Some(c.to_string());
-    }
-    if observed.is_some() {
-        entry.last_range = observed.clone();
-    }
-    if unreliable && let Some(sort) = sort {
-        entry.unreliable_sort = Some(sort_signature(sort));
-    }
-    entry.last_run_id = Some(run_id);
-    entry.last_committed_at = Some(Utc::now());
-    state
-        .save(&ctx.store)
-        .await
-        .context("saving the watermark")?;
+        if let (Some(c), Some(obs)) = (cursor, &observed) {
+            let current = entry.watermark_for(c).map(CursorValue::parse);
+            if current.is_none_or(|w| CursorValue::parse(&obs.max) > w) {
+                entry.watermark = Some(obs.max.clone());
+            }
+            entry.cursor = Some(c.to_string());
+        }
+        if observed.is_some() {
+            entry.last_range = observed.clone();
+        }
+        if unreliable && let Some(sort) = sort {
+            entry.unreliable_sort = Some(sort_signature(sort));
+        }
+        entry.last_run_id = Some(run_id.clone());
+        entry.last_committed_at = Some(committed_at);
+    })
+    .await
+    .context("saving the watermark")?;
+    report.overlap = overlap;
+    *ctx.state.lock().await = fresh;
     report.observed = observed;
     Ok(())
 }

@@ -115,6 +115,60 @@ impl Store {
         Ok(())
     }
 
+    /// Makes commits to a local destination take turns, across processes:
+    /// an exclusive lock on `_apisip/commit.lock`, released when dropped.
+    /// Object stores need none, since state writes there are conditional.
+    pub async fn commit_lock(&self) -> Result<Option<std::fs::File>> {
+        let Some(root) = &self.local_root else {
+            return Ok(None);
+        };
+        let dir = root.join(META_DIR);
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join("commit.lock");
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&path)
+                .with_context(|| format!("opening {}", path.display()))?;
+            match file.lock() {
+                Ok(()) => Ok(Some(file)),
+                // Some network filesystems cannot lock: commit anyway.
+                Err(e) => {
+                    tracing::warn!(
+                        "cannot lock {} ({e}); committing without it",
+                        path.display()
+                    );
+                    Ok(None)
+                }
+            }
+        })
+        .await?
+    }
+
+    /// Removes the staging folders of runs that started more than a day
+    /// ago: leftovers of interrupted runs. A younger one may belong to a run
+    /// of a copy of this folder that is still going.
+    pub async fn delete_stale_staging(&self, now: DateTime<Utc>) -> Result<()> {
+        let root = Path::from(format!("{META_DIR}/staging"));
+        let listing = match self.inner.list_with_delimiter(Some(&root)).await {
+            Ok(l) => l,
+            Err(object_store::Error::NotFound { .. }) => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        for dir in listing.common_prefixes {
+            let stale = dir
+                .filename()
+                .and_then(Layout::started_at)
+                .is_some_and(|t| now - t > chrono::Duration::hours(STALE_STAGING_HOURS));
+            if stale {
+                self.delete_prefix(dir.as_ref()).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Moves a staged file into place. On a local destination, a JSONL part
     /// is appended to the latest part of the same folder while that stays
     /// under `max_bytes`: the merged file is written aside, then renamed
@@ -182,6 +236,7 @@ pub struct Layout {
 }
 
 pub const META_DIR: &str = "_apisip";
+const STALE_STAGING_HOURS: i64 = 24;
 
 impl Layout {
     pub fn new(started: DateTime<Utc>) -> Layout {
@@ -190,6 +245,14 @@ impl Layout {
             run_id: format!("{}-{suffix:04x}", started.format("%Y%m%dT%H%M%S%3fZ")),
             started,
         }
+    }
+
+    /// When the run with this id started, from the id's timestamp prefix.
+    pub fn started_at(run_id: &str) -> Option<DateTime<Utc>> {
+        let ts = run_id.split_once('Z')?.0;
+        chrono::NaiveDateTime::parse_from_str(ts, "%Y%m%dT%H%M%S%3f")
+            .ok()
+            .map(|t| t.and_utc())
     }
 
     /// `<stream>/dt=<date>/`, plus `run_id=<id>/` for full-refresh snapshots.
@@ -287,6 +350,26 @@ mod tests {
         assert_eq!(
             store.get("s/dt=1/s-a-0000.jsonl").await.unwrap().unwrap(),
             "1234\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_staging_older_than_a_day_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = local(dir.path());
+        let now = Utc::now();
+        let old = Layout::new(now - chrono::Duration::hours(25));
+        let fresh = Layout::new(now - chrono::Duration::hours(1));
+        store.put(&old.staged("s/a.jsonl"), "1\n").await.unwrap();
+        store.put(&fresh.staged("s/a.jsonl"), "1\n").await.unwrap();
+        store.delete_stale_staging(now).await.unwrap();
+        assert_eq!(store.get(&old.staged("s/a.jsonl")).await.unwrap(), None);
+        assert!(
+            store
+                .get(&fresh.staged("s/a.jsonl"))
+                .await
+                .unwrap()
+                .is_some()
         );
     }
 

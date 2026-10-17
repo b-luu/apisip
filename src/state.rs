@@ -3,8 +3,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Context, Result};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
+use object_store::path::Path;
+use object_store::{GetOptions, ObjectStore, PutMode, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Config, Sort};
@@ -77,12 +81,85 @@ impl State {
         }
     }
 
-    pub async fn save(&self, store: &Store) -> Result<()> {
-        store
-            .put(STATE_FILE, serde_json::to_vec_pretty(self)?)
-            .await
+    /// Reads the state, applies `change` and writes it back without losing a
+    /// concurrent run's update. On an object store the write is conditional
+    /// on the version read, and a conflict re-reads and re-applies `change`.
+    /// A local destination has no conditional writes: the caller holds
+    /// `Store::commit_lock` instead. Returns the state as written.
+    pub async fn update(store: &Store, mut change: impl FnMut(&mut State)) -> Result<State> {
+        let path = Path::from(STATE_FILE);
+        for attempt in 0..MAX_STATE_TRIES {
+            let (mut state, version) =
+                match store.inner.get_opts(&path, GetOptions::default()).await {
+                    Ok(r) => {
+                        let version = UpdateVersion {
+                            e_tag: r.meta.e_tag.clone(),
+                            version: r.meta.version.clone(),
+                        };
+                        let state: State =
+                            serde_json::from_slice(&r.bytes().await?).with_context(|| {
+                                format!("{STATE_FILE} in {} is not valid", store.url)
+                            })?;
+                        (state, Some(version))
+                    }
+                    Err(object_store::Error::NotFound { .. }) => (State::default(), None),
+                    Err(e) => {
+                        return Err(e)
+                            .with_context(|| format!("reading {STATE_FILE} from {}", store.url));
+                    }
+                };
+            change(&mut state);
+            let bytes = serde_json::to_vec_pretty(&state)?;
+            let mode = match (&store.local_root, version) {
+                (Some(_), _) => PutMode::Overwrite,
+                (None, Some(v)) => PutMode::Update(v),
+                (None, None) => PutMode::Create,
+            };
+            let conditional = mode != PutMode::Overwrite;
+            match store
+                .inner
+                .put_opts(&path, PutPayload::from(bytes.clone()), mode.into())
+                .await
+            {
+                Ok(_) => return Ok(state),
+                Err(
+                    object_store::Error::Precondition { .. }
+                    | object_store::Error::AlreadyExists { .. },
+                ) => {
+                    // Another run committed in between: back off, then retry.
+                    let ms = rand::random_range(10..50u64) << attempt.min(5);
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                }
+                Err(e) if conditional => {
+                    // Some S3-compatible stores reject conditional writes.
+                    store.put(STATE_FILE, bytes).await.map_err(|plain| {
+                        plain.context(format!("conditional write failed first: {e}"))
+                    })?;
+                    if !NO_CONDITIONAL_WARNED.swap(true, Ordering::Relaxed) {
+                        eprintln!(
+                            "warning: {} does not support conditional writes. A run of a copy of \
+                             this folder at the same time can move a watermark back: the next run \
+                             then fetches some records again (duplicates, no loss)",
+                            store.url
+                        );
+                    }
+                    return Ok(state);
+                }
+                Err(e) => {
+                    return Err(e)
+                        .with_context(|| format!("writing {STATE_FILE} to {}", store.url));
+                }
+            }
+        }
+        bail!(
+            "{STATE_FILE} in {} kept changing under concurrent runs; try again",
+            store.url
+        )
     }
 }
+
+const MAX_STATE_TRIES: u32 = 10;
+static NO_CONDITIONAL_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// What one run did, written to `_apisip/runs/<run_id>.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,4 +270,79 @@ pub async fn unreliable_streams(ws: &Workspace, config: &Config) -> Result<BTree
         })
         .map(|s| s.name.clone())
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    async fn commit_streams(store: &Store, lock: bool) -> State {
+        let commits = (0..5).map(|i| async move {
+            let _guard = if lock {
+                store.commit_lock().await.unwrap()
+            } else {
+                None
+            };
+            State::update(store, |s| {
+                s.streams.entry(format!("s{i}")).or_default().watermark = Some(i.to_string());
+            })
+            .await
+            .unwrap();
+        });
+        futures::future::join_all(commits).await;
+        State::load(store).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_commit_racing_another_on_an_object_store_keeps_both() {
+        let store = Store {
+            inner: Arc::new(object_store::memory::InMemory::new()),
+            local_root: None,
+            url: "memory://".into(),
+        };
+        State::update(&store, |_| {}).await.unwrap();
+        let mut raced = false;
+        let state = State::update(&store, |s| {
+            if !raced {
+                // Another run commits between this read and this write.
+                raced = true;
+                futures::executor::block_on(State::update(&store, |o| {
+                    o.streams.entry("other".into()).or_default().watermark = Some("1".into());
+                }))
+                .unwrap();
+            }
+            s.streams.entry("mine".into()).or_default().watermark = Some("2".into());
+        })
+        .await
+        .unwrap();
+        assert!(raced);
+        let stored = State::load(&store).await.unwrap();
+        for s in [&state, &stored] {
+            assert_eq!(
+                s.streams.keys().collect::<Vec<_>>(),
+                ["mine", "other"],
+                "{s:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_commits_on_a_local_folder_take_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(
+            &crate::config::Destination {
+                url: "file://out".into(),
+                format: Default::default(),
+                rotate: Default::default(),
+                endpoint: None,
+                region: None,
+            },
+            dir.path(),
+        )
+        .unwrap();
+        let state = commit_streams(&store, true).await;
+        assert_eq!(state.streams.len(), 5, "{state:?}");
+    }
 }
