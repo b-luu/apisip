@@ -159,9 +159,10 @@ There is no lock on the destination. A lease on S3 needs an expiry, so a crashed
 
 - **Staging per run.** Each run stages under `_apisip/staging/<run_id>/`. At start, a run deletes only staging folders whose run id timestamp is more than 24 hours old, never a live run's.
 - **State as compare-and-swap.** `State::update` reads `state.json` with its version, applies one stream's change, and writes with `PutMode::Update(version)`, or `PutMode::Create` when absent. On a precondition failure it re-reads and re-applies, up to 10 tries. Watermarks take the max, `unreliable_sort` is sticky, and the boundary sets of equal watermarks are united.
-- **Local destinations** have no conditional update in `object_store`, so an exclusive `flock` on `_apisip/commit.lock` guards the read-modify-write and the JSONL merge in `promote`.
-- **S3-compatible stores without conditional writes:** a plain write, with one warning per run. Two concurrent runs can then move a watermark back: duplicates, no loss.
-- **Ownership.** `init` writes a random id to `.apisip/folder-id`; `.apisip/` is committed, so clones share it. The first commit records it as `owner` in `state.json`, and a run with another id stops before fetching, as does `check`. A state without an owner is adopted.
+- **One run's streams** commit in parallel. `Store::commit_lock` first takes an in-process mutex, held across `promote` and `State::update`, so they take turns even where the cross-process protection below is missing.
+- **Local destinations** have no conditional update in `object_store`, so an exclusive `flock` on `_apisip/commit.lock` guards the read-modify-write and the JSONL merge in `promote`. A filesystem that cannot lock gets a warning and a commit without it: two copies running at once can then lose JSONL rows as well as move a watermark back.
+- **S3-compatible stores without conditional writes:** when the conditional write is refused as not implemented or not supported, a plain write, with one warning per run. Two copies running at once can then move a watermark back: duplicates, no loss. Any other write error fails the commit.
+- **Ownership.** `init` writes a random id to `.apisip/folder-id`; `.apisip/` is committed, so clones share it. A `run` or `replay` claims an unowned destination for its id at start, before fetching, and a run with another id stops there, as does `check`. A state without an owner is adopted.
 
 ### `update`: follow API changes
 
@@ -200,12 +201,12 @@ There is no lock on the destination. A lease on S3 needs an expiry, so a crashed
   - `oneOf`, `anyOf`, free-form objects and an empty schema give a JSON string.
 - **All columns are nullable,** because specs under-declare `nullable` and `required`.
 - **Undeclared fields** go into one `_apisip_extra` JSON-string column, so no data is lost.
-- **Lossless casts** (`cast = "lossless"`, the default, per stream): a value of the wrong type is converted only when it survives a round trip. A string to an integer when it prints back the same (`"007"` does not); a string to a finite number; an integer to a number below 2^53; `"true"`/`"false"` to a boolean; a number or boolean to a string. No epoch-to-timestamp cast: the unit is ambiguous. Casts are counted per field and type pair in the manifest; `--strict` accepts them. `cast = "none"` disables them.
+- **Lossless casts** (`cast = "lossless"`, the default, per stream): a value of the wrong type is converted only when it survives a round trip. A string to an integer when it prints back the same (`"007"` does not); a string to a number when it prints back the same digits, trailing zeros aside; an integer to a number below 2^53; `"true"`/`"false"` to a boolean; a number or boolean to a string. No epoch-to-timestamp cast: the unit is ambiguous. Casts are counted per field and type pair in the manifest; `--strict` accepts them. `cast = "none"` disables them.
 - **Values that still violate the schema** are never silently changed.
   - The whole record goes to `<stream>/_quarantine/<run_id>.jsonl` with the reason, the run id and the extraction time.
   - It is counted in the manifest and reported as drift.
   - `run --strict` fails instead.
-  - `replay` conforms each quarantined record again with the current schema file and cast setting. Records that pass are committed through the usual staged commit, keeping their original `_apisip_run_id` and `_apisip_extracted_at` (a snapshot record goes back to its run's `run_id=` folder), so the views order them as if never quarantined. The rest go to a new quarantine file. The replayed files are deleted after the commit. Watermarks do not move, and the manifest has `"kind": "replay"`. It takes the folder lock and the ownership check, like `run`.
+  - `replay` conforms each quarantined record again with the current schema file and cast setting. Records that pass are committed through the usual staged commit, keeping their original `_apisip_run_id` and `_apisip_extracted_at` (a snapshot record goes back to its run's `run_id=` folder), so the views order them as if never quarantined. Each quarantine file is replayed on its own: the records that still fail replace it, and an empty one is deleted after the data commit. The data files are named `<stream>-replay-<quarantine file>-<content hash>`, without rotation, so a replay that stopped between the two steps, run again, overwrites its own files and commits no record twice. A record without `_apisip_run_id` or `_apisip_extracted_at` stays quarantined. Watermarks do not move, and the manifest has `"kind": "replay"`. It takes the folder lock and the ownership check, like `run`.
 - **Inference:** int plus float widens to float, and any other conflict widens to string.
 - **JSONL** keeps records exactly as received, plus the metadata fields. The drift check still runs, but nothing is cast or quarantined.
 - **Drift report:** `run` compares every record with the spec. Undeclared, missing and mistyped fields go into the manifest with counts and one example each. A summary prints at the end of the run, and `update` refers to it.
@@ -280,6 +281,7 @@ Main crates: `tokio`, `reqwest` (rustls), `serde`, `serde_json`, `serde_yaml_ng`
   - spec-to-Arrow mapping, quarantine and `_apisip_extra`, and widening in the inference fallback;
   - JSONL rotation, and the atomic local merge;
   - the staged commit: a crash injected after staging leaves the data path and the watermark unchanged;
+  - commits racing on the state: on an object store, on a local folder, and on a store that refuses conditional writes, where only the in-process lock keeps every stream's watermark;
   - overlap flagging;
   - the three-way merge cases.
 - **Interactive flows:** `init` and `update` are driven through a pseudo-terminal with `rexpect`. The tests assert:
@@ -297,7 +299,7 @@ Main crates: `tokio`, `reqwest` (rustls), `serde`, `serde_json`, `serde_yaml_ng`
   - `update` from v1 to v2: unedited values change, an edited value prompts, the removed endpoint is disabled, comments survive, and `--check` exits 1 or 0. Schema files: a compatible change is applied, an incompatible one asks and is refused by `--yes`, an edited field conflicts, and an undeclared field is adopted.
   - A second run against an unchanged API writes no row; a changed or new record at the watermark is kept.
   - A second folder on the same destination is refused; a copy with the same folder id runs, and the views keep one row per key.
-  - `replay` keeps a still-failing record quarantined, then moves it into the data once the cast allows it, with its original run id, and leaves the watermark.
+  - `replay` keeps a still-failing record quarantined, then moves it into the data once the cast allows it, with its original run id, and leaves the watermark. A replay stopped between the data commit and the quarantine cleanup, run again, commits each record once.
   - `inspect` reads the destination with the API stopped.
 - **S3:** any S3-compatible server (the test was run against SeaweedFS), with `run` to `s3://` and a read-back through DuckDB `httpfs`. The test is gated behind `APISIP_TEST_S3=1`.
 - **Real specs:**

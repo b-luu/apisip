@@ -296,9 +296,10 @@ manifest flags any overlap with an earlier run.
 ### Sharing a destination
 
 - **One folder, one run at a time:** a second `run` in the same folder stops
-  with an error.
+  with an error, so a cron job that overlaps the previous one fails instead
+  of running twice.
 - **Copies of one folder may run at once,** for example a git clone on two
-  machines, or a cron job that overlaps the previous one. Each run stages its
+  machines. Each run stages its
   files under its own run id. The watermark update is a compare-and-swap on
   `state.json` (an `If-Match` write on S3, a file lock on local disk), so no
   run moves another's watermark back. Overlapping runs give duplicates, which
@@ -310,8 +311,12 @@ manifest flags any overlap with an earlier run.
   committed.
 
 On an S3-compatible store without conditional writes, apisip warns once per
-run and falls back to plain writes: two concurrent runs can then move a
-watermark back, which gives duplicates, never a loss.
+run and falls back to plain writes: two copies running at once can then move
+a watermark back, which gives duplicates, never a loss. On a local filesystem
+that cannot lock files, such as some network mounts, apisip warns and commits
+without the lock: two copies running at once can then also lose JSONL rows,
+so run one copy at a time there. The streams of a single run always take
+turns, whatever the store.
 
 ### Generated views
 
@@ -381,7 +386,8 @@ no longer depend on which records came first. `list` shows `schema: inferred`.
 value of the wrong type is converted only when the conversion keeps it exactly:
 
 - a string to an integer when it reads back the same (`"41"`, not `"007"`);
-- a string to a number when it is a finite number;
+- a string to a number when the number prints back the same digits
+  (trailing zeros aside), so no digit is rounded away;
 - an integer to a number when it is exact in Float64 (below 2^53);
 - `"true"` / `"false"` to a boolean;
 - a number or a boolean to a string.
@@ -409,10 +415,12 @@ apisip replay                 # or --stream users
 `replay` checks every quarantined record against the current schema. Records
 that now pass are committed as data with the run id and extraction time they
 were fetched with, so the views place them as if they had never been
-quarantined. The others go to a new quarantine file with the new reason. The
-replayed files are then deleted. Watermarks do not move, and the manifest
-records the run with `"kind": "replay"`. A crash between the commit and the
-delete repeats records, which the views remove.
+quarantined. The others stay in their quarantine file with the new reason,
+and a file left empty is deleted. Watermarks do not move, and the manifest
+records the run with `"kind": "replay"`. A replay that stops halfway can be
+run again: the data files it writes are named after the quarantine file and
+its content, so the second replay overwrites them and commits no record
+twice.
 
 ## Following API changes with `update`
 
