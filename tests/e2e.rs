@@ -108,7 +108,7 @@ fn files(dir: &Path, ext: &str) -> Vec<PathBuf> {
 
 /// Committed JSONL records of a stream (quarantine excluded).
 fn records(dir: &Path, stream: &str) -> Vec<Value> {
-    files(&dir.join(stream), "jsonl")
+    files(&dir.join("data").join(stream), "jsonl")
         .iter()
         .filter(|p| !p.to_string_lossy().contains("_quarantine"))
         .flat_map(|p| {
@@ -129,7 +129,7 @@ fn duckdb(dir: &Path, query: &str) -> Option<String> {
         .arg("-c")
         .arg(format!(
             ".read {}",
-            dir.join("_apisip/views/all.sql").display()
+            dir.join("data/_apisip/views/all.sql").display()
         ))
         .arg("-c")
         .arg(query)
@@ -171,7 +171,7 @@ fn jsonl_init_check_run_and_incremental_rerun() {
     let first = apisip(d).arg("run").assert().success();
     let first_out = stdout(&first);
     assert!(
-        first_out.contains("Views: _apisip/views/all.sql"),
+        first_out.contains("Views: data/_apisip/views/all.sql"),
         "{first_out}"
     );
     let after_first = mock.requests();
@@ -225,7 +225,7 @@ fn jsonl_init_check_run_and_incremental_rerun() {
         1
     );
     assert_eq!(records(d, "plans").len(), 12, "a second full snapshot");
-    let plan_runs: std::collections::BTreeSet<_> = files(&d.join("plans"), "jsonl")
+    let plan_runs: std::collections::BTreeSet<_> = files(&d.join("data/plans"), "jsonl")
         .iter()
         .map(|p| p.parent().unwrap().to_path_buf())
         .collect();
@@ -264,9 +264,9 @@ fn parquet_types_follow_the_spec_and_bad_records_are_quarantined() {
     init(&mock, d, &["--format", "parquet", "--streams", "users"]);
     let run = apisip(d).arg("run").assert().success();
     assert!(stdout(&run).contains("1 quarantined"), "{}", stdout(&run));
-    assert_eq!(files(&d.join("users"), "parquet").len(), 1);
+    assert_eq!(files(&d.join("data/users"), "parquet").len(), 1);
 
-    let quarantine = files(&d.join("users/_quarantine"), "jsonl");
+    let quarantine = files(&d.join("data/users/_quarantine"), "jsonl");
     assert_eq!(quarantine.len(), 1);
     let q = std::fs::read_to_string(&quarantine[0]).unwrap();
     assert_eq!(q.lines().count(), 1);
@@ -351,7 +351,7 @@ fn a_crash_after_staging_commits_nothing() {
         .assert()
         .failure();
     assert!(records(d, "users").is_empty(), "no data was committed");
-    let state = std::fs::read_to_string(d.join("_apisip/state.json")).unwrap_or_default();
+    let state = std::fs::read_to_string(d.join("data/_apisip/state.json")).unwrap_or_default();
     assert!(!state.contains("watermark"), "{state}");
 
     apisip(d).arg("run").assert().success();
@@ -372,7 +372,7 @@ fn a_crash_after_the_move_only_repeats_records() {
         .assert()
         .failure();
     assert_eq!(records(d, "users").len(), 25, "the files were moved");
-    let state = std::fs::read_to_string(d.join("_apisip/state.json")).unwrap_or_default();
+    let state = std::fs::read_to_string(d.join("data/_apisip/state.json")).unwrap_or_default();
     assert!(!state.contains("watermark"), "{state}");
 
     // The next run fetches the same records again; the view keeps one per key.
@@ -430,12 +430,13 @@ fn a_stray_cursor_value_never_moves_the_watermark() {
         // any `updated_since`.
         mock.post("/_admin/stray/users/3");
         apisip(d).arg("run").assert().success();
-        let state: Value =
-            serde_json::from_str(&std::fs::read_to_string(d.join("_apisip/state.json")).unwrap())
-                .unwrap();
+        let state: Value = serde_json::from_str(
+            &std::fs::read_to_string(d.join("data/_apisip/state.json")).unwrap(),
+        )
+        .unwrap();
         let wm = state["streams"]["users"]["watermark"].as_str().unwrap();
         assert!(wm.starts_with("2026-"), "{format}: watermark {wm}");
-        let manifest = files(&d.join("_apisip/runs"), "json").pop().unwrap();
+        let manifest = files(&d.join("data/_apisip/runs"), "json").pop().unwrap();
         let manifest = std::fs::read_to_string(manifest).unwrap();
         if format == "jsonl" {
             assert!(manifest.contains("do not move the watermark"), "{manifest}");
@@ -448,7 +449,7 @@ fn a_stray_cursor_value_never_moves_the_watermark() {
         let before = mock.requests();
         apisip(d).arg("run").assert().success();
         assert!(count(&mock.requests(), "/users") > count(&before, "/users"));
-        let manifest = files(&d.join("_apisip/runs"), "json").pop().unwrap();
+        let manifest = files(&d.join("data/_apisip/runs"), "json").pop().unwrap();
         let manifest: Value =
             serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
         let users = &manifest["streams"]["users"];
@@ -468,7 +469,7 @@ fn an_empty_stream_does_not_break_the_views() {
     mock.post("/_admin/clear/plans");
     let a = apisip(d).arg("run").assert().success();
     assert!(!stdout(&a).contains("plans_current"), "{}", stdout(&a));
-    let views = d.join("_apisip/views");
+    let views = d.join("data/_apisip/views");
     assert!(views.join("users_current.sql").exists());
     assert!(!views.join("plans_current.sql").exists());
     let all = std::fs::read_to_string(views.join("all.sql")).unwrap();
@@ -492,7 +493,7 @@ fn a_second_run_in_the_same_folder_is_refused() {
         "{}",
         stderr(&a)
     );
-    assert!(!d.join("_apisip/runs").exists(), "nothing was started");
+    assert!(!d.join("data/_apisip/runs").exists(), "nothing was started");
     drop(held);
     apisip(d).arg("run").assert().success();
 }
@@ -723,7 +724,7 @@ fn a_query_api_key_is_never_shown() {
         shown += &stdout(&a);
         shown += &stderr(&a);
     }
-    for f in files(&d.join("_apisip/runs"), "json") {
+    for f in files(&d.join("data/_apisip/runs"), "json") {
         shown += &std::fs::read_to_string(f).unwrap();
     }
     assert!(shown.contains("FAILED: GET http://127.0.0.1"), "{shown}");

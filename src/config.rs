@@ -165,8 +165,11 @@ pub struct Destination {
     pub region: Option<String>,
 }
 
+/// Data goes to `data/` inside the API folder, apart from the config.
+pub const DEFAULT_DESTINATION: &str = "file://data";
+
 fn default_destination() -> String {
-    "file://.".into()
+    DEFAULT_DESTINATION.into()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -574,7 +577,7 @@ incremental = { cursor = "updated_at", sort = { param = "sort", value = "-update
     #[test]
     fn parses_with_defaults() {
         let c = sample();
-        assert_eq!(c.destination.url, "file://.");
+        assert_eq!(c.destination.url, "file://data");
         assert_eq!(c.destination.rotate.max_bytes, 64 << 20);
         assert_eq!(c.source.retry, RetryConfig::default());
         assert_eq!(

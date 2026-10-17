@@ -131,7 +131,12 @@ pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
     print_summary(&m, &store);
     match views {
         Ok(v) if !v.is_empty() => println!(
-            "Views: {}/all.sql (duckdb -c \".read {}/all.sql\")",
+            "Views: {}/{}/all.sql (duckdb -c \".read {}/all.sql\")",
+            ctx.config
+                .destination
+                .url
+                .trim_start_matches("file://")
+                .trim_end_matches('/'),
             crate::views::VIEWS_DIR,
             view_dir_hint(&store)
         ),

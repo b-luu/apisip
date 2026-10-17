@@ -49,7 +49,7 @@ struct InitArgs {
     /// Accept every default and never prompt. Use with the flags below.
     #[arg(short, long)]
     yes: bool,
-    /// Where to write data: a directory, file:// URL, or s3://bucket/prefix.
+    /// Where to write data: a directory, file:// URL, or s3://bucket/prefix. Default: data/.
     #[arg(long)]
     destination: Option<String>,
     /// Output format.

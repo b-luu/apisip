@@ -52,12 +52,10 @@ fn init_yes_writes_the_folder() {
     );
     #[cfg(unix)]
     assert_eq!(mode(&env), 0o600);
-    assert!(
-        std::fs::read_to_string(dir.path().join(".gitignore"))
-            .unwrap()
-            .lines()
-            .any(|l| l == ".env")
-    );
+    let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(gitignore.lines().any(|l| l == ".env"));
+    assert!(gitignore.lines().any(|l| l == "/data/"), "{gitignore}");
+    assert!(config.contains("url = \"file://data\""), "{config}");
     assert!(
         std::fs::read_to_string(dir.path().join(".env.example"))
             .unwrap()

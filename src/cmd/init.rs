@@ -60,8 +60,8 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
     let mut env_updates: Vec<(String, Option<String>)> = Vec::new();
     let dest_in = p.text(
         "Where should apisip write data?",
-        o.destination.as_deref().unwrap_or("."),
-        Some("a directory (default: this folder) or s3://bucket/prefix"),
+        o.destination.as_deref().unwrap_or("data"),
+        Some("a directory (default: data/ in this folder) or s3://bucket/prefix"),
     )?;
     let mut destination = Destination {
         url: normalize_destination(&dest_in),
@@ -272,7 +272,7 @@ pub(crate) fn baseline(det: &Detection, source: &Source) -> Config {
             ..source.clone()
         },
         destination: Destination {
-            url: "file://.".into(),
+            url: crate::config::DEFAULT_DESTINATION.into(),
             format: Format::Jsonl,
             rotate: Default::default(),
             endpoint: None,
@@ -400,6 +400,16 @@ fn write_files(
     envfile::write_example(&ws.dir.join(".env.example"), &example_keys)?;
     envfile::ensure_gitignored(&ws.dir.join(".gitignore"), ".env")?;
     envfile::ensure_gitignored(&ws.dir.join(".gitignore"), ".apisip/run.lock")?;
+    // Downloaded data inside the folder stays out of git.
+    if let Some(rel) = config.destination.url.strip_prefix("file://")
+        && !rel.starts_with('/')
+        && !rel.contains("..")
+        && !rel.contains("${")
+        && rel.trim_start_matches("./") != "."
+    {
+        let rel = rel.trim_start_matches("./").trim_end_matches('/');
+        envfile::ensure_gitignored(&ws.dir.join(".gitignore"), &format!("/{rel}/"))?;
+    }
     Ok(())
 }
 
@@ -494,11 +504,11 @@ fn stream_names(streams: &[StreamConfig]) -> String {
         .join(", ")
 }
 
-/// `.` -> `file://.`; a path -> `file://<path>`; URLs unchanged.
+/// Empty -> the default; a path -> `file://<path>`; URLs unchanged.
 pub fn normalize_destination(input: &str) -> String {
     let t = input.trim();
     if t.is_empty() {
-        return "file://.".into();
+        return crate::config::DEFAULT_DESTINATION.into();
     }
     if t.contains("://") {
         return t.trim_end_matches('/').to_string();
