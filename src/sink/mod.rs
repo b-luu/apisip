@@ -246,7 +246,11 @@ impl Store {
             .into_iter()
             .filter(|m| {
                 let name = m.location.filename().unwrap_or("");
-                name.starts_with(prefix) && name.ends_with(".jsonl")
+                // A replay may write its file again over the same name: a
+                // run's rows merged into it would be lost.
+                name.strip_prefix(prefix)
+                    .is_some_and(|rest| !rest.starts_with("replay-"))
+                    && name.ends_with(".jsonl")
             })
             .max_by(|a, b| a.location.as_ref().cmp(b.location.as_ref()))
             .map(|m| (m.location.to_string(), m.size)))
@@ -362,6 +366,37 @@ mod tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
         assert_eq!(names.len(), 2, "no temp file left behind: {names:?}");
+    }
+
+    #[tokio::test]
+    async fn promote_never_merges_into_a_replay_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = local(tmp.path());
+        store.put("s/dt=1/s-a-0000.jsonl", "1\n").await.unwrap();
+        store
+            .put("s/dt=1/s-replay-q-0123-0000.jsonl", "2\n")
+            .await
+            .unwrap();
+        store
+            .put("_apisip/staging/r/s/dt=1/s-r-0000.jsonl", "3\n")
+            .await
+            .unwrap();
+        let f = StagedFile {
+            staged: "_apisip/staging/r/s/dt=1/s-r-0000.jsonl".into(),
+            target: "s/dt=1/s-r-0000.jsonl".into(),
+            rows: 1,
+            bytes: 2,
+        };
+        let out = store.promote(&f, Some(("s-", 100))).await.unwrap();
+        assert_eq!(out, "s/dt=1/s-a-0000.jsonl");
+        assert_eq!(
+            store
+                .get("s/dt=1/s-replay-q-0123-0000.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+            "2\n"
+        );
     }
 
     #[tokio::test]
