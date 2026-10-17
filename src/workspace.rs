@@ -79,14 +79,20 @@ impl Workspace {
         read_json(&self.schema_path(stream))
     }
 
+    pub fn read_schema_baseline(&self, stream: &str) -> Result<Option<Value>> {
+        read_json(&self.schema_baseline_path(stream))
+    }
+
     /// Writes a stream's schema file and its baseline.
     pub fn write_schema(&self, stream: &str, schema: &Value) -> Result<()> {
-        let text = serde_json::to_string_pretty(schema)? + "\n";
-        for path in [self.schema_path(stream), self.schema_baseline_path(stream)] {
-            std::fs::create_dir_all(path.parent().expect("a schema path has a parent"))?;
-            std::fs::write(&path, &text).with_context(|| format!("writing {}", path.display()))?;
-        }
-        Ok(())
+        self.write_schema_files(stream, schema, schema)
+    }
+
+    /// Writes a schema file that differs from its baseline: the user kept
+    /// some of their own changes.
+    pub fn write_schema_files(&self, stream: &str, file: &Value, baseline: &Value) -> Result<()> {
+        write_json(&self.schema_path(stream), file)?;
+        write_json(&self.schema_baseline_path(stream), baseline)
     }
 
     /// Whether the schema file differs from the one apisip wrote.
@@ -153,6 +159,12 @@ fn read_json(path: &Path) -> Result<Option<Value>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
+}
+
+fn write_json(path: &Path, v: &Value) -> Result<()> {
+    std::fs::create_dir_all(path.parent().expect("a schema path has a parent"))?;
+    std::fs::write(path, serde_json::to_string_pretty(v)? + "\n")
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 pub fn display_dir(p: &Path) -> String {

@@ -20,10 +20,13 @@ use crate::detect::{self, AuthOption, Detection, EnvVar};
 use crate::envfile;
 use crate::prompt::{self, Prompter};
 use crate::schema::{RecordSchema, Shape};
+use crate::sink::{META_DIR, Store};
 use crate::spec::Spec;
+use crate::state::Manifest;
 use crate::workspace::Workspace;
 
 use super::init::{BASELINE_HEADER, baseline, current_value, stream_note};
+use super::schema_merge::{self, FieldMerge};
 
 #[derive(Debug, Default, Clone)]
 pub struct UpdateOptions {
@@ -289,35 +292,152 @@ fn stream_table<'a>(doc: &'a DocumentMut, name: &str) -> Option<&'a Table> {
         .find(|t| t.get("name").and_then(Item::as_str) == Some(name))
 }
 
-/// Field-level changes of a stream's record schema between two spec versions.
-pub fn schema_changes(old: &Spec, new: &Spec, stream: &StreamConfig) -> Vec<String> {
-    let fields = |spec: &Spec| -> Option<BTreeMap<String, Shape>> {
-        let item = detect::stream_record_schema(spec, stream)?;
-        Some(RecordSchema::from_spec(&item)?.fields.into_iter().collect())
+/// A change of the primary key or cursor field changes what the views
+/// dedupe on, so it is always asked about.
+fn changes_views(c: &FieldChange) -> bool {
+    c.stream.is_some()
+        && (c.key == "primary_key"
+            || (c.key == "incremental" && c.mine.get("cursor") != c.theirs.get("cursor")))
+}
+
+/// A stream's schema file and what the new spec changes in it.
+#[derive(Debug)]
+struct StreamSchema {
+    name: String,
+    /// The spec's schema; `None` when the spec has none (an inferred file).
+    theirs: Option<Value>,
+    base: Option<Value>,
+    mine: Option<Value>,
+    changes: Vec<FieldMerge>,
+    /// Fields seen undeclared in each recent run, with their observed type.
+    undeclared: Vec<(String, Shape)>,
+}
+
+impl StreamSchema {
+    fn changed(&self) -> bool {
+        self.theirs.is_some() && (self.mine.is_none() || !self.changes.is_empty())
+    }
+}
+
+/// How many recent runs of a stream must all have seen an undeclared field
+/// before update offers to declare it.
+const RECENT_RUNS: usize = 3;
+
+fn plan_schemas(
+    ws: &Workspace,
+    mine: &Config,
+    theirs: &Config,
+    d: &Diff,
+    spec: &Spec,
+    undeclared: &BTreeMap<String, Vec<(String, Value)>>,
+) -> Result<Vec<StreamSchema>> {
+    let streams = mine.streams.iter().map(|s| {
+        theirs
+            .streams
+            .iter()
+            .find(|t| t.name == s.name)
+            .unwrap_or(s)
+    });
+    let added = theirs.streams.iter().filter(|t| d.added.contains(&t.name));
+    let mut out = Vec::new();
+    for s in streams.chain(added) {
+        let theirs = super::spec_schema_file(spec, s);
+        let mine = ws.read_schema(&s.name)?;
+        let base = ws.read_schema_baseline(&s.name)?;
+        let changes = match (&theirs, &mine) {
+            (Some(t), Some(m)) => schema_merge::diff(base.as_ref(), t, m),
+            _ => Vec::new(),
+        };
+        let declared: BTreeSet<String> = [&theirs, &mine]
+            .into_iter()
+            .flatten()
+            .flat_map(schema_merge::fields)
+            .map(|(n, _)| n)
+            .collect();
+        let undeclared = match &mine {
+            Some(_) => undeclared
+                .get(&s.name)
+                .into_iter()
+                .flatten()
+                .filter(|(f, _)| !declared.contains(f))
+                .map(|(f, ex)| (f.clone(), schema_merge::observed_shape(f, ex)))
+                .collect(),
+            None => Vec::new(),
+        };
+        out.push(StreamSchema {
+            name: s.name.clone(),
+            theirs,
+            base,
+            mine,
+            changes,
+            undeclared,
+        });
+    }
+    Ok(out)
+}
+
+/// The destination, when there is one to read: a local folder is not created.
+fn open_store(ws: &Workspace, config: &Config) -> Option<Store> {
+    let url = crate::config::interpolate(&config.destination.url).ok()?;
+    if !url.starts_with("s3://") && !Store::local_dir(&url, &ws.dir).ok()?.exists() {
+        return None;
+    }
+    Store::open(&config.destination, &ws.dir).ok()
+}
+
+/// Top-level fields undeclared in each of the last runs of a stream (up to
+/// `RECENT_RUNS`), with the latest example.
+async fn recent_undeclared(store: &Store) -> BTreeMap<String, Vec<(String, Value)>> {
+    let Ok(mut runs) = store.list(&format!("{META_DIR}/runs")).await else {
+        return BTreeMap::new();
     };
-    let (Some(o), Some(n)) = (fields(old), fields(new)) else {
+    // Run ids start with their timestamp: newest first.
+    runs.sort_by(|a, b| b.location.cmp(&a.location));
+    let mut seen: BTreeMap<String, Vec<BTreeMap<String, Value>>> = BTreeMap::new();
+    for meta in runs.iter().take(50) {
+        let Ok(Some(bytes)) = store.get(meta.location.as_ref()).await else {
+            continue;
+        };
+        let Ok(m) = serde_json::from_slice::<Manifest>(&bytes) else {
+            continue;
+        };
+        for (name, r) in m.streams {
+            let Some(drift) = r.drift else { continue };
+            let runs = seen.entry(name).or_default();
+            if runs.len() < RECENT_RUNS {
+                runs.push(
+                    drift
+                        .undeclared
+                        .into_iter()
+                        .filter(|(p, _)| !p.contains(['.', '[']))
+                        .map(|(p, s)| (p, s.example))
+                        .collect(),
+                );
+            }
+        }
+    }
+    seen.into_iter()
+        .map(|(name, runs)| (name, in_every_run(&runs)))
+        .collect()
+}
+
+/// The fields of the newest run (first) that every other run saw too.
+fn in_every_run(runs: &[BTreeMap<String, Value>]) -> Vec<(String, Value)> {
+    let Some(newest) = runs.first() else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    for (k, s) in &n {
-        match o.get(k) {
-            None => out.push(format!("+ {k} ({})", s.label())),
-            Some(prev) if prev != s => {
-                if prev.label() == s.label() {
-                    out.push(format!("~ {k}: {} fields changed", s.label()));
-                } else {
-                    out.push(format!("~ {k}: {} -> {}", prev.label(), s.label()));
-                }
-            }
-            Some(_) => {}
-        }
+    newest
+        .iter()
+        .filter(|(f, _)| runs.iter().all(|r| r.contains_key(*f)))
+        .map(|(f, ex)| (f.clone(), ex.clone()))
+        .collect()
+}
+
+fn field_short(f: &Option<schema_merge::Field>) -> String {
+    match f {
+        None => "(absent)".into(),
+        Some(f) => short(&f.schema),
     }
-    for (k, s) in &o {
-        if !n.contains_key(k) {
-            out.push(format!("- {k} ({})", s.label()));
-        }
-    }
-    out
 }
 
 /// Returns false when `--check` found changes (exit code 1).
@@ -342,25 +462,26 @@ pub async fn run(ws: &Workspace, o: UpdateOptions) -> Result<bool> {
     let theirs = baseline(&det, &mine.source);
     let d = diff(&base, &theirs, &mine);
 
-    let schema: Vec<(String, Vec<String>)> = match &old_spec {
-        Some(old) => mine
-            .streams
-            .iter()
-            .filter(|s| theirs.streams.iter().any(|t| t.name == s.name))
-            .map(|s| (s.name.clone(), schema_changes(old, &new_spec, s)))
-            .filter(|(_, c)| !c.is_empty())
-            .collect(),
-        None => Vec::new(),
+    let store = open_store(ws, &mine);
+    let undeclared = match &store {
+        Some(s) => recent_undeclared(s).await,
+        None => BTreeMap::new(),
     };
+    let schemas = plan_schemas(ws, &mine, &theirs, &d, &new_spec, &undeclared)?;
     let spec_change = o.spec.as_ref().filter(|s| **s != mine.source.spec).cloned();
     let old_auth = old_spec.as_ref().map(|s| detect::detect(s).auth);
     let auth_changed = old_auth
         .as_ref()
         .is_some_and(|old| auth_names(old) != auth_names(&det.auth));
 
-    print_diff(&d, &schema, auth_changed.then_some((&old_auth, &det.auth)));
-    print_drift(ws, &mine, &new_spec).await;
-    let changed = !d.is_empty() || !schema.is_empty() || auth_changed || spec_change.is_some();
+    print_diff(&d, &schemas, auth_changed.then_some((&old_auth, &det.auth)));
+    if let Some(store) = &store {
+        print_drift(store, &mine, &new_spec).await;
+    }
+    let changed = !d.is_empty()
+        || schemas.iter().any(StreamSchema::changed)
+        || auth_changed
+        || spec_change.is_some();
     if o.check {
         if !changed {
             println!("No change: apisip.toml matches the spec.");
@@ -369,12 +490,59 @@ pub async fn run(ws: &Workspace, o: UpdateOptions) -> Result<bool> {
     }
 
     let p = Prompter::new(o.yes)?;
+    if !p.interactive {
+        let mut blocking: Vec<String> = d
+            .fields
+            .iter()
+            .filter(|c| c.kind == Kind::Update && changes_views(c))
+            .map(|c| {
+                format!(
+                    "streams.{}.{}: {} -> {}",
+                    c.stream.as_deref().unwrap_or_default(),
+                    c.key,
+                    short(&c.mine),
+                    short(&c.theirs)
+                )
+            })
+            .collect();
+        for s in &schemas {
+            for c in &s.changes {
+                if c.kind == Kind::Update && !c.compatible {
+                    blocking.push(format!("schemas/{}.json: {}", s.name, c.describe()));
+                }
+            }
+        }
+        if !blocking.is_empty() {
+            bail!(
+                "nothing was written: these spec changes do not match the data already written and need a decision:\n  {}\nRun `apisip update` in a terminal to choose.",
+                blocking.join("\n  ")
+            );
+        }
+    }
     let mut r = Resolution {
         spec: spec_change,
         ..Default::default()
     };
     for (i, c) in d.fields.iter().enumerate() {
         match c.kind {
+            Kind::Update if changes_views(c) => {
+                let options = vec![
+                    format!("keep the current one: {}", short(&c.mine)),
+                    format!("take the spec's: {}", short(&c.theirs)),
+                ];
+                let pick = p.select(
+                    &format!(
+                        "streams.{}.{} changed in the spec; the views deduplicate on it",
+                        c.stream.as_deref().unwrap_or_default(),
+                        c.key
+                    ),
+                    &options,
+                    Some(0),
+                )?;
+                if pick == 1 {
+                    r.take.insert(i);
+                }
+            }
             Kind::Update => {
                 r.take.insert(i);
             }
@@ -412,6 +580,58 @@ pub async fn run(ws: &Workspace, o: UpdateOptions) -> Result<bool> {
         r.enable = picked.into_iter().map(|i| d.added[i].clone()).collect();
     }
 
+    let mut schema_picks: Vec<(Vec<bool>, Vec<usize>)> = Vec::new();
+    for s in &schemas {
+        let mut take = Vec::new();
+        for c in &s.changes {
+            take.push(match c.kind {
+                Kind::AlreadyApplied => false,
+                Kind::Update if c.compatible => true,
+                Kind::Update => {
+                    let options = vec![
+                        format!("keep the current one: {}", field_short(&c.mine)),
+                        format!("take the spec's: {}", field_short(&c.theirs)),
+                    ];
+                    let message = format!(
+                        "schemas/{}.json: {} (the files already written keep the old type)",
+                        s.name,
+                        c.describe().trim_start_matches("~ ")
+                    );
+                    p.select(&message, &options, Some(0))? == 1
+                }
+                Kind::Conflict => {
+                    let options = vec![
+                        format!("keep mine: {}", field_short(&c.mine)),
+                        format!("take the spec's: {}", field_short(&c.theirs)),
+                    ];
+                    let message = format!(
+                        "schemas/{}.json: {} was edited here and changed in the spec",
+                        s.name, c.field
+                    );
+                    p.select(&message, &options, Some(0))? == 1
+                }
+            });
+        }
+        let adopt = if s.undeclared.is_empty() {
+            Vec::new()
+        } else {
+            let labels: Vec<String> = s
+                .undeclared
+                .iter()
+                .map(|(f, shape)| format!("{f} ({})", shape.label()))
+                .collect();
+            p.multi_select(
+                &format!(
+                    "Declare in schemas/{}.json the fields each recent run saw",
+                    s.name
+                ),
+                &labels,
+                &[],
+            )?
+        };
+        schema_picks.push((take, adopt));
+    }
+
     let (auth, vars) = confirm_auth(&p, &det, &base, &mine, old_auth.as_deref())?;
     if auth != mine.source.auth {
         r.auth = Some(auth.clone());
@@ -434,7 +654,57 @@ pub async fn run(ws: &Workspace, o: UpdateOptions) -> Result<bool> {
         &new_spec,
         &new_base.render(BASELINE_HEADER, &BTreeMap::new(), None),
     )?;
-    let edited = refresh_schemas(ws, &Config::parse(&merged)?, &new_spec)?;
+    let mut kept = Vec::new();
+    for (s, (take, adopt)) in schemas.iter().zip(&schema_picks) {
+        let Some(m) = &s.mine else {
+            if let Some(t) = &s.theirs {
+                ws.write_schema(&s.name, t)?;
+            }
+            continue;
+        };
+        let taken: Vec<&FieldMerge> = s
+            .changes
+            .iter()
+            .zip(take)
+            .filter(|(_, t)| **t)
+            .map(|(c, _)| c)
+            .collect();
+        let all_taken = taken.len()
+            == s.changes
+                .iter()
+                .filter(|c| c.kind != Kind::AlreadyApplied)
+                .count();
+        let mut out = match &s.theirs {
+            Some(t) if all_taken && s.base.as_ref() == Some(m) => t.clone(),
+            _ => schema_merge::apply(m, &taken),
+        };
+        for i in adopt {
+            let (f, shape) = &s.undeclared[*i];
+            schema_merge::adopt(&mut out, f, shape);
+        }
+        let not_taken: Vec<&str> = s
+            .changes
+            .iter()
+            .zip(take)
+            .filter(|(c, t)| c.kind != Kind::AlreadyApplied && !**t)
+            .map(|(c, _)| c.field.as_str())
+            .collect();
+        if !not_taken.is_empty() {
+            kept.push(format!(
+                "schemas/{}.json keeps your version of: {}",
+                s.name,
+                not_taken.join(", ")
+            ));
+        }
+        match &s.theirs {
+            Some(t) => ws.write_schema_files(&s.name, &out, t)?,
+            None if out != *m => {
+                let base = s.base.as_ref().unwrap_or(m);
+                ws.write_schema_files(&s.name, &out, base)?
+            }
+            None => {}
+        }
+    }
     let updates: Vec<(String, Option<String>)> =
         creds.into_iter().filter(|(_, v)| v.is_some()).collect();
     if !updates.is_empty() {
@@ -466,29 +736,10 @@ pub async fn run(ws: &Workspace, o: UpdateOptions) -> Result<bool> {
             d.removed.join(", ")
         );
     }
-    for name in edited {
-        println!(
-            "schemas/{name}.json was edited here: left as is, apply the spec's changes by hand"
-        );
+    for line in kept {
+        println!("{line}");
     }
     Ok(true)
-}
-
-/// Writes the spec's schema for each stream whose file is missing or was
-/// never edited. Returns the streams whose edited file differs from it.
-fn refresh_schemas(ws: &Workspace, config: &Config, spec: &Spec) -> Result<Vec<String>> {
-    let mut edited = Vec::new();
-    for s in &config.streams {
-        let Some(new) = super::spec_schema_file(spec, s) else {
-            continue;
-        };
-        match ws.read_schema(&s.name)? {
-            Some(current) if current == new => ws.write_schema(&s.name, &new)?,
-            Some(_) if ws.schema_edited(&s.name)? => edited.push(s.name.clone()),
-            _ => ws.write_schema(&s.name, &new)?,
-        }
-    }
-    Ok(edited)
 }
 
 fn auth_names(options: &[AuthOption]) -> BTreeSet<String> {
@@ -615,7 +866,7 @@ fn auth_vars(auth: &AuthConfig, known: &[EnvVar]) -> Vec<EnvVar> {
 
 fn print_diff(
     d: &Diff,
-    schema: &[(String, Vec<String>)],
+    schemas: &[StreamSchema],
     auth: Option<(&Option<Vec<AuthOption>>, &Vec<AuthOption>)>,
 ) {
     if !d.added.is_empty() {
@@ -633,6 +884,7 @@ fn print_diff(
             None => format!("source.{}", c.key),
         };
         let note = match c.kind {
+            Kind::Update if changes_views(c) => "spec changed; the views deduplicate on it: asks",
             Kind::Update => "spec changed, not edited here: updating",
             Kind::Conflict => "edited here and changed in the spec: conflict",
             Kind::AlreadyApplied => "spec now matches your edit",
@@ -646,10 +898,31 @@ fn print_diff(
             println!("  yours: {}", short(&c.mine));
         }
     }
-    for (stream, changes) in schema {
-        println!("Schema of {stream}:");
-        for c in changes {
-            println!("  {c}");
+    for s in schemas {
+        if s.theirs.is_some() && s.mine.is_none() {
+            println!(
+                "schemas/{}.json is missing: it will be written from the spec",
+                s.name
+            );
+        }
+        if s.changes.is_empty() && s.undeclared.is_empty() {
+            continue;
+        }
+        println!("Schema of {} (schemas/{}.json):", s.name, s.name);
+        for c in &s.changes {
+            let note = match c.kind {
+                Kind::AlreadyApplied => " (spec now matches your edit)",
+                Kind::Conflict => " (edited here and changed in the spec: conflict)",
+                Kind::Update if c.compatible => "",
+                Kind::Update => " (does not match the files already written: asks)",
+            };
+            println!("  {}{note}", c.describe());
+        }
+        for (f, shape) in &s.undeclared {
+            println!(
+                "  ? {f} ({}): undeclared, seen in each recent run",
+                shape.label()
+            );
         }
     }
     if let Some((Some(old), new)) = auth {
@@ -664,11 +937,8 @@ fn print_diff(
 }
 
 /// The drift the last run saw, and which of it the new spec now declares.
-async fn print_drift(ws: &Workspace, config: &Config, new_spec: &Spec) {
-    let Ok(store) = crate::sink::Store::open(&config.destination, &ws.dir) else {
-        return;
-    };
-    let Ok(state) = crate::state::State::load(&store).await else {
+async fn print_drift(store: &Store, config: &Config, new_spec: &Spec) {
+    let Ok(state) = crate::state::State::load(store).await else {
         return;
     };
     for s in &config.streams {
@@ -679,10 +949,10 @@ async fn print_drift(ws: &Workspace, config: &Config, new_spec: &Spec) {
         else {
             continue;
         };
-        let Ok(Some(bytes)) = store.get(&crate::state::Manifest::path(&run_id)).await else {
+        let Ok(Some(bytes)) = store.get(&Manifest::path(&run_id)).await else {
             continue;
         };
-        let Ok(m) = serde_json::from_slice::<crate::state::Manifest>(&bytes) else {
+        let Ok(m) = serde_json::from_slice::<Manifest>(&bytes) else {
             continue;
         };
         let Some(drift) = m.streams.get(&s.name).and_then(|r| r.drift.clone()) else {
@@ -886,6 +1156,50 @@ path = "/legacy"
         let moved = auth("NEW_API_KEY", "X-Api-Key");
         let (taken, _) = same_scheme(Some(&old), old.clone(), moved.clone(), &known);
         assert_eq!(taken, moved);
+    }
+
+    #[test]
+    fn a_key_or_cursor_change_is_asked_about_even_unedited() {
+        let d = diff(&cfg(BASE), &theirs(), &cfg(BASE));
+        let asks: Vec<(&str, bool)> = d
+            .fields
+            .iter()
+            .map(|c| (c.key.as_str(), changes_views(c)))
+            .collect();
+        assert_eq!(
+            asks,
+            [
+                ("base_url", false),
+                ("pagination", false),
+                ("primary_key", true)
+            ]
+        );
+        let inc = |cursor: &str, param: &str| {
+            BASE.replace(
+                "name = \"teams\"\npath = \"/teams\"\nprimary_key = \"id\"",
+                &format!(
+                    "name = \"teams\"\npath = \"/teams\"\nprimary_key = \"id\"\nincremental = {{ cursor = \"{cursor}\", param = \"{param}\" }}"
+                ),
+            )
+        };
+        let base = cfg(&inc("updated_at", "since"));
+        let param_only = diff(&base, &cfg(&inc("updated_at", "from")), &base);
+        assert!(!changes_views(&param_only.fields[0]), "{param_only:?}");
+        let cursor = diff(&base, &cfg(&inc("modified_at", "since")), &base);
+        assert!(changes_views(&cursor.fields[0]), "{cursor:?}");
+    }
+
+    #[test]
+    fn only_fields_every_recent_run_saw_are_offered() {
+        let run = |fields: &[&str]| -> BTreeMap<String, Value> {
+            fields
+                .iter()
+                .map(|f| (f.to_string(), Value::from(*f)))
+                .collect()
+        };
+        let runs = [run(&["a", "b"]), run(&["a", "c"]), run(&["a", "b"])];
+        assert_eq!(in_every_run(&runs), [("a".to_string(), Value::from("a"))]);
+        assert!(in_every_run(&[]).is_empty());
     }
 
     #[test]

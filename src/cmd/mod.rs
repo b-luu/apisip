@@ -2,6 +2,7 @@ pub mod check;
 pub mod init;
 pub mod list;
 pub mod run;
+pub mod schema_merge;
 pub mod update;
 
 use anyhow::{Result, bail};
@@ -42,7 +43,6 @@ pub fn select_streams(config: &Config, names: &[String]) -> Result<Vec<StreamCon
         .collect()
 }
 
-/// The endpoint URL with the stream's fixed params, before paging and incremental params.
 /// A stream's record schema: `schemas/<stream>.json`, or the spec's when
 /// the file is missing. `None` when there is neither: the run infers one.
 pub fn load_schema(
@@ -81,6 +81,7 @@ pub fn spec_schema_file(spec: &Spec, s: &StreamConfig) -> Option<serde_json::Val
     Some(item)
 }
 
+/// The endpoint URL with the stream's fixed params, before paging and incremental params.
 pub fn first_url(client: &ApiClient, s: &StreamConfig) -> Result<Url> {
     let mut url = client.endpoint(&s.path)?;
     for (k, v) in &s.params {

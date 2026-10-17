@@ -684,39 +684,103 @@ fn update_merges_the_v2_spec() {
     assert_ne!(edited, text);
     std::fs::write(&config, &edited).unwrap();
     let env_before = std::fs::read_to_string(d.join(".env")).unwrap();
-    // And the orders schema.
+    // And the orders schema: a field v2 changes too.
     let orders_schema = d.join("schemas/orders.json");
-    let mut orders: Value =
-        serde_json::from_str(&std::fs::read_to_string(&orders_schema).unwrap()).unwrap();
-    orders["description"] = "my edit".into();
+    let read_json =
+        |p: &Path| -> Value { serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap() };
+    let mut orders = read_json(&orders_schema);
+    orders["properties"]["user_id"]["description"] = "my edit".into();
     std::fs::write(&orders_schema, orders.to_string()).unwrap();
+
+    // A run sees the undeclared `nickname`; the same spec offers to declare it.
+    apisip(d).arg("run").assert().success();
+    let users_schema = d.join("schemas/users.json");
+    apisip(d)
+        .args(["update", "--check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "? nickname (string): undeclared, seen in each recent run",
+        ));
+    let spawn = |args: &[&str]| {
+        let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("apisip"));
+        cmd.arg("-C")
+            .arg(d)
+            .arg("update")
+            .args(args)
+            .env("TERM", "xterm")
+            .env_remove("MOCKSHOP_TOKEN");
+        rexpect::session::spawn_with_options(
+            cmd,
+            Options::new()
+                .timeout_ms(Some(15_000))
+                .strip_ansi_escape_codes(true),
+        )
+        .unwrap()
+    };
+    let mut p = spawn(&[]);
+    p.exp_string("Declare in schemas/users.json the fields each recent run saw")
+        .unwrap();
+    p.send(" ").unwrap();
+    p.send_line("").unwrap();
+    p.exp_string("Authentication (Enter keeps the current one)")
+        .unwrap();
+    p.send_line("").unwrap();
+    p.exp_string("Enter keeps the current value").unwrap();
+    p.send_line("").unwrap();
+    p.exp_eof().unwrap();
+    assert_eq!(
+        read_json(&users_schema)["properties"]["nickname"],
+        serde_json::json!({"type": "string"})
+    );
 
     let v2 = format!("{}/v2/openapi.json", mock.base);
     let check = apisip(d).args(["update", "--check", &v2]).assert().code(1);
     let diff = stdout(&check);
     assert!(diff.contains("projects"), "{diff}");
     assert!(diff.contains("plans"), "{diff}");
-    assert!(diff.contains("+ phone"), "{diff}");
+    assert!(diff.contains("+ phone (string)"), "{diff}");
+    assert!(diff.contains("~ age: integer -> number\n"), "{diff}");
+    assert!(
+        diff.contains("~ created_on: date string -> date-time string (does not match the files already written: asks)"),
+        "{diff}"
+    );
+    assert!(
+        diff.contains(
+            "~ user_id: integer -> string (edited here and changed in the spec: conflict)"
+        ),
+        "{diff}"
+    );
     assert_eq!(std::fs::read_to_string(&config).unwrap(), edited);
+    // --yes refuses the incompatible change before writing anything.
+    let users_before = std::fs::read_to_string(&users_schema).unwrap();
+    apisip(d)
+        .args(["update", "--yes", &v2])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing was written"))
+        .stderr(predicate::str::contains(
+            "schemas/orders.json: ~ created_on: date string -> date-time string",
+        ))
+        .stderr(predicate::str::contains("user_id").not());
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), edited);
+    assert_eq!(
+        std::fs::read_to_string(&users_schema).unwrap(),
+        users_before
+    );
 
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("apisip"));
-    cmd.arg("-C")
-        .arg(d)
-        .args(["update", &v2])
-        .env("TERM", "xterm")
-        .env_remove("MOCKSHOP_TOKEN");
-    let mut p = rexpect::session::spawn_with_options(
-        cmd,
-        Options::new()
-            .timeout_ms(Some(15_000))
-            .strip_ansi_escape_codes(true),
-    )
-    .unwrap();
+    let mut p = spawn(&[&v2]);
     p.exp_string("streams.orders.pagination was edited here and changed in the spec")
         .unwrap();
     p.send_line("").unwrap(); // keep mine
     p.exp_string("New endpoints to download").unwrap();
     p.send_line("").unwrap(); // none
+    p.exp_string("schemas/orders.json: user_id was edited here and changed in the spec")
+        .unwrap();
+    p.send_line("").unwrap(); // keep mine
+    p.exp_string("schemas/orders.json: created_on:").unwrap();
+    p.send("\x1b[B").unwrap();
+    p.send_line("").unwrap(); // take the spec's
     p.exp_string("Authentication (Enter keeps the current one)")
         .unwrap();
     p.send_line("").unwrap();
@@ -724,13 +788,21 @@ fn update_merges_the_v2_spec() {
     p.send_line("").unwrap();
     let out = p.exp_eof().unwrap();
     assert!(!out.contains(mock::TOKEN), "the token must never be echoed");
-    assert!(out.contains("schemas/orders.json was edited here"), "{out}");
-    let users_schema = std::fs::read_to_string(d.join("schemas/users.json")).unwrap();
-    assert!(users_schema.contains("\"phone\""), "unedited, updated");
+    assert!(
+        out.contains("schemas/orders.json keeps your version of: user_id"),
+        "{out}"
+    );
+    let users = read_json(&users_schema);
+    assert_eq!(users["properties"]["phone"]["type"], "string", "new field");
+    assert_eq!(users["properties"]["age"]["type"], "number", "widened");
+    let new_orders = read_json(&orders_schema);
     assert_eq!(
-        serde_json::from_str::<Value>(&std::fs::read_to_string(&orders_schema).unwrap()).unwrap(),
-        orders,
-        "edited, kept"
+        new_orders["properties"]["user_id"],
+        orders["properties"]["user_id"]
+    );
+    assert_eq!(
+        new_orders["properties"]["created_on"]["format"], "date-time",
+        "taken on request"
     );
 
     let merged = std::fs::read_to_string(&config).unwrap();

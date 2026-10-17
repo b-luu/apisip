@@ -377,8 +377,9 @@ fn q(name: &str, schema: Value) -> Value {
 }
 
 /// The spec. v2 renames nothing but: raises the users and orders page sizes, declares
-/// `nickname` and a new `phone` field, removes `/plans`, adds `/projects`,
-/// and adds an API key scheme.
+/// `nickname` and a new `phone` field, widens `age` to a number, changes the
+/// type of two order fields, removes `/plans`, adds `/projects`, and adds an
+/// API key scheme.
 pub fn spec(base: &str, v2: bool) -> Value {
     let mut user_props = json!({
         "id": {"type": "integer"},
@@ -391,6 +392,19 @@ pub fn spec(base: &str, v2: bool) -> Value {
     if v2 {
         user_props["nickname"] = json!({"type": "string"});
         user_props["phone"] = json!({"type": "string"});
+        user_props["age"] = json!({"type": "number"});
+    }
+    let mut order_props = json!({
+        "id": {"type": "integer"},
+        "user_id": {"type": "integer"},
+        "amount": {"type": "number"},
+        "status": {"type": "string", "enum": ["paid", "refunded"]},
+        "created_on": {"type": "string", "format": "date"},
+        "updated_at": {"type": "string", "format": "date-time"}
+    });
+    if v2 {
+        order_props["user_id"] = json!({"type": "string"});
+        order_props["created_on"] = json!({"type": "string", "format": "date-time"});
     }
     let mut paths = json!({
         "/users": {"get": {
@@ -464,14 +478,7 @@ pub fn spec(base: &str, v2: bool) -> Value {
             "securitySchemes": schemes,
             "schemas": {
                 "User": {"type": "object", "properties": user_props},
-                "Order": {"type": "object", "properties": {
-                    "id": {"type": "integer"},
-                    "user_id": {"type": "integer"},
-                    "amount": {"type": "number"},
-                    "status": {"type": "string", "enum": ["paid", "refunded"]},
-                    "created_on": {"type": "string", "format": "date"},
-                    "updated_at": {"type": "string", "format": "date-time"}
-                }},
+                "Order": {"type": "object", "properties": order_props},
                 "Event": {"type": "object", "properties": {
                     "id": {"type": "integer"},
                     "kind": {"type": "string"},
