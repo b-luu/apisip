@@ -10,7 +10,7 @@ pub mod update;
 use anyhow::{Result, bail};
 use url::Url;
 
-use crate::config::{Cast, Config, Pagination, StreamConfig, interpolate};
+use crate::config::{Config, Pagination, StreamConfig, interpolate};
 use crate::detect::stream_record_schema;
 use crate::http::ApiClient;
 use crate::schema::{RecordSchema, SOURCE_KEY};
@@ -77,7 +77,7 @@ pub fn load_schema(
     spec: Option<&Spec>,
     s: &StreamConfig,
 ) -> Result<Option<RecordSchema>> {
-    let cast = s.cast == Cast::Lossless;
+    let cast = s.cast;
     if let Some(v) = ws.read_schema(&s.name)? {
         return match RecordSchema::from_file(&v) {
             Some(schema) => Ok(Some(RecordSchema { cast, ..schema })),

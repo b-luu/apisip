@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 
-use crate::config::Format;
+use crate::config::{Cast, Format};
 use crate::http::{ApiClient, Paginator, extract_records};
 use crate::schema::{Drift, RecordSchema};
 use crate::sink::Store;
@@ -67,7 +67,7 @@ pub async fn run(ws: &Workspace) -> Result<bool> {
                 // As in `run`: casts and quarantine apply to Parquet only.
                 let parquet = config.destination.format == Format::Parquet;
                 let schema = load_schema(ws, spec.as_ref(), &s)?.map(|sc| RecordSchema {
-                    cast: parquet && sc.cast,
+                    cast: if parquet { sc.cast } else { Cast::None },
                     ..sc
                 });
                 let mut line = format!(

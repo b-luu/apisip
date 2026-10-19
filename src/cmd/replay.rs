@@ -183,7 +183,7 @@ impl Replay<'_> {
     ) -> Result<()> {
         let name = &s.name;
         let parquet = self.format == Format::Parquet;
-        let cast = parquet && s.cast == Cast::Lossless;
+        let cast = if parquet { s.cast } else { Cast::None };
         let schema = load_schema(self.ws, self.spec, s)?.map(|sc| RecordSchema { cast, ..sc });
         if parquet && schema.is_none() {
             bail!("schemas/{name}.json is missing: replay needs the schema to type the records");

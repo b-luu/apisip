@@ -198,7 +198,7 @@ records = "/data"                 # JSON pointer to the record array
 primary_key = "id"
 pagination = { type = "page_number", param = "page", size_param = "per_page", size = 10, start = 1 }
 incremental = { cursor = "updated_at", param = "updated_since" }
-cast = "lossless"                 # default; "none" quarantines every mistyped value
+cast = "lossless"                 # default; "exact" or "none" for stricter typing
 ```
 
 - **Secrets:** `${VAR}` is read from `.env`, then from the process
@@ -385,18 +385,22 @@ writes it to `schemas/<stream>.json`; later runs reuse that file, so the types
 no longer depend on which records came first. `list` shows `schema: inferred`.
 
 **Casts are lossless or not done.** With the default `cast = "lossless"`, a
-value of the wrong type is converted only when the conversion keeps it exactly:
+value of the wrong type is converted only when the conversion keeps its value:
 
-- a string to an integer when it reads back the same (`"41"`, not `"007"`);
-- a string to a number when the number prints back the same digits
-  (trailing zeros aside), so no digit is rounded away;
+- a string to an integer when it is one that fits in 64 bits (`"41"`, and
+  `"007"` or `"+5"` too);
+- a string to a number when no digit is rounded away (`"1.50"` gives 1.5,
+  `"0.30000000000000000001"` stays quarantined);
 - an integer to a number when it is exact in Float64 (below 2^53);
 - `"true"` / `"false"` to a boolean;
 - a number or a boolean to a string.
 
 Timestamps are never cast from numbers: the unit is ambiguous. Each cast is
-counted per field in the manifest and the run summary. `cast = "none"`
-disables them. Casts and quarantine apply to Parquet only: JSONL keeps records
+counted per field in the manifest and the run summary. `cast = "exact"`
+casts a string only when the result prints back as the same text, so `"007"`,
+`"+5"` and `"1.50"` are quarantined: use it when a leading zero or a trailing
+zero may mean something. `cast = "none"` disables casts. Casts and
+quarantine apply to Parquet only: JSONL keeps records
 exactly as received, and drift is reported.
 
 ## Quarantine and `replay`

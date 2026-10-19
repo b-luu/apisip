@@ -10,6 +10,7 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::config::Cast as CastMode;
 use crate::spec::schema_type;
 
 pub const EXTRA: &str = "_apisip_extra";
@@ -136,8 +137,8 @@ pub enum SchemaSource {
 pub struct RecordSchema {
     pub fields: Vec<(String, Shape)>,
     pub source: SchemaSource,
-    /// Whether `conform` applies lossless casts (see `config::Cast`).
-    pub cast: bool,
+    /// The casts `conform` applies (see `config::Cast`).
+    pub cast: CastMode,
 }
 
 impl RecordSchema {
@@ -147,7 +148,7 @@ impl RecordSchema {
             Shape::Struct(fields) => Some(RecordSchema {
                 fields,
                 source: SchemaSource::Spec,
-                cast: true,
+                cast: CastMode::Lossless,
             }),
             _ => None,
         }
@@ -187,7 +188,7 @@ impl RecordSchema {
         RecordSchema {
             fields: fields.into_iter().map(|(n, s)| (n, finalize(s))).collect(),
             source: SchemaSource::Inferred,
-            cast: true,
+            cast: CastMode::Lossless,
         }
     }
 
@@ -304,11 +305,32 @@ impl std::fmt::Display for Violation {
 #[derive(Default)]
 struct Ctx {
     lenient: bool,
-    cast: bool,
+    cast: CastMode,
     casts: Vec<Cast>,
     extra: Map<String, Value>,
     violations: Vec<Violation>,
     absent: Vec<String>,
+}
+
+/// A decimal without its sign `+`, leading zeros and trailing fractional
+/// zeros, as a double prints it: "+007.50" gives "7.5". Exponents are kept.
+fn plain_digits(s: &str) -> String {
+    if s.contains(['e', 'E']) {
+        return s.to_string();
+    }
+    let (sign, digits) = match s.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", s.strip_prefix('+').unwrap_or(s)),
+    };
+    let (int, frac) = digits.split_once('.').unwrap_or((digits, ""));
+    let int = match int.trim_start_matches('0') {
+        "" => "0",
+        i => i,
+    };
+    match frac.trim_end_matches('0') {
+        "" => format!("{sign}{int}"),
+        f => format!("{sign}{int}.{f}"),
+    }
 }
 
 fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
@@ -320,28 +342,28 @@ fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
     let mut cast_from = None;
     let ok = match (shape, v) {
         (Shape::Json, v) => Some(Value::String(v.to_string())),
-        // Lossless casts: only when the value reads back the same.
-        (Shape::Int, Value::String(s)) if ctx.cast => {
+        // Casts keep the value: `exact` also wants the same text back.
+        (Shape::Int, Value::String(s)) if ctx.cast != CastMode::None => {
             cast_from = Some("string");
             s.parse::<i64>()
                 .ok()
-                .filter(|n| n.to_string() == *s)
+                .filter(|n| ctx.cast == CastMode::Lossless || n.to_string() == *s)
                 .map(Value::from)
         }
-        (Shape::Float, Value::String(s)) if ctx.cast => {
+        (Shape::Float, Value::String(s)) if ctx.cast != CastMode::None => {
             cast_from = Some("string");
-            // Trailing zeros aside, the double must print back the same
-            // digits: "12345678901234567890" would come out rounded.
-            let digits = match s.contains('.') && !s.contains(['e', 'E']) {
-                true => s.trim_end_matches('0').trim_end_matches('.'),
-                false => s.as_str(),
+            // The double must print back the same digits: "12345678901234567890"
+            // would come out rounded. `lossless` ignores leading and trailing zeros.
+            let digits = match ctx.cast {
+                CastMode::Lossless => plain_digits(s),
+                _ => s.clone(),
             };
             s.parse::<f64>()
                 .ok()
                 .filter(|f| f.is_finite() && f.to_string() == digits)
                 .map(Value::from)
         }
-        (Shape::Bool, Value::String(s)) if ctx.cast => {
+        (Shape::Bool, Value::String(s)) if ctx.cast != CastMode::None => {
             cast_from = Some("string");
             match s.as_str() {
                 "true" => Some(Value::Bool(true)),
@@ -349,7 +371,7 @@ fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
                 _ => None,
             }
         }
-        (Shape::Str, Value::Number(_) | Value::Bool(_)) if ctx.cast => {
+        (Shape::Str, Value::Number(_) | Value::Bool(_)) if ctx.cast != CastMode::None => {
             cast_from = Some(if v.is_number() { "number" } else { "boolean" });
             Some(Value::String(v.to_string()))
         }
@@ -741,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn only_casts_that_read_back_the_same_apply() {
+    fn casts_keep_the_value() {
         let schema = user_schema();
         let row = |r: Value| {
             let c = schema.conform(&r);
@@ -757,11 +779,26 @@ mod tests {
         assert_eq!((bad, casts), (0, 2));
         assert_eq!((&r["name"], &r["role"]), (&json!("42"), &json!("false")));
 
-        // Each of these would change the value: quarantined, not cast.
-        for r in [
-            json!({"id": "007"}),
+        // The default casts by value: leading zeros, a plus sign and
+        // trailing zeros do not change it.
+        for (field, text, value) in [
+            ("id", "007", json!(7)),
+            ("id", "+5", json!(5)),
+            ("id", "-0", json!(0)),
+            ("score", "1.50", json!(1.5)),
+            ("score", "+007.50", json!(7.5)),
+            ("score", "-0.125", json!(-0.125)),
+            ("score", "3", json!(3.0)),
+        ] {
+            let (r, bad, _) = row(json!({ field: text }));
+            assert_eq!((bad, &r[field]), (0, &value), "{text}");
+        }
+
+        // Each of these would change the value or is not one: quarantined.
+        let changed = [
             json!({"id": "1.0"}),
             json!({"id": " 1"}),
+            json!({"id": "12345678901234567890"}),
             json!({"score": "NaN"}),
             json!({"score": "1e999"}),
             json!({"score": "12345678901234567890"}),
@@ -769,7 +806,8 @@ mod tests {
             json!({"score": 9007199254740993u64}),
             json!({"active": "yes"}),
             json!({"updated_at": 1767225600}),
-        ] {
+        ];
+        for r in &changed {
             assert_eq!(row(r.clone()).1, 1, "{r}");
         }
         assert_eq!(
@@ -777,15 +815,38 @@ mod tests {
             0,
             "2^53 is exact"
         );
-        for score in ["2.50", "-0.125", "3"] {
-            assert_eq!(row(json!({"score": score})).1, 0, "{score}");
-        }
 
-        let strict = RecordSchema {
-            cast: false,
+        // `exact` also wants the same text back.
+        let exact = RecordSchema {
+            cast: CastMode::Exact,
             ..user_schema()
         };
-        let c = strict.conform(&json!({"id": "123", "name": 42}));
+        let bad = |r: Value| exact.conform(&r).violations.len();
+        for r in [
+            json!({"id": "007"}),
+            json!({"id": "+5"}),
+            json!({"score": "1.50"}),
+            json!({"score": "+7.5"}),
+        ] {
+            assert_eq!(bad(r.clone()), 1, "{r}");
+        }
+        for r in &changed {
+            assert_eq!(bad(r.clone()), 1, "{r}");
+        }
+        for r in [
+            json!({"id": "123"}),
+            json!({"score": "-0.125"}),
+            json!({"score": "3"}),
+            json!({"active": "true", "name": 42}),
+        ] {
+            assert_eq!(bad(r.clone()), 0, "{r}");
+        }
+
+        let none = RecordSchema {
+            cast: CastMode::None,
+            ..user_schema()
+        };
+        let c = none.conform(&json!({"id": "123", "name": 42}));
         assert_eq!(c.violations.len(), 2);
         assert!(c.casts.is_empty());
     }

@@ -64,7 +64,7 @@ primary_key = "id"
 pagination = { type = "page_number", param = "page", size_param = "per_page", size = 100 }
 incremental = { cursor = "updated_at", param = "since" }                         # server-side filter
 # incremental = { cursor = "updated_at", sort = { param = "sort", value = "-updated_at" } }   # early stop
-cast = "lossless"                                    # lossless (default) | none
+cast = "lossless"                                    # lossless (default) | exact | none
 ```
 
 - **Variables:** `${VAR}` is interpolated from `.env` and the process env.
@@ -201,7 +201,7 @@ There is no lock on the destination. A lease on S3 needs an expiry, so a crashed
   - `oneOf`, `anyOf`, free-form objects and an empty schema give a JSON string.
 - **All columns are nullable,** because specs under-declare `nullable` and `required`.
 - **Undeclared fields** go into one `_apisip_extra` JSON-string column, so no data is lost.
-- **Lossless casts** (`cast = "lossless"`, the default, per stream): a value of the wrong type is converted only when it survives a round trip. A string to an integer when it prints back the same (`"007"` does not); a string to a number when it prints back the same digits, trailing zeros aside; an integer to a number below 2^53; `"true"`/`"false"` to a boolean; a number or boolean to a string. No epoch-to-timestamp cast: the unit is ambiguous. Casts are counted per field and type pair in the manifest; `--strict` accepts them. `cast = "none"` disables them.
+- **Lossless casts** (`cast = "lossless"`, the default, per stream): a value of the wrong type is converted only when the conversion keeps its value. A string to an integer when it parses as an i64 (`"007"` and `"+5"` too); a string to a number when the double prints back the same digits, leading zeros, a plus sign and trailing zeros aside, so no digit is rounded away; an integer to a number below 2^53; `"true"`/`"false"` to a boolean; a number or boolean to a string. No epoch-to-timestamp cast: the unit is ambiguous. Casts are counted per field and type pair in the manifest; `--strict` accepts them. `cast = "exact"` casts a string only when the result prints back as the same text (`"007"`, `"+5"` and `"1.50"` are quarantined). `cast = "none"` disables casts.
 - **Values that still violate the schema** are never silently changed.
   - The whole record goes to `<stream>/_quarantine/<run_id>.jsonl` with the reason, the run id and the extraction time.
   - It is counted in the manifest and reported as drift.

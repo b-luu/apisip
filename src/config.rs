@@ -233,13 +233,15 @@ pub struct StreamConfig {
     pub cast: Cast,
 }
 
-/// `lossless` converts a value whose conversion reads back the same, such
-/// as `"42"` for an integer column; `none` quarantines the record instead.
+/// `lossless` converts a value when the conversion keeps it, such as
+/// `"007"` to 7 for an integer column; `exact` only when the text prints back
+/// the same (`"7"`, not `"007"`); `none` quarantines the record instead.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cast {
     #[default]
     Lossless,
+    Exact,
     None,
 }
 

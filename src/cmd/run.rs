@@ -263,7 +263,11 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
     let dir = ctx.layout.data_dir(name, snapshot);
 
     // JSONL keeps records as received, so nothing is cast there.
-    let cast = format == Format::Parquet && s.cast == Cast::Lossless;
+    let cast = if format == Format::Parquet {
+        s.cast
+    } else {
+        Cast::None
+    };
     let mut schema =
         load_schema(&ctx.ws, ctx.spec.as_ref(), s)?.map(|sc| RecordSchema { cast, ..sc });
     let mut drift = schema.as_ref().map(Drift::new);
