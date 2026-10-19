@@ -6,7 +6,7 @@ pub mod replay;
 pub mod run;
 pub mod update;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use url::Url;
 
 use crate::config::{Config, Pagination, StreamConfig, interpolate};
@@ -29,20 +29,33 @@ pub fn select_streams(config: &Config, names: &[String]) -> Result<Vec<StreamCon
     }
     names
         .iter()
-        .map(|n| match config.streams.iter().find(|s| &s.name == n) {
-            Some(s) if s.enabled => Ok(s.clone()),
-            Some(_) => bail!("stream `{n}` is disabled in apisip.toml (set enabled = true)"),
-            None => bail!(
-                "no stream `{n}` in apisip.toml; known: {}",
+        .map(|n| {
+            let s = find_stream(config, n)?;
+            if !s.enabled {
+                bail!("stream `{n}` is disabled in apisip.toml (set enabled = true)");
+            }
+            Ok(s.clone())
+        })
+        .collect()
+}
+
+/// The stream named `name` in apisip.toml, or an error that lists the known ones.
+pub fn find_stream<'a>(config: &'a Config, name: &str) -> Result<&'a StreamConfig> {
+    config
+        .streams
+        .iter()
+        .find(|s| s.name == name)
+        .with_context(|| {
+            format!(
+                "no stream `{name}` in apisip.toml; known: {}",
                 config
                     .streams
                     .iter()
                     .map(|s| s.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
-            ),
+            )
         })
-        .collect()
 }
 
 /// Where a stream's schema comes from: `spec`, `inferred`, `edited` (the

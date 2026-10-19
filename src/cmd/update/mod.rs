@@ -26,7 +26,7 @@ use crate::sink::Store;
 use crate::spec::Spec;
 use crate::workspace::Workspace;
 
-use super::init::{BASELINE_HEADER, baseline, current_value};
+use super::init::{BASELINE_HEADER, current_value};
 use auth::{auth_names, confirm_auth};
 use config_merge::{Diff, Kind, Resolution, apply, changes_views, diff};
 use report::{field_short, print_diff, print_drift, short};
@@ -136,7 +136,7 @@ impl Plan {
             None => Spec::load(&mine.source.spec, &ws.dir).await?,
         };
         let det = detect::detect(&new_spec);
-        let theirs = baseline(&det, &mine.source);
+        let theirs = det.baseline(&mine.source);
         let d = diff(&base, &theirs, &mine);
 
         let store = super::open_existing_store(ws, &mine);

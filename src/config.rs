@@ -176,6 +176,14 @@ pub struct Destination {
     pub region: Option<String>,
 }
 
+impl Destination {
+    /// The destination as the user wrote it, without `file://` or a trailing
+    /// slash, to print the paths inside it.
+    pub fn shown(&self) -> &str {
+        self.url.trim_start_matches("file://").trim_end_matches('/')
+    }
+}
+
 /// Data goes to `data/` inside the API folder, apart from the config.
 pub const DEFAULT_DESTINATION: &str = "file://data";
 

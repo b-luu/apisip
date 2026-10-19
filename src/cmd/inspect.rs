@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use crate::config::{Config, StreamConfig};
 use crate::sink::{META_DIR, Store};
@@ -12,7 +12,7 @@ use crate::state::{Manifest, RunKind, State, StreamReport, StreamStatus};
 use crate::views::VIEWS_DIR;
 use crate::workspace::Workspace;
 
-use super::{open_existing_store, schema_label};
+use super::{find_stream, open_existing_store, schema_label};
 
 /// Manifests read, newest first: enough for the last runs of most folders.
 const MANIFESTS: usize = 200;
@@ -33,18 +33,7 @@ struct Quarantine {
 pub async fn run(ws: &Workspace, stream: Option<String>) -> Result<()> {
     let config = ws.load_config()?;
     let streams: Vec<&StreamConfig> = match &stream {
-        Some(n) => match config.streams.iter().find(|s| &s.name == n) {
-            Some(s) => vec![s],
-            None => bail!(
-                "no stream `{n}` in apisip.toml; known: {}",
-                config
-                    .streams
-                    .iter()
-                    .map(|s| s.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        },
+        Some(n) => vec![find_stream(&config, n)?],
         None => config.streams.iter().collect(),
     };
     let Some(store) = open_existing_store(ws, &config) else {
@@ -147,15 +136,6 @@ fn mode(s: &StreamConfig, state: &State) -> String {
         mode.push_str(" (disabled)");
     }
     mode
-}
-
-/// The destination as the user wrote it, to prefix paths inside it.
-fn dest(config: &Config) -> &str {
-    config
-        .destination
-        .url
-        .trim_start_matches("file://")
-        .trim_end_matches('/')
 }
 
 fn watermark<'a>(s: &StreamConfig, state: &'a State) -> Option<&'a str> {
@@ -275,7 +255,12 @@ async fn detail(
         println!("  empty");
     }
     for q in quarantine {
-        println!("  {}/{} ({} records)", dest(config), q.path, q.records);
+        println!(
+            "  {}/{} ({} records)",
+            config.destination.shown(),
+            q.path,
+            q.records
+        );
     }
     if !quarantine.is_empty() {
         println!(
@@ -289,7 +274,7 @@ async fn detail(
     for kind in ["current", "history"] {
         let path = format!("{VIEWS_DIR}/{}_{kind}.sql", s.name);
         if store.get(&path).await?.is_some() {
-            println!("  {}/{path}", dest(config));
+            println!("  {}/{path}", config.destination.shown());
             any = true;
         }
     }

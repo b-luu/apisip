@@ -153,11 +153,7 @@ pub(super) fn print_views(views: Result<Vec<String>>, config: &Config, store: &S
     match views {
         Ok(v) if !v.is_empty() => println!(
             "Views: {}/{}/all.sql (duckdb -c \".read {}/all.sql\")",
-            config
-                .destination
-                .url
-                .trim_start_matches("file://")
-                .trim_end_matches('/'),
+            config.destination.shown(),
             crate::views::VIEWS_DIR,
             view_dir_hint(store)
         ),

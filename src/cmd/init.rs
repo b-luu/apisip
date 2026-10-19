@@ -239,7 +239,7 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
     };
     config.validate()?;
 
-    let baseline = baseline(&det, &config.source);
+    let baseline = det.baseline(&config.source);
     write_files(
         ws,
         &spec,
@@ -251,35 +251,6 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
     )?;
     print_summary(ws, &det, &config, &auth_vars, &env_updates);
     Ok(())
-}
-
-/// What detection alone produced, with the auth and source settings of the
-/// config: `update` treats every difference between it and apisip.toml as a
-/// user edit to preserve.
-pub(crate) fn baseline(det: &Detection, source: &Source) -> Config {
-    Config {
-        source: Source {
-            base_url: det
-                .base_url
-                .clone()
-                .unwrap_or_else(|| source.base_url.clone()),
-            // A plan picked at init is the user's choice, not detection's.
-            rate_limit: if det.rate_limits.plans().is_empty() {
-                det.rate_limits.default_limit()
-            } else {
-                None
-            },
-            ..source.clone()
-        },
-        destination: Destination {
-            url: crate::config::DEFAULT_DESTINATION.into(),
-            format: Format::Jsonl,
-            rotate: Default::default(),
-            endpoint: None,
-            region: None,
-        },
-        streams: det.streams.iter().map(|s| s.config.clone()).collect(),
-    }
 }
 
 pub(crate) const BASELINE_HEADER: &str =

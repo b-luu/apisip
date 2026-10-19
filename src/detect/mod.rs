@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
-use crate::config::{AuthConfig, RateLimit, StreamConfig};
+use crate::config::{AuthConfig, Config, Destination, Format, RateLimit, Source, StreamConfig};
 use crate::spec::Spec;
 
 mod auth;
@@ -156,6 +156,37 @@ pub fn detect(spec: &Spec) -> Detection {
         rate_limits: detect_rate_limits(spec),
         streams,
         skipped,
+    }
+}
+
+impl Detection {
+    /// What detection alone produced, with the auth and source settings of the
+    /// config: `update` treats every difference between it and apisip.toml as a
+    /// user edit to preserve.
+    pub fn baseline(&self, source: &Source) -> Config {
+        Config {
+            source: Source {
+                base_url: self
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| source.base_url.clone()),
+                // A plan picked at init is the user's choice, not detection's.
+                rate_limit: if self.rate_limits.plans().is_empty() {
+                    self.rate_limits.default_limit()
+                } else {
+                    None
+                },
+                ..source.clone()
+            },
+            destination: Destination {
+                url: crate::config::DEFAULT_DESTINATION.into(),
+                format: Format::Jsonl,
+                rotate: Default::default(),
+                endpoint: None,
+                region: None,
+            },
+            streams: self.streams.iter().map(|s| s.config.clone()).collect(),
+        }
     }
 }
 
