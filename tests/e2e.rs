@@ -889,6 +889,27 @@ fn an_empty_stream_does_not_break_the_views() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn a_closed_stdout_ends_the_output_quietly() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init(&mock, d, &[]);
+    // As `apisip list | head -0`: the reader is gone before the first line.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("apisip"))
+        .arg("-C")
+        .arg(d)
+        .arg("list")
+        .stdout(writer)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("panicked"), "{err}");
+}
+
 #[test]
 fn a_second_run_in_the_same_folder_is_refused() {
     let mock = Mock::start();

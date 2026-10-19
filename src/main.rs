@@ -118,6 +118,13 @@ struct UpdateArgs {
 }
 
 fn main() -> ExitCode {
+    // Rust ignores SIGPIPE, so printing to a closed pipe (`apisip inspect | head`)
+    // would panic. The default action ends the process quietly, like other tools.
+    #[cfg(unix)]
+    // SAFETY: called first, before any thread starts.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     init_tracing(cli.verbose);
     match run(cli) {
