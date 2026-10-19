@@ -4,7 +4,6 @@ pub mod inspect;
 pub mod list;
 pub mod replay;
 pub mod run;
-pub mod schema_merge;
 pub mod update;
 
 use anyhow::{Result, bail};

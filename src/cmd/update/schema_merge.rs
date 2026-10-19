@@ -10,10 +10,19 @@
 //! applied; any other type change is incompatible and needs a decision,
 //! because files already written keep the old type.
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use anyhow::Result;
 use serde_json::{Map, Value};
 
-use super::update::Kind;
+use super::config_merge::Diff;
+use super::config_merge::Kind;
+use crate::config::Config;
 use crate::schema::{RecordSchema, Shape};
+use crate::sink::{META_DIR, Store};
+use crate::spec::Spec;
+use crate::state::Manifest;
+use crate::workspace::Workspace;
 
 /// One property of a schema file, with whether it is required.
 #[derive(Debug, Clone, PartialEq)]
@@ -211,6 +220,130 @@ pub fn observed_shape(name: &str, example: &Value) -> Shape {
         .unwrap_or(Shape::Json)
 }
 
+/// A stream's schema file and what the new spec changes in it.
+#[derive(Debug)]
+pub(super) struct StreamSchema {
+    pub(super) name: String,
+    /// The spec's schema; `None` when the spec has none (an inferred file).
+    pub(super) theirs: Option<Value>,
+    pub(super) base: Option<Value>,
+    pub(super) mine: Option<Value>,
+    pub(super) changes: Vec<FieldMerge>,
+    /// Fields seen undeclared in each recent run, with their observed type.
+    pub(super) undeclared: Vec<(String, Shape)>,
+}
+
+impl StreamSchema {
+    pub(super) fn changed(&self) -> bool {
+        self.theirs.is_some() && (self.mine.is_none() || !self.changes.is_empty())
+    }
+}
+
+/// How many recent runs of a stream must all have seen an undeclared field
+/// before update offers to declare it.
+const RECENT_RUNS: usize = 3;
+
+pub(super) fn plan_schemas(
+    ws: &Workspace,
+    mine: &Config,
+    theirs: &Config,
+    d: &Diff,
+    spec: &Spec,
+    undeclared: &BTreeMap<String, Vec<(String, Value)>>,
+) -> Result<Vec<StreamSchema>> {
+    let streams = mine.streams.iter().map(|s| {
+        theirs
+            .streams
+            .iter()
+            .find(|t| t.name == s.name)
+            .unwrap_or(s)
+    });
+    let added = theirs.streams.iter().filter(|t| d.added.contains(&t.name));
+    let mut out = Vec::new();
+    for s in streams.chain(added) {
+        let theirs = crate::cmd::spec_schema_file(spec, s);
+        let mine = ws.read_schema(&s.name)?;
+        let base = ws.read_schema_baseline(&s.name)?;
+        let changes = match (&theirs, &mine) {
+            (Some(t), Some(m)) => diff(base.as_ref(), t, m),
+            _ => Vec::new(),
+        };
+        let declared: BTreeSet<String> = [&theirs, &mine]
+            .into_iter()
+            .flatten()
+            .flat_map(fields)
+            .map(|(n, _)| n)
+            .collect();
+        let undeclared = match &mine {
+            Some(_) => undeclared
+                .get(&s.name)
+                .into_iter()
+                .flatten()
+                .filter(|(f, _)| !declared.contains(f))
+                .map(|(f, ex)| (f.clone(), observed_shape(f, ex)))
+                .collect(),
+            None => Vec::new(),
+        };
+        out.push(StreamSchema {
+            name: s.name.clone(),
+            theirs,
+            base,
+            mine,
+            changes,
+            undeclared,
+        });
+    }
+    Ok(out)
+}
+
+/// Top-level fields undeclared in each of the last runs of a stream (up to
+/// `RECENT_RUNS`), with the latest example.
+pub(super) async fn recent_undeclared(store: &Store) -> BTreeMap<String, Vec<(String, Value)>> {
+    let Ok(mut runs) = store.list(&format!("{META_DIR}/runs")).await else {
+        return BTreeMap::new();
+    };
+    // Run ids start with their timestamp: newest first.
+    runs.sort_by(|a, b| b.location.cmp(&a.location));
+    let mut seen: BTreeMap<String, Vec<BTreeMap<String, Value>>> = BTreeMap::new();
+    for meta in runs.iter().take(50) {
+        let Ok(Some(bytes)) = store.get(meta.location.as_ref()).await else {
+            continue;
+        };
+        let Ok(m) = serde_json::from_slice::<Manifest>(&bytes) else {
+            continue;
+        };
+        for (name, r) in m.streams {
+            let Some(drift) = r.drift else { continue };
+            let runs = seen.entry(name).or_default();
+            if runs.len() < RECENT_RUNS {
+                runs.push(
+                    drift
+                        .undeclared
+                        .into_iter()
+                        .filter(|(p, _)| !p.contains(['.', '[']))
+                        .map(|(p, s)| (p, s.example))
+                        .collect(),
+                );
+            }
+        }
+    }
+    seen.into_iter()
+        .map(|(name, runs)| (name, in_every_run(&runs)))
+        .collect()
+}
+
+/// The fields of the newest run (first) that every other run saw too.
+fn in_every_run(runs: &[BTreeMap<String, Value>]) -> Vec<(String, Value)> {
+    let Some(newest) = runs.first() else {
+        return Vec::new();
+    };
+    newest
+        .iter()
+        .filter(|(f, _)| runs.iter().all(|r| r.contains_key(*f)))
+        .map(|(f, ex)| (f.clone(), ex.clone()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +464,18 @@ mod tests {
         assert_eq!(f["properties"]["nickname"], json!({"type": "string"}));
         assert_eq!(f["properties"]["score"], json!({"type": "integer"}));
         assert_eq!(f["required"], json!(["id", "name"]));
+    }
+
+    #[test]
+    fn only_fields_every_recent_run_saw_are_offered() {
+        let run = |fields: &[&str]| -> BTreeMap<String, Value> {
+            fields
+                .iter()
+                .map(|f| (f.to_string(), Value::from(*f)))
+                .collect()
+        };
+        let runs = [run(&["a", "b"]), run(&["a", "c"]), run(&["a", "b"])];
+        assert_eq!(in_every_run(&runs), [("a".to_string(), Value::from("a"))]);
+        assert!(in_every_run(&[]).is_empty());
     }
 }
