@@ -79,7 +79,8 @@ pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
         .ok()?
         .trim();
     if let Ok(secs) = v.parse::<f64>() {
-        return Some(Duration::from_secs_f64(secs.max(0.0)));
+        // `inf` or `1e30` is a wait too long to represent: max_wait refuses it.
+        return Some(Duration::try_from_secs_f64(secs.max(0.0)).unwrap_or(Duration::MAX));
     }
     let when = chrono::DateTime::parse_from_rfc2822(v).ok()?;
     let secs = (when.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_milliseconds();
@@ -104,6 +105,18 @@ mod tests {
         h.insert("retry-after", HeaderValue::from_str(&date).unwrap());
         let d = policy().delay(0, Some(&h)).as_secs();
         assert!((28..=30).contains(&d), "{d}");
+    }
+
+    #[test]
+    fn a_retry_after_too_long_to_represent_is_refused_not_a_panic() {
+        let p = policy();
+        for v in ["inf", "1e30"] {
+            let mut h = HeaderMap::new();
+            h.insert("retry-after", HeaderValue::from_static(v));
+            let d = p.delay(0, Some(&h));
+            assert_eq!(d, Duration::MAX, "{v}");
+            assert!(p.check_wait(Duration::ZERO, d, "HTTP 429").is_err(), "{v}");
+        }
     }
 
     #[test]
