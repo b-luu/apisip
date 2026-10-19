@@ -23,6 +23,10 @@ pub use parquet::ParquetWriter;
 #[derive(Debug)]
 pub struct Store {
     pub inner: Arc<dyn ObjectStore>,
+    /// The same store without object_store's retries, for the conditional
+    /// writes of the state: `State::update` retries them itself, because
+    /// object_store would also retry a refusal (501), for nearly a minute.
+    pub state_writes: Arc<dyn ObjectStore>,
     /// The local root for `file://` destinations, where commits can merge and rename.
     pub local_root: Option<PathBuf>,
     /// The destination as configured, for messages.
@@ -60,28 +64,45 @@ impl Store {
             if let Some(r) = &dest.region {
                 b = b.with_region(crate::config::interpolate(r)?);
             }
-            let s3 = b
-                .build()
-                .context("configuring the S3 destination (see AWS_* in .env)")?;
-            let inner: Arc<dyn ObjectStore> = match prefix.trim_matches('/') {
-                "" => Arc::new(s3),
-                p => Arc::new(object_store::prefix::PrefixStore::new(s3, p)),
-            };
-            return Ok(Store {
-                inner,
-                local_root: None,
-                url,
-                commits: Default::default(),
-                plain_state_writes: Default::default(),
-            });
+            return Store::s3(b, prefix, url.clone());
         }
         let dir = Store::local_dir(&url, base_dir)?;
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let dir = std::fs::canonicalize(&dir)?;
-        let fs = object_store::local::LocalFileSystem::new_with_prefix(&dir)?;
+        let fs: Arc<dyn ObjectStore> =
+            Arc::new(object_store::local::LocalFileSystem::new_with_prefix(&dir)?);
         Ok(Store {
-            inner: Arc::new(fs),
+            inner: fs.clone(),
+            state_writes: fs,
             local_root: Some(dir),
+            url,
+            commits: Default::default(),
+            plain_state_writes: Default::default(),
+        })
+    }
+
+    pub(crate) fn s3(
+        b: object_store::aws::AmazonS3Builder,
+        prefix: &str,
+        url: String,
+    ) -> Result<Store> {
+        let build = |b: object_store::aws::AmazonS3Builder| -> Result<Arc<dyn ObjectStore>> {
+            let s3 = b
+                .build()
+                .context("configuring the S3 destination (see AWS_* in .env)")?;
+            Ok(match prefix.trim_matches('/') {
+                "" => Arc::new(s3),
+                p => Arc::new(object_store::prefix::PrefixStore::new(s3, p)),
+            })
+        };
+        let no_retries = object_store::RetryConfig {
+            max_retries: 0,
+            ..Default::default()
+        };
+        Ok(Store {
+            inner: build(b.clone())?,
+            state_writes: build(b.with_retry(no_retries))?,
+            local_root: None,
             url,
             commits: Default::default(),
             plain_state_writes: Default::default(),
