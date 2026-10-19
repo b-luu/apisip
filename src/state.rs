@@ -346,48 +346,53 @@ impl Manifest {
 }
 
 /// An S3-compatible store without conditional writes answers 501 Not
-/// Implemented, with or without an error body, or a similar refusal. Any
-/// other error, such as a timeout or a denied access, is a failure, not a
-/// reason to write without the condition. The status sits deep in the error
-/// chain, in a type object_store does not export: the chain's messages are
-/// read instead.
+/// Implemented, with or without an error body, or a client error whose body
+/// says the condition header is not supported. Any other error, such as a
+/// server error, a timeout or a denied access, is a failure, not a reason to
+/// write without the condition. The status sits deep in the error chain, in
+/// a type object_store does not export: it is read from the chain's messages.
+/// Only the text after the status is searched for a refusal, because the text
+/// before it holds the request URL, which may contain any word.
 fn rejects_conditional_writes(e: &object_store::Error) -> bool {
     if matches!(
         e,
         object_store::Error::NotImplemented { .. } | object_store::Error::NotSupported { .. }
-    ) || status_code(e) == Some(501)
-    {
+    ) {
         return true;
     }
-    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(e);
-    while let Some(err) = source {
-        let text = err.to_string().to_lowercase();
-        if [
-            "not implemented",
-            "notimplemented",
-            "not supported",
-            "unsupported",
-        ]
-        .iter()
-        .any(|t| text.contains(t))
-        {
-            return true;
+    match status_answer(e) {
+        Some((501, _)) => true,
+        Some((code, answer)) if (400..500).contains(&code) && code != 408 && code != 429 => {
+            let answer = answer.to_lowercase();
+            [
+                "not implemented",
+                "notimplemented",
+                "not supported",
+                "unsupported",
+            ]
+            .iter()
+            .any(|t| answer.contains(t))
         }
-        source = err.source();
+        _ => false,
     }
-    false
 }
 
 /// The HTTP status of a failed request. object_store keeps its error type
 /// private, so it is read from the text: "status code: 503 Service Unavailable".
 fn status_code(e: &object_store::Error) -> Option<u16> {
+    status_answer(e).map(|(code, _)| code)
+}
+
+/// The HTTP status of a failed request and the text that follows it: the
+/// reason phrase and the response body.
+fn status_answer(e: &object_store::Error) -> Option<(u16, String)> {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(e);
     while let Some(err) = source {
         let text = err.to_string();
         if let Some((_, rest)) = text.split_once("status code: ")
             && let Some(code) = rest.get(..3).and_then(|c| c.parse().ok())
         {
-            return Some(code);
+            return Some((code, rest[3..].to_string()));
         }
         source = err.source();
     }
@@ -595,11 +600,34 @@ mod tests {
             source: "request timed out".into(),
         };
         assert!(!rejects_conditional_writes(&e));
-        let e = object_store::Error::Generic {
-            store: "S3",
-            source: "Received 501 Not Implemented: NotImplemented".into(),
+        let refused = |text: &str| {
+            rejects_conditional_writes(&object_store::Error::Generic {
+                store: "S3",
+                source: text.into(),
+            })
         };
-        assert!(rejects_conditional_writes(&e));
+        let put = "Error performing PUT http://s3/b/unsupported/_apisip/state.json in 1ms";
+        assert!(refused(&format!(
+            "{put} - Server returned non-2xx status code: 501 Not Implemented: "
+        )));
+        assert!(refused(&format!(
+            "{put} - Server returned non-2xx status code: 400 Bad Request: header If-None-Match not supported"
+        )));
+        // The URL holds a refusal word: only the answer counts.
+        assert!(!refused(&format!(
+            "{put} - Server returned non-2xx status code: 503 Service Unavailable: "
+        )));
+        assert!(!refused(&format!(
+            "{put} - Server returned non-2xx status code: 403 Forbidden: AccessDenied"
+        )));
+        // A server error is transient whatever its body says.
+        assert!(!refused(
+            "Server returned non-2xx status code: 503 Service Unavailable: Feature not implemented on this node"
+        ));
+        // No status: a connection error or a timeout.
+        assert!(!refused(
+            "connection to http://notimplemented.example closed"
+        ));
     }
 
     fn memory_store(inner: Arc<dyn ObjectStore>) -> Store {
@@ -615,6 +643,10 @@ mod tests {
 
     /// A store on a mock S3 server, with object_store's default retries.
     fn mock_s3(server: &wiremock::MockServer) -> Store {
+        mock_s3_at(server, "")
+    }
+
+    fn mock_s3_at(server: &wiremock::MockServer, prefix: &str) -> Store {
         let b = object_store::aws::AmazonS3Builder::new()
             .with_endpoint(server.uri())
             .with_allow_http(true)
@@ -622,7 +654,7 @@ mod tests {
             .with_region("us-east-1")
             .with_access_key_id("key")
             .with_secret_access_key("secret");
-        Store::s3(b, "", "s3://b".into()).unwrap()
+        Store::s3(b, prefix, "s3://b".into()).unwrap()
     }
 
     async fn mock_state_absent(server: &wiremock::MockServer) {
@@ -672,29 +704,74 @@ mod tests {
         assert!(store.plain_state_writes.load(Ordering::Relaxed));
     }
 
-    #[tokio::test]
-    async fn a_conditional_write_answered_503_is_retried() {
-        use wiremock::matchers::{method, path};
+    /// One 503 on the conditional write, then success: the write is retried
+    /// with its condition.
+    async fn conditional_write_after_503(prefix: &str, body: &str) -> Store {
+        use wiremock::matchers::{header_exists, method};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        mock_state_absent(&server).await;
+        wiremock::Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
         Mock::given(method("PUT"))
-            .respond_with(ResponseTemplate::new(503))
+            .respond_with(ResponseTemplate::new(503).set_body_string(body))
             .with_priority(1)
             .up_to_n_times(1)
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("PUT"))
-            .and(path("/b/_apisip/state.json"))
+            .and(header_exists("if-none-match"))
+            .respond_with(ResponseTemplate::new(200).insert_header("ETag", "\"1\""))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let store = mock_s3_at(&server, prefix);
+        set_watermark(&store).await.unwrap();
+        store
+    }
+
+    #[tokio::test]
+    async fn a_conditional_write_answered_503_is_retried() {
+        let store = conditional_write_after_503("", "").await;
+        assert!(!store.plain_state_writes.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn a_503_is_retried_whatever_the_url_or_the_body_says() {
+        let store = conditional_write_after_503("unsupported", "").await;
+        assert!(!store.plain_state_writes.load(Ordering::Relaxed));
+        let body = "<Error><Code>ServiceUnavailable</Code><Message>Feature not implemented on this node</Message></Error>";
+        let store = conditional_write_after_503("", body).await;
+        assert!(!store.plain_state_writes.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn a_400_saying_the_header_is_not_supported_gets_plain_writes() {
+        use wiremock::matchers::{header_exists, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        mock_state_absent(&server).await;
+        Mock::given(method("PUT"))
+            .and(header_exists("if-none-match"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(
+                "<Error><Code>NotImplemented</Code><Message>A header you provided implies functionality that is not implemented</Message></Error>",
+            ))
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
             .respond_with(ResponseTemplate::new(200).insert_header("ETag", "\"1\""))
             .expect(1)
             .mount(&server)
             .await;
         let store = mock_s3(&server);
         set_watermark(&store).await.unwrap();
-        assert!(!store.plain_state_writes.load(Ordering::Relaxed));
+        assert!(store.plain_state_writes.load(Ordering::Relaxed));
     }
 
     #[tokio::test]
