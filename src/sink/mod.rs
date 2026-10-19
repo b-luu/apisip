@@ -29,6 +29,9 @@ pub struct Store {
     pub url: String,
     /// Makes the commits of one process take turns: see `Store::commit_lock`.
     pub commits: tokio::sync::Mutex<()>,
+    /// Set once the store has refused a conditional write: later state
+    /// writes of this run go plain, without waiting for the refusal again.
+    pub plain_state_writes: std::sync::atomic::AtomicBool,
 }
 
 /// Held while a commit moves files and updates the state.
@@ -69,6 +72,7 @@ impl Store {
                 local_root: None,
                 url,
                 commits: Default::default(),
+                plain_state_writes: Default::default(),
             });
         }
         let dir = Store::local_dir(&url, base_dir)?;
@@ -80,6 +84,7 @@ impl Store {
             local_root: Some(dir),
             url,
             commits: Default::default(),
+            plain_state_writes: Default::default(),
         })
     }
 

@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
@@ -128,12 +128,13 @@ impl State {
                 };
             change(&mut state);
             let bytes = serde_json::to_vec_pretty(&state)?;
-            let mode = match (&store.local_root, version) {
-                (Some(_), _) => PutMode::Overwrite,
-                (None, Some(v)) => PutMode::Update(v),
-                (None, None) => PutMode::Create,
+            let plain =
+                store.local_root.is_some() || store.plain_state_writes.load(Ordering::Relaxed);
+            let mode = match (plain, version) {
+                (true, _) => PutMode::Overwrite,
+                (false, Some(v)) => PutMode::Update(v),
+                (false, None) => PutMode::Create,
             };
-            let conditional = mode != PutMode::Overwrite;
             match store
                 .inner
                 .put_opts(&path, PutPayload::from(bytes.clone()), mode.into())
@@ -148,12 +149,12 @@ impl State {
                     let ms = rand::random_range(10..50u64) << attempt.min(5);
                     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
                 }
-                Err(e) if conditional && rejects_conditional_writes(&e) => {
+                Err(e) if !plain && rejects_conditional_writes(&e) => {
                     // Some S3-compatible stores reject conditional writes.
                     store.put(STATE_FILE, bytes).await.map_err(|plain| {
                         plain.context(format!("conditional write failed first: {e}"))
                     })?;
-                    if !NO_CONDITIONAL_WARNED.swap(true, Ordering::Relaxed) {
+                    if !store.plain_state_writes.swap(true, Ordering::Relaxed) {
                         eprintln!(
                             "warning: {} does not support conditional writes. A run of a copy of \
                              this folder at the same time can move a watermark back: the next run \
@@ -181,7 +182,6 @@ const MAX_STATE_TRIES: u32 = 10;
 fn is_zero(n: &u64) -> bool {
     *n == 0
 }
-static NO_CONDITIONAL_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// What one run did, written to `_apisip/runs/<run_id>.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,20 +283,35 @@ impl Manifest {
 }
 
 /// An S3-compatible store without conditional writes answers 501 Not
-/// Implemented (or a similar refusal). Any other error, such as a timeout or
-/// a denied access, is a failure, not a reason to write without the condition.
+/// Implemented, with or without an error body, or a similar refusal. Any
+/// other error, such as a timeout or a denied access, is a failure, not a
+/// reason to write without the condition. The status sits deep in the error
+/// chain, in a type object_store does not export: the chain's messages are
+/// read instead.
 fn rejects_conditional_writes(e: &object_store::Error) -> bool {
-    match e {
-        object_store::Error::NotImplemented { .. } | object_store::Error::NotSupported { .. } => {
-            true
-        }
-        e => {
-            let text = format!("{e:?}").to_lowercase();
-            ["notimplemented", "not implemented", "not supported"]
-                .iter()
-                .any(|t| text.contains(t))
-        }
+    if matches!(
+        e,
+        object_store::Error::NotImplemented { .. } | object_store::Error::NotSupported { .. }
+    ) {
+        return true;
     }
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = source {
+        let text = err.to_string().to_lowercase();
+        if [
+            "not implemented",
+            "notimplemented",
+            "not supported",
+            "unsupported",
+        ]
+        .iter()
+        .any(|t| text.contains(t))
+        {
+            return true;
+        }
+        source = err.source();
+    }
+    false
 }
 
 /// Streams whose descending sort was found unreliable by an earlier run.
@@ -361,6 +376,7 @@ mod tests {
             local_root: None,
             url: "memory://".into(),
             commits: Default::default(),
+            plain_state_writes: Default::default(),
         };
         State::update(&store, |_| {}).await.unwrap();
         let mut raced = false;
@@ -485,6 +501,7 @@ mod tests {
             local_root: None,
             url: "memory://".into(),
             commits: Default::default(),
+            plain_state_writes: Default::default(),
         };
         let state = commit_streams(&store, true).await;
         assert_eq!(state.streams.len(), 5, "{state:?}");
@@ -502,5 +519,60 @@ mod tests {
             source: "Received 501 Not Implemented: NotImplemented".into(),
         };
         assert!(rejects_conditional_writes(&e));
+    }
+
+    #[tokio::test]
+    async fn a_store_answering_501_without_a_body_gets_plain_writes() {
+        use wiremock::matchers::{header_exists, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/b/_apisip/state.json"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        // Refused once: later writes of the run skip the condition.
+        Mock::given(method("PUT"))
+            .and(header_exists("if-none-match"))
+            .respond_with(ResponseTemplate::new(501))
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/b/_apisip/state.json"))
+            .respond_with(ResponseTemplate::new(200).insert_header("ETag", "\"1\""))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let s3 = object_store::aws::AmazonS3Builder::new()
+            .with_endpoint(server.uri())
+            .with_allow_http(true)
+            .with_bucket_name("b")
+            .with_region("us-east-1")
+            .with_access_key_id("key")
+            .with_secret_access_key("secret")
+            .with_retry(object_store::RetryConfig {
+                max_retries: 0,
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+        let store = Store {
+            inner: Arc::new(s3),
+            local_root: None,
+            url: "s3://b".into(),
+            commits: Default::default(),
+            plain_state_writes: Default::default(),
+        };
+        for _ in 0..2 {
+            State::update(&store, |s| {
+                s.streams.entry("users".into()).or_default().watermark = Some("1".into());
+            })
+            .await
+            .unwrap();
+        }
+        assert!(store.plain_state_writes.load(Ordering::Relaxed));
     }
 }
