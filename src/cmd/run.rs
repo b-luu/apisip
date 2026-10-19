@@ -10,6 +10,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use futures::{StreamExt, TryStreamExt};
+use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::config::{Cast, Config, Format, Mode, StreamConfig};
@@ -176,10 +177,48 @@ async fn run_stream(ctx: &Ctx, s: &StreamConfig) -> StreamReport {
 }
 
 async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport) -> Result<()> {
+    let (url, mut fetch) = prepare(ctx, s, report).await?;
+    let mut pages = pin!(http::pages(
+        ctx.client.clone(),
+        url,
+        s.pagination.clone(),
+        s.records.clone()
+    ));
+    while let Some(records) = pages.try_next().await? {
+        if fetch.page(ctx, s, records, report).await? {
+            tracing::info!("{}: reached the watermark, stopping early", s.name);
+            break;
+        }
+    }
+    commit(ctx, s, fetch, report).await
+}
+
+/// One stream on its way through `run`: what `prepare` decides, and what
+/// the pages add up to until `commit`.
+struct Fetch<'a> {
+    cursor: Option<&'a str>,
+    snapshot: bool,
+    dir: String,
+    cast: Cast,
+    early: Option<EarlyStop>,
+    boundary: Option<Boundary>,
+    schema: Option<RecordSchema>,
+    drift: Option<Drift>,
+    writer: Option<DataWriter>,
+    quarantine: Option<JsonlWriter>,
+    range: Range,
+    tracker: BoundaryTracker,
+    mistyped_cursors: usize,
+}
+
+/// The first URL and the stream's starting point: watermark, mode and schema.
+async fn prepare<'a>(
+    ctx: &Ctx,
+    s: &'a StreamConfig,
+    report: &mut StreamReport,
+) -> Result<(url::Url, Fetch<'a>)> {
     let name = &s.name;
     let format = ctx.config.destination.format;
-    let max_bytes = ctx.config.destination.rotate.max_bytes;
-    let run_id = ctx.layout.run_id.clone();
     let previous = ctx
         .state
         .lock()
@@ -234,76 +273,95 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
     } else {
         Cast::None
     };
-    let mut schema =
-        load_schema(&ctx.ws, ctx.spec.as_ref(), s)?.map(|sc| RecordSchema { cast, ..sc });
-    let mut drift = schema.as_ref().map(Drift::new);
-    let mut writer = match format {
+    let schema = load_schema(&ctx.ws, ctx.spec.as_ref(), s)?.map(|sc| RecordSchema { cast, ..sc });
+    let drift = schema.as_ref().map(Drift::new);
+    let writer = match format {
         Format::Jsonl => Some(DataWriter::new(
             ctx.store.clone(),
             &ctx.layout,
             name,
             dir.clone(),
             None,
-            max_bytes,
+            ctx.config.destination.rotate.max_bytes,
         )),
         Format::Parquet => None,
     };
-    let mut quarantine: Option<JsonlWriter> = None;
-    let mut range = Range::new(watermark.as_deref());
     // Snapshots keep every row; incremental runs skip what the last run wrote at the watermark.
     let boundary = watermark
         .as_deref()
         .filter(|_| !snapshot)
         .and_then(|w| Boundary::new(w, &previous.boundary));
-    let mut tracker = BoundaryTracker::default();
-    let mut mistyped_cursors = 0usize;
+    let fetch = Fetch {
+        cursor,
+        snapshot,
+        dir,
+        cast,
+        early,
+        boundary,
+        schema,
+        drift,
+        writer,
+        quarantine: None,
+        range: Range::new(watermark.as_deref()),
+        tracker: BoundaryTracker::default(),
+        mistyped_cursors: 0,
+    };
+    Ok((url, fetch))
+}
 
-    let mut pages = pin!(http::pages(
-        ctx.client.clone(),
-        url,
-        s.pagination.clone(),
-        s.records.clone()
-    ));
-    while let Some(records) = pages.try_next().await? {
+impl Fetch<'_> {
+    /// Takes one page through the early stop, the boundary filter, the
+    /// schema, the strict mode and the writers. Returns true when the early
+    /// stop reached the watermark.
+    async fn page(
+        &mut self,
+        ctx: &Ctx,
+        s: &StreamConfig,
+        records: Vec<Value>,
+        report: &mut StreamReport,
+    ) -> Result<bool> {
+        let name = &s.name;
+        let format = ctx.config.destination.format;
+        let cursor = self.cursor;
         report.pages += 1;
         let stamp = Stamp {
-            run_id: &run_id,
+            run_id: &ctx.layout.run_id,
             extracted: Utc::now(),
         };
-        let (mut records, stop) = match &mut early {
+        let (mut records, stop) = match &mut self.early {
             Some(g) => g.page(records),
             None => (records, false),
         };
-        if let (Some(b), Some(c)) = (&boundary, cursor) {
+        if let (Some(b), Some(c)) = (&self.boundary, cursor) {
             let before = records.len();
             records.retain(|r| !b.unchanged(r, c));
             report.unchanged += (before - records.len()) as u64;
         }
-        if schema.is_none() && format == Format::Parquet && !records.is_empty() {
+        if self.schema.is_none() && format == Format::Parquet && !records.is_empty() {
             // Written once: later runs type their columns the same way.
             let inferred = RecordSchema {
-                cast,
+                cast: self.cast,
                 ..RecordSchema::infer(&records)
             };
             ctx.ws.write_schema(name, &inferred.to_file())?;
-            drift = Some(Drift::new(&inferred));
-            schema = Some(inferred);
+            self.drift = Some(Drift::new(&inferred));
+            self.schema = Some(inferred);
         }
-        if writer.is_none()
-            && let Some(sc) = &schema
+        if self.writer.is_none()
+            && let Some(sc) = &self.schema
         {
-            writer = Some(DataWriter::new(
+            self.writer = Some(DataWriter::new(
                 ctx.store.clone(),
                 &ctx.layout,
                 name,
-                dir.clone(),
+                self.dir.clone(),
                 Some(sc.arrow()),
-                max_bytes,
+                ctx.config.destination.rotate.max_bytes,
             ));
         }
         for record in records {
-            let conformed = schema.as_ref().map(|sc| sc.conform(&record));
-            if let (Some(c), Some(d)) = (&conformed, &mut drift) {
+            let conformed = self.schema.as_ref().map(|sc| sc.conform(&record));
+            if let (Some(c), Some(d)) = (&conformed, &mut self.drift) {
                 d.observe(c);
             }
             let violations = conformed
@@ -317,10 +375,10 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
                 && let Some(v) = field(&record, c)
             {
                 if violations.iter().any(|v| v.path == c) {
-                    mistyped_cursors += 1;
+                    self.mistyped_cursors += 1;
                 } else {
-                    range.observe(v);
-                    tracker.observe(&record, v);
+                    self.range.observe(v);
+                    self.tracker.observe(&record, v);
                 }
             }
             if !violations.is_empty() && ctx.options.strict {
@@ -334,11 +392,12 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
                     }
                 );
             }
-            let w = writer
+            let w = self
+                .writer
                 .as_mut()
                 .expect("a Parquet writer exists once records arrive");
             if quarantined {
-                let q = quarantine.get_or_insert_with(|| {
+                let q = self.quarantine.get_or_insert_with(|| {
                     JsonlWriter::single(ctx.store.clone(), &ctx.layout, ctx.layout.quarantine(name))
                 });
                 q.write(&quarantine_line(record, violations, &stamp))
@@ -349,11 +408,37 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
                 report.records += 1;
             }
         }
-        if stop {
-            tracing::info!("{name}: reached the watermark, stopping early");
-            break;
-        }
+        Ok(stop)
     }
+}
+
+/// Finishes the files, then commits them in order: move them into place,
+/// then advance the watermark. The fail points sit between the steps.
+async fn commit(
+    ctx: &Ctx,
+    s: &StreamConfig,
+    fetch: Fetch<'_>,
+    report: &mut StreamReport,
+) -> Result<()> {
+    let name = &s.name;
+    let format = ctx.config.destination.format;
+    let max_bytes = ctx.config.destination.rotate.max_bytes;
+    let run_id = &ctx.layout.run_id;
+    let sort = s.incremental.as_ref().and_then(|i| i.sort.as_ref());
+    let Fetch {
+        cursor,
+        snapshot,
+        early,
+        schema,
+        mut drift,
+        writer,
+        quarantine,
+        range,
+        tracker,
+        mistyped_cursors,
+        ..
+    } = fetch;
+
     let unreliable = early.as_ref().is_some_and(|g| g.unreliable);
     if unreliable {
         report.unreliable_sort = true;
