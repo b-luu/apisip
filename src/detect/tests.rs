@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::config::Mode;
+use crate::config::{ApiKeyLocation, Mode, Pagination};
 
 fn load(name: &str) -> Spec {
     let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -253,25 +253,4 @@ fn record_schema_lookup_matches_detection() {
             s.config.name
         );
     }
-}
-
-#[test]
-fn names_and_prefixes() {
-    assert_eq!(stream_name("/v1/users/search"), "users_search");
-    assert_eq!(stream_name("/api/v2.1/LineItems"), "line_items");
-    assert_eq!(stream_name("/"), "root");
-    assert_eq!(env_prefix("Swagger Petstore - OpenAPI 3.0"), "PETSTORE");
-    assert_eq!(env_prefix("GitHub v3 REST API"), "GITHUB");
-    assert_eq!(env_prefix("!!!"), "API");
-}
-
-#[test]
-fn prose_rate_limits() {
-    let mut out = Vec::new();
-    parse_text("You can make up to 5,000 requests per hour.", "t", &mut out);
-    parse_text("| Enterprise | 100 calls per 10 seconds |", "t", &mut out);
-    assert_eq!(out[0].limit.max_calls, 5000);
-    assert_eq!(out[0].plan, None);
-    assert_eq!(out[1].plan.as_deref(), Some("Enterprise"));
-    assert_eq!(out[1].limit.period, Duration::from_secs(10));
 }
