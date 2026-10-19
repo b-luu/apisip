@@ -126,6 +126,9 @@ fn duckdb(dir: &Path, query: &str) -> Option<String> {
     let out = std::process::Command::new("duckdb")
         .arg("-csv")
         .arg("-noheader")
+        // Times print in the machine's zone otherwise.
+        .arg("-c")
+        .arg("set TimeZone = 'UTC'")
         .arg("-c")
         .arg(format!(
             ".read {}",
