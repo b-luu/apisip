@@ -51,6 +51,27 @@ async fn retries_429_then_succeeds() {
 }
 
 #[tokio::test]
+async fn a_retry_after_past_max_wait_fails_at_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "21600"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client(&server);
+    let url = c.endpoint("/users").unwrap();
+    let get = c.get(&url);
+    let err = tokio::time::timeout(Duration::from_secs(5), get)
+        .await
+        .expect("fails at once, without waiting")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("HTTP 429"), "{err}");
+    assert!(err.contains("wait 6h"), "{err}");
+    assert!(err.contains("source.retry.max_wait (10m)"), "{err}");
+}
+
+#[tokio::test]
 async fn gives_up_after_max_tries() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

@@ -124,6 +124,10 @@ pub struct RetryConfig {
     pub max_tries: u32,
     #[serde(default = "default_max_backoff", with = "duration_str")]
     pub max_backoff: Duration,
+    /// The longest one request may spend waiting between its retries,
+    /// `Retry-After` included: past it, the run fails at once.
+    #[serde(default = "default_max_wait", with = "duration_str")]
+    pub max_wait: Duration,
     #[serde(default = "default_on_status")]
     pub on_status: Vec<u16>,
 }
@@ -134,8 +138,14 @@ fn default_max_tries() -> u32 {
 fn default_max_backoff() -> Duration {
     Duration::from_secs(60)
 }
+fn default_max_wait() -> Duration {
+    Duration::from_secs(600)
+}
+/// Answers that may differ on the next try. 501 and 505 do not, nor does
+/// any other 4xx: the request itself is wrong. 520 to 524 come from
+/// Cloudflare in front of an API.
 fn default_on_status() -> Vec<u16> {
-    vec![429, 500, 502, 503, 504]
+    vec![408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]
 }
 
 impl Default for RetryConfig {
@@ -143,6 +153,7 @@ impl Default for RetryConfig {
         RetryConfig {
             max_tries: default_max_tries(),
             max_backoff: default_max_backoff(),
+            max_wait: default_max_wait(),
             on_status: default_on_status(),
         }
     }

@@ -37,7 +37,7 @@ apisip update [<new-spec-url-or-file>] [--check]    # diffs a new spec version a
 
   At the end, `init` prints a summary with each stream's mode, any rate-limit warning, and the next commands to run.
 - **Auth:** bearer, API key (header, query or cookie), HTTP basic, and OAuth2 client credentials. Client credentials fetches a token from the spec's `tokenUrl`, caches it, and refreshes it on expiry or on a 401.
-- **Retry and pagination** are built in. `[source.retry]` sets the number of tries, the backoff cap and the retryable statuses.
+- **Retry and pagination** are built in. `[source.retry]` sets the number of tries, the backoff cap, the total wait per request (`max_wait`, past which the run fails at once, `Retry-After` included) and the retryable statuses. The default statuses are the ones that may differ on the next try: 408, 429, 500, 502 to 504, and 520 to 524 (Cloudflare). 501, 505 and other 4xx fail at once.
 
 ### `apisip.toml`
 
@@ -49,7 +49,7 @@ spec = "https://api.example.com/openapi.json"
 base_url = "https://api.example.com/v1"            # from servers[0]
 auth = { type = "bearer", token = "${EXAMPLE_API_TOKEN}" }   # bearer | api_key | basic | oauth2_client_credentials
 rate_limit = { max_calls = 100, period = "1m" }     # from the spec or the plan picked at init; optional
-retry = { max_tries = 8, max_backoff = "60s", on_status = [429, 500, 502, 503, 504] }
+retry = { max_tries = 8, max_backoff = "60s", max_wait = "10m", on_status = [408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524] }
 
 [destination]
 url = "file://data"                                 # default: data/ in this folder; or s3://bucket/prefix
@@ -87,7 +87,7 @@ The results:
 
 In every case the runtime also adapts to live headers.
 - **Budget headers:** with `X-RateLimit-Remaining` / `X-RateLimit-Reset` or `RateLimit` / `RateLimit-Reset`, the throttle waits for the reset before the budget runs out.
-- **`Retry-After`** on a 429 always wins.
+- **`Retry-After`** on a 429 always wins, up to `retry.max_wait`: a longer wait fails the run at once.
 - **Effect:** a wrong or missing static limit costs a few retries, not a failed run.
 
 ### Incremental runs

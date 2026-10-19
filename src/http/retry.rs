@@ -12,6 +12,8 @@ use crate::config::RetryConfig;
 pub struct RetryPolicy {
     pub max_tries: u32,
     pub max_backoff: Duration,
+    /// Total wait allowed between the tries of one request.
+    pub max_wait: Duration,
     pub on_status: Vec<u16>,
     /// First backoff step; 1s in production, shorter in tests.
     pub base: Duration,
@@ -22,6 +24,7 @@ impl From<&RetryConfig> for RetryPolicy {
         RetryPolicy {
             max_tries: c.max_tries.max(1),
             max_backoff: c.max_backoff,
+            max_wait: c.max_wait,
             on_status: c.on_status.clone(),
             base: Duration::from_secs(1),
         }
@@ -35,6 +38,24 @@ impl RetryPolicy {
 
     pub fn is_retryable(&self, status: u16) -> bool {
         self.on_status.contains(&status)
+    }
+
+    /// An error when waiting `delay` more, after `waited`, goes past
+    /// `max_wait`. `what` says why the request is retried.
+    pub fn check_wait(&self, waited: Duration, delay: Duration, what: &str) -> anyhow::Result<()> {
+        if waited.saturating_add(delay) <= self.max_wait {
+            return Ok(());
+        }
+        let secs = |d: Duration| {
+            humantime::format_duration(Duration::from_secs(d.as_secs_f64().ceil() as u64))
+        };
+        anyhow::bail!(
+            "{what}, and the next retry would wait {} after {} already waited, past \
+             source.retry.max_wait ({}); keep it well under the time between two scheduled runs",
+            secs(delay),
+            secs(waited),
+            secs(self.max_wait)
+        )
     }
 
     /// Delay before try number `attempt + 1` (attempt counts from 0).
@@ -103,5 +124,7 @@ mod tests {
         let p = policy();
         assert!(p.is_success(204) && !p.is_success(304));
         assert!(p.is_retryable(429) && p.is_retryable(503) && !p.is_retryable(404));
+        assert!(p.is_retryable(408) && p.is_retryable(522));
+        assert!(!p.is_retryable(501) && !p.is_retryable(505) && !p.is_retryable(400));
     }
 }

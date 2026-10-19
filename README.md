@@ -183,7 +183,7 @@ spec = "http://127.0.0.1:8080/openapi.json"
 base_url = "http://127.0.0.1:8080"
 auth = { type = "bearer", scheme = "bearerAuth", token = "${MOCKSHOP_TOKEN}" }
 rate_limit = { max_calls = 1000, period = "1m" }
-retry = { max_tries = 8, max_backoff = "1m", on_status = [429, 500, 502, 503, 504] }
+retry = { max_tries = 8, max_backoff = "1m", max_wait = "10m", on_status = [408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524] }
 concurrency = 4
 
 [destination]
@@ -218,6 +218,14 @@ cast = "lossless"                 # default; "exact" or "none" for stricter typi
   several plans, `init` asks which one you are on. When it finds nothing, it
   says so and shows the line to add. At run time, `Retry-After` and the
   `X-RateLimit-*` / `RateLimit-*` headers always take over.
+- **Retries:** an answer that may differ on the next try is retried with
+  exponential backoff and jitter, or after its `Retry-After`. The default
+  `on_status` is 408, 429, 500, 502 to 504 and 520 to 524. Any other answer
+  fails at once: it would be the same next time. `max_wait` (default `"10m"`)
+  is the longest one request may wait between its retries. When the next wait
+  would go past it, `Retry-After` included, the run fails at once and names
+  the wait. Keep it well under the time between two scheduled runs, so that a
+  slow API never makes one run overlap the next.
 - **S3:** the standard variables `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
   `AWS_REGION`, and `AWS_ENDPOINT_URL` for S3-compatible stores (R2, Garage,
   SeaweedFS, Ceph...). `init` asks for them when the destination is `s3://`.

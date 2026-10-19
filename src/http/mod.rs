@@ -239,6 +239,7 @@ impl ApiClient {
         let shown = self.shown(url);
         let mut refreshed_auth = false;
         let mut attempt = 0;
+        let mut waited = Duration::ZERO;
         loop {
             self.throttle.acquire().await;
             let rb = self.http.get(url.clone()).headers(self.headers.clone());
@@ -250,6 +251,9 @@ impl ApiClient {
                 Err(e) if !last && (e.is_connect() || e.is_timeout() || e.is_request()) => {
                     let delay = self.retry.delay(attempt, None);
                     let e = e.without_url();
+                    self.retry
+                        .check_wait(waited, delay, &format!("GET {shown} failed ({e})"))?;
+                    waited += delay;
                     tracing::warn!("GET {shown} failed ({e}), retrying in {delay:?}");
                     tokio::time::sleep(delay).await;
                     attempt += 1;
@@ -290,6 +294,9 @@ impl ApiClient {
             }
             if self.retry.is_retryable(status) && !last {
                 let delay = self.retry.delay(attempt, Some(&headers));
+                self.retry
+                    .check_wait(waited, delay, &format!("GET {shown}: HTTP {status}"))?;
+                waited += delay;
                 if status == 429 {
                     self.throttle.block_for(delay).await;
                 }
