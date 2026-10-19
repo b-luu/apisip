@@ -8,9 +8,8 @@ use std::pin::pin;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use chrono::{SecondsFormat, Utc};
+use chrono::Utc;
 use futures::{StreamExt, TryStreamExt};
-use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::config::{Cast, Config, Format, Mode, StreamConfig};
@@ -18,8 +17,9 @@ use crate::http::{self, ApiClient};
 use crate::incremental::{
     Boundary, BoundaryTracker, CursorValue, EarlyStop, MAX_BOUNDARY, Range, field,
 };
-use crate::schema::{Drift, EXTRACTED_AT, RUN_ID, RecordSchema, wrap};
-use crate::sink::{JsonlWriter, Layout, ParquetWriter, StagedFile, Store};
+use crate::schema::{Drift, RecordSchema};
+use crate::sink::writer::quarantine_line;
+use crate::sink::{DataWriter, JsonlWriter, Layout, StagedFile, Stamp, Store};
 use crate::spec::Spec;
 use crate::state::{
     CursorRange, Manifest, Overlap, RunKind, RunStatus, State, StreamReport, StreamStatus,
@@ -138,17 +138,7 @@ pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
         .await;
 
     let mut m = manifest.lock().await;
-    let failed = m
-        .streams
-        .values()
-        .filter(|r| r.status == StreamStatus::Failed)
-        .count();
-    m.status = match failed {
-        0 => RunStatus::Success,
-        n if n == m.streams.len() => RunStatus::Failed,
-        _ => RunStatus::Partial,
-    };
-    m.finished_at = Some(Utc::now());
+    let failed = m.finish();
     m.save(&store).await?;
     store.delete_prefix(&layout.staging_root()).await?;
     let state = ctx.state.lock().await;
@@ -176,37 +166,13 @@ pub(super) fn print_views(views: Result<Vec<String>>, config: &Config, store: &S
 }
 
 async fn run_stream(ctx: &Ctx, s: &StreamConfig) -> StreamReport {
-    let mut report = StreamReport {
-        status: StreamStatus::Committed,
-        mode: s.mode().label().into(),
-        error: None,
-        records: 0,
-        quarantined: 0,
-        unchanged: 0,
-        pages: 0,
-        files: Vec::new(),
-        requested_from: None,
-        observed: None,
-        overlap: None,
-        unreliable_sort: false,
-        warnings: Vec::new(),
-        schema: None,
-        drift: None,
-    };
+    let mut report = StreamReport::new(s.mode().label());
     if let Err(e) = fetch_and_commit(ctx, s, &mut report).await {
         report.status = StreamStatus::Failed;
         report.error = Some(format!("{e:#}"));
-        let staged = format!("{}/{}/", ctx.layout.staging_root(), s.name);
-        if let Err(e) = ctx.store.delete_prefix(&staged).await {
-            tracing::warn!("could not clean up {staged}: {e:#}");
-        }
+        ctx.store.drop_staged(&ctx.layout, &s.name).await;
     }
     report
-}
-
-enum DataWriter {
-    Jsonl(Box<JsonlWriter>),
-    Parquet(Box<ParquetWriter>),
 }
 
 async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport) -> Result<()> {
@@ -272,13 +238,14 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
         load_schema(&ctx.ws, ctx.spec.as_ref(), s)?.map(|sc| RecordSchema { cast, ..sc });
     let mut drift = schema.as_ref().map(Drift::new);
     let mut writer = match format {
-        Format::Jsonl => Some(DataWriter::Jsonl(Box::new(JsonlWriter::new(
+        Format::Jsonl => Some(DataWriter::new(
             ctx.store.clone(),
             &ctx.layout,
             name,
             dir.clone(),
+            None,
             max_bytes,
-        )))),
+        )),
         Format::Parquet => None,
     };
     let mut quarantine: Option<JsonlWriter> = None;
@@ -299,8 +266,10 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
     ));
     while let Some(records) = pages.try_next().await? {
         report.pages += 1;
-        let extracted = Utc::now();
-        let extracted_text = extracted.to_rfc3339_opts(SecondsFormat::Micros, true);
+        let stamp = Stamp {
+            run_id: &run_id,
+            extracted: Utc::now(),
+        };
         let (mut records, stop) = match &mut early {
             Some(g) => g.page(records),
             None => (records, false),
@@ -323,14 +292,14 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
         if writer.is_none()
             && let Some(sc) = &schema
         {
-            writer = Some(DataWriter::Parquet(Box::new(ParquetWriter::new(
+            writer = Some(DataWriter::new(
                 ctx.store.clone(),
                 &ctx.layout,
                 name,
                 dir.clone(),
-                sc.arrow(),
+                Some(sc.arrow()),
                 max_bytes,
-            ))));
+            ));
         }
         for record in records {
             let conformed = schema.as_ref().map(|sc| sc.conform(&record));
@@ -365,41 +334,19 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
                     }
                 );
             }
-            match writer.as_mut() {
-                Some(DataWriter::Jsonl(w)) => {
-                    let mut v = wrap(record);
-                    let obj = v.as_object_mut().expect("wrapped");
-                    obj.insert(RUN_ID.into(), Value::String(run_id.clone()));
-                    obj.insert(EXTRACTED_AT.into(), Value::String(extracted_text.clone()));
-                    w.write(&v).await?;
-                    report.records += 1;
-                }
-                Some(DataWriter::Parquet(w)) if violations.is_empty() => {
-                    let mut row = conformed.expect("parquet has a schema").row;
-                    row.insert(RUN_ID.into(), Value::String(run_id.clone()));
-                    row.insert(EXTRACTED_AT.into(), json!(extracted.timestamp_micros()));
-                    w.write(row).await?;
-                    report.records += 1;
-                }
-                Some(DataWriter::Parquet(_)) => {
-                    let q = quarantine.get_or_insert_with(|| {
-                        JsonlWriter::single(
-                            ctx.store.clone(),
-                            &ctx.layout,
-                            ctx.layout.quarantine(name),
-                        )
-                    });
-                    let reason: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
-                    q.write(&json!({
-                        "reason": reason.join("; "),
-                        RUN_ID: run_id,
-                        EXTRACTED_AT: extracted_text,
-                        "record": record,
-                    }))
+            let w = writer
+                .as_mut()
+                .expect("a Parquet writer exists once records arrive");
+            if quarantined {
+                let q = quarantine.get_or_insert_with(|| {
+                    JsonlWriter::single(ctx.store.clone(), &ctx.layout, ctx.layout.quarantine(name))
+                });
+                q.write(&quarantine_line(record, violations, &stamp))
                     .await?;
-                    report.quarantined += 1;
-                }
-                None => unreachable!("a Parquet writer exists once records arrive"),
+                report.quarantined += 1;
+            } else {
+                w.write(record, conformed, &stamp).await?;
+                report.records += 1;
             }
         }
         if stop {
@@ -433,8 +380,7 @@ async fn fetch_and_commit(ctx: &Ctx, s: &StreamConfig, report: &mut StreamReport
     report.schema = schema.as_ref().map(|s| s.source);
 
     let data_files: Vec<StagedFile> = match writer {
-        Some(DataWriter::Jsonl(w)) => w.finish().await?,
-        Some(DataWriter::Parquet(w)) => w.finish().await?,
+        Some(w) => w.finish().await?,
         None => Vec::new(),
     };
     let quarantine_files = match quarantine {

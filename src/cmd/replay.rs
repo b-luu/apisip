@@ -12,12 +12,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 
 use crate::config::{Cast, Format, Mode, StreamConfig};
-use crate::schema::{EXTRACTED_AT, RUN_ID, RecordSchema, wrap};
-use crate::sink::{JsonlWriter, Layout, ParquetWriter, StagedFile, Store};
+use crate::schema::{EXTRACTED_AT, RUN_ID, RecordSchema};
+use crate::sink::writer::reason;
+use crate::sink::{DataWriter, JsonlWriter, Layout, StagedFile, Stamp, Store};
 use crate::spec::Spec;
 use crate::state::{Manifest, RunKind, RunStatus, State, StreamReport, StreamStatus};
 use crate::workspace::Workspace;
@@ -73,46 +74,17 @@ pub async fn run(ws: &Workspace, o: ReplayOptions) -> Result<bool> {
         format,
     };
     for (s, files) in &todo {
-        let mut report = StreamReport {
-            status: StreamStatus::Committed,
-            mode: "replay".into(),
-            error: None,
-            records: 0,
-            quarantined: 0,
-            unchanged: 0,
-            pages: 0,
-            files: Vec::new(),
-            requested_from: None,
-            observed: None,
-            overlap: None,
-            unreliable_sort: false,
-            warnings: Vec::new(),
-            schema: None,
-            drift: None,
-        };
+        let mut report = StreamReport::new("replay");
         if let Err(e) = ctx.stream(s, files, &mut report).await {
             report.status = StreamStatus::Failed;
             report.error = Some(format!("{e:#}"));
-            let staged = format!("{}/{}/", layout.staging_root(), s.name);
-            if let Err(e) = store.delete_prefix(&staged).await {
-                tracing::warn!("could not clean up {staged}: {e:#}");
-            }
+            store.drop_staged(&layout, &s.name).await;
         }
         m.streams.insert(s.name.clone(), report);
         m.save(&store).await?;
     }
 
-    let failed = m
-        .streams
-        .values()
-        .filter(|r| r.status == StreamStatus::Failed)
-        .count();
-    m.status = match failed {
-        0 => RunStatus::Success,
-        n if n == m.streams.len() => RunStatus::Failed,
-        _ => RunStatus::Partial,
-    };
-    m.finished_at = Some(Utc::now());
+    let failed = m.finish();
     m.save(&store).await?;
     store.delete_prefix(&layout.staging_root()).await?;
 
@@ -169,11 +141,6 @@ struct Replay<'a> {
     format: Format,
 }
 
-enum Writer {
-    Jsonl(Box<JsonlWriter>),
-    Parquet(Box<ParquetWriter>),
-}
-
 impl Replay<'_> {
     async fn stream(
         &self,
@@ -216,7 +183,7 @@ impl Replay<'_> {
             .trim_end_matches(".jsonl");
         let tag = format!("replay-{stem}-{}", fnv(&bytes));
         // One writer per data folder: records go back to their run's folder.
-        let mut writers: BTreeMap<String, Writer> = BTreeMap::new();
+        let mut writers: BTreeMap<String, DataWriter> = BTreeMap::new();
         let mut remaining: Option<JsonlWriter> = None;
         let mut kept = 0;
 
@@ -243,13 +210,9 @@ impl Replay<'_> {
                 (None, _, _) | (_, None, _) => {
                     Some(format!("no {RUN_ID} or {EXTRACTED_AT} to replay it with"))
                 }
-                (_, _, Some(c)) if parquet && !c.violations.is_empty() => Some(
-                    c.violations
-                        .iter()
-                        .map(|v| v.to_string())
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                ),
+                (_, _, Some(c)) if parquet && !c.violations.is_empty() => {
+                    Some(reason(&c.violations))
+                }
                 _ => None,
             };
             let (Some(run_id), Some(extracted), None) = (run_id, extracted, &reason) else {
@@ -268,50 +231,27 @@ impl Replay<'_> {
                 dir.push_str(&format!("/run_id={run_id}"));
             }
             // No rotation: the same records always give the same files.
-            let w = writers.entry(dir.clone()).or_insert_with(|| match schema {
-                Some(sc) if parquet => Writer::Parquet(Box::new(ParquetWriter::new(
+            let w = writers.entry(dir.clone()).or_insert_with(|| {
+                DataWriter::new(
                     self.store.clone(),
                     self.layout,
                     name,
                     dir.clone(),
-                    sc.arrow(),
+                    schema.filter(|_| parquet).map(RecordSchema::arrow),
                     u64::MAX,
-                ))),
-                _ => Writer::Jsonl(Box::new(JsonlWriter::new(
-                    self.store.clone(),
-                    self.layout,
-                    name,
-                    dir.clone(),
-                    u64::MAX,
-                ))),
+                )
             });
-            match w {
-                Writer::Parquet(w) => {
-                    let mut row = conformed.expect("parquet has a schema").row;
-                    row.insert(RUN_ID.into(), Value::String(run_id));
-                    row.insert(EXTRACTED_AT.into(), json!(extracted.timestamp_micros()));
-                    w.write(row).await?;
-                }
-                Writer::Jsonl(w) => {
-                    let mut v = wrap(record);
-                    let obj = v.as_object_mut().expect("wrapped");
-                    obj.insert(RUN_ID.into(), Value::String(run_id));
-                    obj.insert(
-                        EXTRACTED_AT.into(),
-                        Value::String(extracted.to_rfc3339_opts(SecondsFormat::Micros, true)),
-                    );
-                    w.write(&v).await?;
-                }
-            }
+            let stamp = Stamp {
+                run_id: &run_id,
+                extracted,
+            };
+            w.write(record, conformed, &stamp).await?;
             report.records += 1;
         }
 
         let mut data_files: Vec<StagedFile> = Vec::new();
         for w in writers.into_values() {
-            data_files.extend(match w {
-                Writer::Jsonl(w) => w.finish().await?,
-                Writer::Parquet(w) => w.finish().await?,
-            });
+            data_files.extend(w.finish().await?);
         }
         for f in &mut data_files {
             // `<stream>-<run id>-0000.parquet` becomes `<stream>-<tag>-0000.parquet`.

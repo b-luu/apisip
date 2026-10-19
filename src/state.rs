@@ -290,7 +290,47 @@ pub struct Overlap {
     pub previous_max: String,
 }
 
+impl StreamReport {
+    /// A committed stream with nothing done yet; `mode` as the manifest shows it.
+    pub fn new(mode: &str) -> StreamReport {
+        StreamReport {
+            status: StreamStatus::Committed,
+            mode: mode.into(),
+            error: None,
+            records: 0,
+            quarantined: 0,
+            unchanged: 0,
+            pages: 0,
+            files: Vec::new(),
+            requested_from: None,
+            observed: None,
+            overlap: None,
+            unreliable_sort: false,
+            warnings: Vec::new(),
+            schema: None,
+            drift: None,
+        }
+    }
+}
+
 impl Manifest {
+    /// Sets the status from the stream reports and the finish time. Returns
+    /// the number of failed streams.
+    pub fn finish(&mut self) -> usize {
+        let failed = self
+            .streams
+            .values()
+            .filter(|r| r.status == StreamStatus::Failed)
+            .count();
+        self.status = match failed {
+            0 => RunStatus::Success,
+            n if n == self.streams.len() => RunStatus::Failed,
+            _ => RunStatus::Partial,
+        };
+        self.finished_at = Some(Utc::now());
+        failed
+    }
+
     pub fn path(run_id: &str) -> String {
         format!("{META_DIR}/runs/{run_id}.json")
     }

@@ -4,6 +4,7 @@
 
 pub mod jsonl;
 pub mod parquet;
+pub mod writer;
 
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -19,6 +20,7 @@ use crate::config::Destination;
 
 pub use jsonl::JsonlWriter;
 pub use parquet::ParquetWriter;
+pub use writer::{DataWriter, Stamp};
 
 #[derive(Debug)]
 pub struct Store {
@@ -148,6 +150,14 @@ impl Store {
             .delete(&Path::from(path))
             .await
             .with_context(|| format!("deleting {path} from {}", self.url))
+    }
+
+    /// Drops what a failed stream staged; the run goes on with the others.
+    pub async fn drop_staged(&self, layout: &Layout, stream: &str) {
+        let staged = format!("{}/{stream}/", layout.staging_root());
+        if let Err(e) = self.delete_prefix(&staged).await {
+            tracing::warn!("could not clean up {staged}: {e:#}");
+        }
     }
 
     pub async fn delete_prefix(&self, prefix: &str) -> Result<()> {
