@@ -50,10 +50,6 @@ impl DataWriter {
         }
     }
 
-    pub fn is_parquet(&self) -> bool {
-        matches!(self, DataWriter::Parquet(_))
-    }
-
     /// Writes one record with its stamp: JSONL keeps the record as received,
     /// Parquet writes the conformed row, with the time in microseconds.
     pub async fn write(

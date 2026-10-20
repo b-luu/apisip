@@ -40,7 +40,7 @@ pub fn select_streams(config: &Config, names: &[String]) -> Result<Vec<StreamCon
 }
 
 /// The stream named `name` in apisip.toml, or an error that lists the known ones.
-pub fn find_stream<'a>(config: &'a Config, name: &str) -> Result<&'a StreamConfig> {
+pub(super) fn find_stream<'a>(config: &'a Config, name: &str) -> Result<&'a StreamConfig> {
     config
         .streams
         .iter()
