@@ -351,8 +351,10 @@ impl Manifest {
 /// server error, a timeout or a denied access, is a failure, not a reason to
 /// write without the condition. The status sits deep in the error chain, in
 /// a type object_store does not export: it is read from the chain's messages.
-/// Only the text after the status is searched for a refusal, because the text
-/// before it holds the request URL, which may contain any word.
+/// Only the answer after the status is searched for a refusal, because the
+/// text before it holds the request URL, which may contain any word. In an
+/// S3 XML error, only the code and the message are searched: the other
+/// elements repeat the object key.
 fn rejects_conditional_writes(e: &object_store::Error) -> bool {
     if matches!(
         e,
@@ -363,7 +365,7 @@ fn rejects_conditional_writes(e: &object_store::Error) -> bool {
     match status_answer(e) {
         Some((501, _)) => true,
         Some((code, answer)) if (400..500).contains(&code) && code != 408 && code != 429 => {
-            let answer = answer.to_lowercase();
+            let answer = refusal_text(&answer).to_lowercase();
             [
                 "not implemented",
                 "notimplemented",
@@ -375,6 +377,23 @@ fn rejects_conditional_writes(e: &object_store::Error) -> bool {
         }
         _ => false,
     }
+}
+
+/// The `<Code>` and `<Message>` of an S3 XML error, or the whole answer when
+/// it has no `<Code>`.
+fn refusal_text(answer: &str) -> String {
+    if !answer.contains("<Code>") {
+        return answer.to_string();
+    }
+    ["Code", "Message"]
+        .iter()
+        .filter_map(|tag| {
+            let (_, rest) = answer.split_once(&format!("<{tag}>"))?;
+            let (text, _) = rest.split_once(&format!("</{tag}>"))?;
+            Some(text)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The HTTP status of a failed request. object_store keeps its error type
@@ -619,6 +638,17 @@ mod tests {
         )));
         assert!(!refused(&format!(
             "{put} - Server returned non-2xx status code: 403 Forbidden: AccessDenied"
+        )));
+        // An S3 error repeats the key, which holds the destination prefix.
+        assert!(!refused(&format!(
+            "{put} - Server returned non-2xx status code: 403 Forbidden: <Error><Code>AccessDenied</Code>\
+             <Message>Access Denied</Message><Key>unsupported/_apisip/state.json</Key>\
+             <Resource>/b/unsupported/_apisip/state.json</Resource></Error>"
+        )));
+        assert!(refused(&format!(
+            "{put} - Server returned non-2xx status code: 400 Bad Request: <Error><Code>NotImplemented</Code>\
+             <Message>A header you provided implies functionality that is not implemented</Message>\
+             <Key>data/_apisip/state.json</Key></Error>"
         )));
         // A server error is transient whatever its body says.
         assert!(!refused(
