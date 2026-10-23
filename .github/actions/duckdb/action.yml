@@ -15,4 +15,4 @@ runs:
           "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip"
         echo "${DUCKDB_SHA256}  $dir/duckdb.zip" | sha256sum --check -
         unzip -q "$dir/duckdb.zip" -d "$dir"
-        echo "$dir" >> "$GITHUB_PATH"
+        sudo install -m 0755 "$dir/duckdb" /usr/local/bin/duckdb
