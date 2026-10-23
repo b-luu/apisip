@@ -205,9 +205,11 @@ cast = "lossless"                 # default; "exact" or "none" for stricter typi
   environment, which wins.
 - **Auth:** bearer, API key (header, query or cookie), HTTP basic, and OAuth2
   client credentials. OAuth2 fetches a token from the spec's `tokenUrl`, caches
-  it, and refreshes it on expiry or on a 401. Credentials go only to the API's
-  own host, over the same scheme and port or upgraded to https: a redirect or
-  a next-page link anywhere else fails the stream rather than receive them.
+  it, and refreshes it on expiry or on a 401. The OAuth2 client id and secret
+  go to the `tokenUrl`, which may be on another host. Otherwise credentials go
+  only to the API's own host, over the same scheme and port or upgraded to
+  https: a redirect or a next-page link anywhere else fails the stream rather
+  than receive them.
   Credentials and values read from the environment are masked in request
   URLs, logs and HTTP error messages.
 - **Pagination:** page number, offset, cursor, next URL, and `Link: rel="next"`
