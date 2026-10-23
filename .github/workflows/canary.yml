@@ -1,0 +1,55 @@
+name: Toolchain canary
+
+# CI pins the toolchain in rust-toolchain.toml. This job runs the gates on the
+# latest stable every week, so a new lint shows up as an issue and not as a
+# failure on someone's pull request.
+on:
+  schedule:
+    - cron: "43 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/duckdb
+      - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: rustc --version
+      - name: Gates on latest stable
+        run: |
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+        env:
+          APISIP_REQUIRE_DUCKDB: "1"
+      - name: Open or update the toolchain issue
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = 'Latest stable Rust breaks the gates';
+            const body = `The weekly canary failed on the latest stable toolchain: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\nBump \`rust-toolchain.toml\` in a pull request that fixes what the new version flags.`;
+            const { owner, repo } = context.repo;
+            try {
+              await github.rest.issues.createLabel({ owner, repo, name: 'toolchain', color: 'ededed' });
+            } catch (e) { if (e.status !== 422) throw e; }
+            const open = await github.rest.issues.listForRepo({ owner, repo, labels: 'toolchain', state: 'open' });
+            if (open.data.length) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: open.data[0].number, body });
+            } else {
+              await github.rest.issues.create({ owner, repo, title, body, labels: ['toolchain'] });
+            }
