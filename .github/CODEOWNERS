@@ -1,0 +1,3 @@
+# Default owner for every file. PRs to main need an approving review from this account.
+# Its own PRs cannot satisfy that rule and merge through the ruleset bypass.
+* @b-luu
