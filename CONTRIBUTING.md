@@ -7,9 +7,11 @@ it works inside (detection, the commit protocol, the output layout), read
 
 ## Set up
 
-You need a stable Rust toolchain (1.89 or later) and, for the view tests,
-the `duckdb` CLI on your `PATH`. Nix users can run `nix develop` instead, which
-provides cargo, clippy, rustfmt, rust-analyzer and duckdb.
+You need a Rust toolchain and, for the view tests, the `duckdb` CLI on your
+`PATH`. The crate builds on Rust 1.89 or later. CI pins the toolchain it runs
+the gates on in `rust-toolchain.toml`, and rustup picks that file up
+automatically. Nix users can run `nix develop` instead, which provides cargo,
+clippy, rustfmt, rust-analyzer and duckdb.
 
 ## Build and test
 
@@ -20,6 +22,24 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+CI runs these jobs on every pull request:
+
+- `gates`: the three commands above, on the pinned toolchain, with
+  `APISIP_REQUIRE_DUCKDB=1`.
+- `msrv`: `cargo check --all-targets` on Rust 1.89.
+- `s3`: the S3 suite against a SeaweedFS container.
+- `machete`: `cargo machete` fails on an unused dependency.
+- `mutants`: `cargo mutants --in-diff` changes the lines your pull request
+  touched and fails if the tests still pass. It checks that your tests notice a
+  broken version of your change.
+- `coverage`: `cargo llvm-cov` reports line coverage in the job summary. It has
+  no threshold.
+
+Two more run outside the pull request flow. `Nix` runs `nix flake check` on
+pushes to main, weekly, and on pull requests that touch the flake or the
+dependencies. `Toolchain canary` runs clippy and the tests on the latest stable
+Rust every week and opens an issue when they fail.
 
 The default suite runs offline. It contains:
 
@@ -43,12 +63,24 @@ Optional suites:
   ```
 
 - **S3**, which needs a reachable S3-compatible bucket (SeaweedFS, MinIO,
-  Garage...):
+  Garage...). CI uses SeaweedFS. To run the same setup, put an identity in
+  `s3.json`:
+
+  ```json
+  {"identities":[{"name":"test","credentials":[{"accessKey":"apisiptest","secretKey":"apisiptest-secret"}],"actions":["Admin","Read","Write","List","Tagging"]}]}
+  ```
+
+  Start the server, create the bucket, then run the test:
 
   ```sh
-  APISIP_TEST_S3=1 APISIP_TEST_S3_URL=s3://<bucket>/<prefix> \
-    AWS_ENDPOINT_URL=http://127.0.0.1:9000 AWS_ACCESS_KEY_ID=... \
-    AWS_SECRET_ACCESS_KEY=... AWS_REGION=us-east-1 cargo test --test e2e s3
+  docker run -d -p 8333:8333 -v "$PWD/s3.json:/etc/s3.json:ro" \
+    chrislusf/seaweedfs:4.48 server -dir=/data -s3 -s3.config=/etc/s3.json
+  AWS_ACCESS_KEY_ID=apisiptest AWS_SECRET_ACCESS_KEY=apisiptest-secret \
+    aws --endpoint-url http://127.0.0.1:8333 --region us-east-1 s3 mb s3://apisip-test
+  APISIP_TEST_S3=1 APISIP_TEST_S3_URL=s3://apisip-test/e2e \
+    AWS_ENDPOINT_URL=http://127.0.0.1:8333 AWS_ACCESS_KEY_ID=apisiptest \
+    AWS_SECRET_ACCESS_KEY=apisiptest-secret AWS_REGION=us-east-1 \
+    cargo test --test e2e s3
   ```
 
 - **Nix**: `nix flake check` builds the package and runs the test suite in the
