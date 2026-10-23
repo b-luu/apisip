@@ -54,7 +54,7 @@ pub(super) fn confirm_auth(
         None => Some(items.len() - 1),
         Some(_) => items
             .iter()
-            .position(|i| i.option.as_ref().is_some_and(&matches)),
+            .position(|i| i.option.as_ref().is_some_and(matches)),
     };
     if let (Some(c), None) = (current, default) {
         let name = c.scheme().unwrap_or(c.kind());
