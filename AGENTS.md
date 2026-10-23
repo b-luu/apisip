@@ -49,6 +49,10 @@ people do.
   open-source projects, formats and warehouses are fine to name.
 - **No plan or work-item IDs** (S1, A2, Q4…) in commits, PR text, docs or data
   files; use descriptive names. Keep PR descriptions to one screen.
+- **Open an issue only for a real problem:** a bug a user can hit, or a gap
+  that can lose or corrupt data. Search the open issues first. A speed-up
+  nobody measured, or an edge case nobody reported, goes in the PR
+  description instead. Roadmap issues are the maintainer's call.
 - **Stay in scope.** Do not refactor, rename or add features beyond the task,
   and match the comment density and naming of the code around your change.
 - **Do not edit `Cargo.lock` by hand,** and do not commit generated output
