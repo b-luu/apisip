@@ -333,3 +333,69 @@ fn credentials_keep_to_the_scheme_and_port_or_upgrade() {
         "userinfo trick"
     );
 }
+
+#[tokio::test]
+async fn a_budget_reset_on_a_retried_response_counts_toward_max_wait() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("x-ratelimit-remaining", "0")
+                .insert_header("x-ratelimit-reset", "3600"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client(&server);
+    let url = c.endpoint("/users").unwrap();
+    let err = tokio::time::timeout(Duration::from_secs(5), c.get(&url))
+        .await
+        .expect("fails at once, without waiting")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("wait 1h"), "{err}");
+    assert!(err.contains("source.retry.max_wait (10m)"), "{err}");
+}
+
+#[tokio::test]
+async fn the_waits_of_several_retries_add_up_to_max_wait() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let mut src = source(&server);
+    src.retry.max_tries = 8;
+    // Every delay is capped at 1s, so each one fits alone; only the total does not.
+    src.retry.max_backoff = Duration::from_secs(1);
+    src.retry.max_wait = Duration::from_millis(2500);
+    let c = ApiClient::new(&src).unwrap();
+    let err = c
+        .get(&c.endpoint("/users").unwrap())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("HTTP 503"), "{err}");
+    assert!(err.contains("source.retry.max_wait (3s)"), "{err}");
+    // Retries after 1s and 2s fit; the third would reach 3s.
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn a_spent_budget_on_a_success_is_pacing_not_a_retry() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-ratelimit-remaining", "0")
+                .insert_header("x-ratelimit-reset", "1")
+                .set_body_json(json!([{"id": 1}])),
+        )
+        .mount(&server)
+        .await;
+    let mut src = source(&server);
+    src.retry.max_wait = Duration::ZERO;
+    let c = ApiClient::new(&src).unwrap();
+    let page = c.get(&c.endpoint("/users").unwrap()).await.unwrap();
+    assert_eq!(page.body, json!([{"id": 1}]));
+}

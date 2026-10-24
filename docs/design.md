@@ -87,7 +87,7 @@ The results:
 
 In every case the runtime also adapts to live headers.
 - **Budget headers:** with `X-RateLimit-Remaining` / `X-RateLimit-Reset` or `RateLimit` / `RateLimit-Reset`, the throttle waits for the reset before the budget runs out.
-- **`Retry-After`** on a 429 always wins, up to `retry.max_wait`: a longer wait fails the run at once.
+- **`Retry-After`** on a 429 always wins, up to `retry.max_wait`: a longer wait fails the run at once. A budget reset on a retried response counts toward `max_wait` too (the larger of the two waits is used); pacing waits between successful pages do not.
 - **Effect:** a wrong or missing static limit costs a few retries, not a failed run.
 
 ### Incremental runs

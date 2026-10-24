@@ -84,10 +84,7 @@ impl Throttle {
     /// Reads budget headers from a response. When the remaining budget is
     /// zero, pauses until the advertised reset.
     pub async fn observe(&self, headers: &HeaderMap) {
-        if let Some((remaining, reset)) = budget(headers)
-            && remaining == 0
-        {
-            let reset = reset.unwrap_or(Duration::from_secs(1));
+        if let Some(reset) = budget_reset(headers) {
             tracing::info!(
                 "rate-limit budget spent, waiting {}s for the reset",
                 reset.as_secs()
@@ -95,6 +92,13 @@ impl Throttle {
             self.block_for(reset).await;
         }
     }
+}
+
+/// The pause the headers ask for when the remaining budget is zero, capped
+/// like `block_for`; `None` when calls remain.
+pub fn budget_reset(headers: &HeaderMap) -> Option<Duration> {
+    let (remaining, reset) = budget(headers)?;
+    (remaining == 0).then(|| reset.unwrap_or(Duration::from_secs(1)).min(MAX_HEADER_WAIT))
 }
 
 fn header_u64(headers: &HeaderMap, names: &[&str]) -> Option<u64> {
