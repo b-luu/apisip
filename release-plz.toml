@@ -1,0 +1,4 @@
+[workspace]
+# dist creates the GitHub release, with the archives and the installer attached.
+git_release_enable = false
+git_tag_name = "v{{ version }}"
