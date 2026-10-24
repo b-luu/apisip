@@ -148,14 +148,16 @@ Maintainers only. Releases follow the conventional commits on `main`.
   fails on each push to `main`; that is expected. In this order:
   1. `gh workflow run release.yml --ref main -f tag=dry-run` checks that
      every binary builds, without releasing anything.
-  2. On a clean checkout of `main`: `cargo publish --locked`.
+  2. On a clean, up-to-date checkout of `main` (`git pull` first):
+     `cargo publish --locked`.
   3. Only after the publish, tag that commit and push the tag:
      `git tag -a v0.1.0 -m "apisip 0.1.0" && git push origin v0.1.0`.
      A tag without a published crate makes release-plz fail.
   4. `gh workflow run release.yml --ref v0.1.0 -f tag=v0.1.0` builds the
      binaries and creates the GitHub release.
   5. On crates.io, configure trusted publishing for this repository and the
-     `release-plz.yml` workflow.
+     `release-plz.yml` workflow. Do it before merging any release pull
+     request: without it the next publish fails.
 
 ## Security
 
