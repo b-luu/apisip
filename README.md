@@ -45,6 +45,19 @@ It is a single binary written in Rust. No Python, no platform, no daemon.
 
 ## Install
 
+From crates.io:
+
+```sh
+cargo install apisip
+```
+
+Or with the shell installer from the latest release, which installs a
+prebuilt binary for Linux (x86_64, aarch64) or macOS (Intel, Apple silicon):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/b-luu/apisip/releases/latest/download/apisip-installer.sh | sh
+```
+
 From a clone of this repository:
 
 ```sh
