@@ -12,7 +12,7 @@ Not in 0.1.0. Each item becomes a GitHub issue labelled `roadmap`.
   to the same sinks.
 - **Iceberg table metadata** over the Parquet output.
 - **Config drafted from HTML docs** for APIs that publish no OpenAPI spec.
-- **Python bindings, and releases** on crates.io and Homebrew.
+- **Python bindings, and a Homebrew tap.**
 - **Renamed streams in `update`:** a stream the user renamed in `apisip.toml`
   is offered again as a new endpoint, because streams are matched by name. Match
   them by path as well.
