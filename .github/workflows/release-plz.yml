@@ -13,18 +13,19 @@ concurrency:
 jobs:
   release:
     name: release
+    if: github.repository_owner == 'b-luu'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write # create the tag
       id-token: write # crates.io trusted publishing, once configured
       actions: write # dispatch the dist release workflow
+      pull-requests: read # find the pull requests of each released commit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          # release-plz pushes the tag with the git credentials.
-          persist-credentials: true
+          persist-credentials: false
       - run: rustup toolchain install --profile minimal
       - uses: release-plz/action@7ef5e4d4b0420630cfcaeb182c01e13651d4c577 # v0.5.145
         id: release-plz
@@ -32,8 +33,6 @@ jobs:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Only for the first publish. Remove it once trusted publishing works.
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       # A tag pushed with GITHUB_TOKEN does not start the tag-triggered workflows,
       # so start the dist release workflow on the new tag by hand.
       - name: Start the binary release
@@ -45,6 +44,7 @@ jobs:
 
   release-pr:
     name: release-pr
+    if: github.repository_owner == 'b-luu'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -54,8 +54,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          # release-plz pushes the release branch with the git credentials.
-          persist-credentials: true
+          persist-credentials: false
       - run: rustup toolchain install --profile minimal
       - uses: release-plz/action@7ef5e4d4b0420630cfcaeb182c01e13651d4c577 # v0.5.145
         with:

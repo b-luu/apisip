@@ -128,25 +128,34 @@ Live specs are fetched at test time and never committed.
 Maintainers only. Releases follow the conventional commits on `main`.
 
 - On each push to `main`, release-plz opens or updates a release pull request
-  that bumps the version and writes `CHANGELOG.md`. A `fix` makes a patch
-  release and a `feat` a minor one; while the version is 0.x, a breaking change
-  makes a minor release.
+  that bumps the version and writes `CHANGELOG.md`. While the version is 0.x,
+  a breaking change makes a minor release and any other change a patch release.
 - Pull requests opened with the default `GITHUB_TOKEN` do not start CI. Close
-  and reopen the release pull request to run the required checks on it. This is
-  the chosen workaround; a GitHub App token would remove the step.
-- Merging the release pull request publishes the crate to crates.io and pushes
-  the `v<version>` tag. A tag pushed with `GITHUB_TOKEN` starts no workflow, so
-  the release-plz workflow then starts the dist `release.yml` workflow on that
-  tag by hand. It builds the archives and the shell installer and creates the
-  GitHub release.
+  and reopen the release pull request to run the required checks on it, again
+  after each update release-plz pushes to it. This is the chosen workaround; a
+  GitHub App token would remove the step.
+- Merging the release pull request publishes the crate to crates.io through
+  trusted publishing and creates the `v<version>` tag. A tag created with
+  `GITHUB_TOKEN` starts no workflow, so the release-plz workflow then starts the
+  dist `release.yml` workflow on that tag. It builds the archives and the shell
+  installer and creates the GitHub release.
 - `release.yml` is generated. Change `dist-workspace.toml` and run
   `dist generate`; do not edit the workflow. Every action in it is pinned by
   commit SHA through `github-action-commits`, so a dist upgrade needs those
   SHAs updated too.
-- The first publish (0.1.0) is run by hand with `cargo publish`, because
-  crates.io trusted publishing needs the crate to exist. After that, configure
-  trusted publishing for this repository and the `release-plz.yml` workflow,
-  and delete the `CARGO_REGISTRY_TOKEN` secret if there is one.
+- The first release (0.1.0) is made by hand, because crates.io trusted
+  publishing needs the crate to exist. Until then the release-plz `release` job
+  fails on each push to `main`; that is expected. In this order:
+  1. `gh workflow run release.yml --ref main -f tag=dry-run` checks that
+     every binary builds, without releasing anything.
+  2. On a clean checkout of `main`: `cargo publish --locked`.
+  3. Only after the publish, tag that commit and push the tag:
+     `git tag -a v0.1.0 -m "apisip 0.1.0" && git push origin v0.1.0`.
+     A tag without a published crate makes release-plz fail.
+  4. `gh workflow run release.yml --ref v0.1.0 -f tag=v0.1.0` builds the
+     binaries and creates the GitHub release.
+  5. On crates.io, configure trusted publishing for this repository and the
+     `release-plz.yml` workflow.
 
 ## Security
 
