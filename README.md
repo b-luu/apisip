@@ -1,5 +1,9 @@
 # apisip
 
+[![CI](https://github.com/b-luu/apisip/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/b-luu/apisip/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/apisip)](https://crates.io/crates/apisip)
+[![MSRV](https://img.shields.io/crates/msrv/apisip)](Cargo.toml)
+[![License](https://img.shields.io/crates/l/apisip)](#license)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/b-luu/apisip/badge)](https://scorecard.dev/viewer/?uri=github.com/b-luu/apisip)
 
 Paste the URL of an API's OpenAPI spec, fill in your credentials, and get
