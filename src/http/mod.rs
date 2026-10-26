@@ -293,7 +293,11 @@ impl ApiClient {
                 });
             }
             if self.retry.is_retryable(status) && !last {
-                let delay = self.retry.delay(attempt, Some(&headers));
+                // The throttle blocks for the budget reset too, and the two waits overlap.
+                let delay = self
+                    .retry
+                    .delay(attempt, Some(&headers))
+                    .max(throttle::budget_reset(&headers).unwrap_or_default());
                 self.retry
                     .check_wait(waited, delay, &format!("GET {shown}: HTTP {status}"))?;
                 waited += delay;

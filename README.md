@@ -241,8 +241,10 @@ cast = "lossless"                 # default; "exact" or "none" for stricter typi
   fails at once: it would be the same next time. `max_wait` (default `"10m"`)
   is the longest one request may wait between its retries. When the next wait
   would go past it, `Retry-After` included, the run fails at once and names
-  the wait. Keep it well under the time between two scheduled runs, so that a
-  slow API never makes one run overlap the next.
+  the wait. A rate-limit reset on a retried response counts toward it; the
+  pacing waits between successful pages do not. Keep it well under the time
+  between two scheduled runs, so that a slow API never makes one run overlap
+  the next.
 - **S3:** the standard variables `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
   `AWS_REGION`, and `AWS_ENDPOINT_URL` for S3-compatible stores (R2, Garage,
   SeaweedFS, Ceph...). `init` asks for them when the destination is `s3://`.
