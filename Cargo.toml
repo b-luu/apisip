@@ -1,6 +1,6 @@
 [package]
 name = "apisip"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.89"
 description = "Point it at an OpenAPI spec, get JSONL or Parquet files: API ingestion in one binary"

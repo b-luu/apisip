@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/b-luu/apisip/compare/v0.1.0...v0.1.1) - 2026-10-26
+
+### Other
+
+- *(contributing)* first release is done, trusted publishing is configured
+- *(roadmap)* keep the bold on the topic only
+- *(roadmap)* drop crates.io releases, shipped in 0.1.0
+
 ## [0.1.0](https://github.com/b-luu/apisip/releases/tag/v0.1.0) - 2026-10-23
 
 First release. `apisip init` reads an OpenAPI or Swagger spec and writes
