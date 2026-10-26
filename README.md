@@ -6,6 +6,9 @@ Paste the URL of an API's OpenAPI spec, fill in your credentials, and get
 every data endpoint as JSONL or Parquet files, on local disk or in any
 S3-compatible bucket.
 
+How it works, with a walkthrough on the bundled mock API:
+[The spec already wrote half your ingestion script](https://bluu.dev/the-spec-already-wrote-it).
+
 ```sh
 mkdir my-api && cd my-api            # one folder per API
 apisip init https://example.com/openapi.json
