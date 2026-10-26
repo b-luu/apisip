@@ -80,7 +80,11 @@ async fn gives_up_after_max_tries() {
         .mount(&server)
         .await;
     let c = client(&server);
-    let err = c.get(&c.endpoint("users").unwrap()).await.unwrap_err();
+    let url = c.endpoint("users").unwrap();
+    let err = tokio::time::timeout(Duration::from_secs(5), c.get(&url))
+        .await
+        .expect("stops after max_tries, without waiting for max_wait")
+        .unwrap_err();
     assert!(format!("{err:#}").contains("HTTP 503"), "{err:#}");
 }
 
