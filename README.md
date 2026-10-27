@@ -47,6 +47,7 @@ It is a single binary written in Rust. No Python, no platform, no daemon.
 - [Following API changes with `update`](#following-api-changes-with-update)
 - [Alternatives](#alternatives)
 - [Works well with](#works-well-with)
+- [Security](#security)
 - [Roadmap](#roadmap), [Contributing](#contributing) and [License](#license)
 
 ## Install
@@ -550,6 +551,13 @@ Choose something else in these cases:
   your engine's `add_files` procedure.
 - **Schedulers:** cron, systemd timers, GitHub Actions, Airflow, Dagster.
   `apisip run` exits non-zero when a stream fails.
+
+## Security
+
+apisip sends your credentials to the API and writes what the API returns.
+Point it only at specs and APIs you trust. The
+[trust model](SECURITY.md#trust-model) lists what apisip guards against and
+the known gaps. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
