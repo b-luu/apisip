@@ -27,16 +27,22 @@ impl Prompter {
         if !self.interactive {
             return Ok(default.to_string());
         }
-        let (message, default) = (printable(message), printable(default));
+        let (message, shown) = (printable(message), printable(default));
         let help = help.map(printable);
         let mut p = Text::new(&message);
-        if !default.is_empty() {
-            p = p.with_default(&default);
+        if !shown.is_empty() {
+            p = p.with_default(&shown);
         }
         if let Some(h) = &help {
             p = p.with_help_message(h);
         }
-        Ok(p.prompt()?.trim().to_string())
+        let v = p.prompt()?.trim().to_string();
+        // Accepting the cleaned default keeps the real value.
+        Ok(if v == shown.trim() {
+            default.trim().to_string()
+        } else {
+            v
+        })
     }
 
     /// A secret, typed without echo. Empty input returns `None` (keep the current value).

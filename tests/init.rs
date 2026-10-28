@@ -358,3 +358,48 @@ fn init_prompts_show_no_escape_sequences_from_the_spec() {
     // inquire draws with CSI sequences, but never OSC or BEL.
     assert!(!out.contains("\x1b]") && !out.contains('\x07'), "{out:?}");
 }
+
+/// Accepting a default shown without its control characters keeps the real value.
+#[cfg(unix)]
+#[test]
+fn init_prompt_default_keeps_control_characters() {
+    let dir = tempfile::tempdir().unwrap();
+    let spec = dir.path().join("spec.json");
+    std::fs::write(
+        &spec,
+        r#"{"openapi":"3.0.0","info":{"title":"Tabs","version":"1"},
+            "servers":[{"url":"https://tabs.test"}],"security":[{"basic":[]}],
+            "components":{"securitySchemes":{"basic":{"type":"http","scheme":"basic"}}},
+            "paths":{"/things":{"get":{"responses":{"200":{"description":"ok",
+            "content":{"application/json":{"schema":{"type":"array","items":{}}}}}}}}}}"#,
+    )
+    .unwrap();
+    let mut cmd = std::process::Command::new(bin());
+    cmd.arg("-C")
+        .arg(dir.path())
+        .args(["init", spec.to_str().unwrap()])
+        .env("TERM", "xterm")
+        .env("TABS_USERNAME", "a\tb");
+    let mut p = rexpect::session::spawn_with_options(
+        cmd,
+        rexpect::reader::Options::new()
+            .timeout_ms(Some(15_000))
+            .strip_ansi_escape_codes(true),
+    )
+    .unwrap();
+    for prompt in [
+        "API base URL",
+        "Where should apisip write data?",
+        "Output format",
+        "Authentication",
+        "TABS_USERNAME",
+        "TABS_PASSWORD",
+        "Streams to download",
+    ] {
+        p.exp_string(prompt).unwrap();
+        p.send_line("").unwrap();
+    }
+    p.exp_eof().unwrap();
+    let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+    assert!(env.contains("TABS_USERNAME=\"a\tb\""), "{env:?}");
+}
