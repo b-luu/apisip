@@ -49,7 +49,8 @@ API's vendor, not a copy from an unknown source.
   `base_url` is the API you meant before the first run.
 - An `apisip.toml` you did not write yourself is as untrusted as an unknown
   spec: it names the hosts and the environment variables apisip sends, and
-  the S3 endpoint that receives your S3 credentials (`http://` allowed).
+  the S3 endpoint that receives your exported data and signed S3 requests
+  (`http://` allowed).
 - A spec given as a URL is fetched with redirects followed and read whole
   into memory.
 
