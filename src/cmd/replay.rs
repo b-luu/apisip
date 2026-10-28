@@ -23,7 +23,7 @@ use crate::spec::Spec;
 use crate::state::{Manifest, RunKind, RunStatus, State, StreamReport, StreamStatus};
 use crate::workspace::Workspace;
 
-use super::run::{claim, fail_point, lock, print_views};
+use super::run::{check_owner, claim, fail_point, lock, print_views};
 use super::{load_schema, select_streams};
 
 #[derive(Debug, Default, Clone)]
@@ -265,6 +265,7 @@ impl Replay<'_> {
         };
 
         let _commit = self.store.commit_lock().await?;
+        check_owner(self.store, &self.ws.folder_id()?).await?;
         for f in &data_files {
             let target = self.store.promote(f, None).await?;
             if !report.files.contains(&target) {

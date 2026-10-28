@@ -69,6 +69,17 @@ pub(super) async fn claim(store: &Store, folder_id: &str) -> Result<State> {
     }
 }
 
+/// Stops a commit when another folder took the destination since `claim`.
+/// Called under the commit lock. Where the store refuses conditional writes,
+/// two folders that start on a fresh destination at once can both pass
+/// `claim`: the last owner written wins and the other run must not commit.
+pub(super) async fn check_owner(store: &Store, folder_id: &str) -> Result<()> {
+    match State::load(store).await?.owner.as_deref() {
+        Some(o) if o != folder_id => bail!(foreign_owner(&store.url, o, Some(folder_id))),
+        _ => Ok(()),
+    }
+}
+
 /// Returns false when a stream failed.
 pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
     let config = ws.load_config()?;
@@ -473,6 +484,7 @@ async fn commit(
     // Copies of this folder may commit to the same destination at the same
     // time. A local destination has no conditional writes: commits take turns.
     let _commit = ctx.store.commit_lock().await?;
+    check_owner(&ctx.store, &ctx.ws.folder_id()?).await?;
 
     // 1. Move the files into the data path.
     let prefix = Layout::part_prefix(name);
