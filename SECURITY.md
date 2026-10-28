@@ -32,10 +32,24 @@ apisip do, what apisip guards against, and what it does not.
 ### The spec
 
 The spec decides where requests go (`servers`), which auth schemes apply, and
-where OAuth2 fetches its token (`tokenUrl`). `init` copies these into
-`apisip.toml`, so read the `base_url` and any `token_url` there before the
-first `run`. Use the spec published by the API's vendor, not a copy from an
-unknown source.
+where OAuth2 fetches its token (`tokenUrl`). `init` and `update` copy these
+into `apisip.toml`. After each of them, read `base_url`, any `token_url` and
+every stream's `params` before the next `run`. Use the spec published by the
+API's vendor, not a copy from an unknown source.
+
+- `apisip.toml` fills `${VAR}` references from the environment. Since 0.1.2,
+  `init` and `update` never take a `${` from the spec, and spec text quoted in
+  comments cannot add TOML of its own. Earlier versions could be made to send
+  any environment variable to the spec's server
+  ([GHSA-q7qj-qp22-mmrc](https://github.com/b-luu/apisip/security/advisories/GHSA-q7qj-qp22-mmrc)).
+- The names of the credential variables come from the spec title: a spec
+  titled "OpenAI" gives `OPENAI_API_KEY`. A variable set in the shell takes
+  precedence over `.env`, so check that `base_url` is the API you meant
+  before the first run.
+- An `apisip.toml` you did not write yourself is as untrusted as an unknown
+  spec: it names the hosts and the environment variables apisip sends.
+- A spec given as a URL is fetched with redirects followed and read whole
+  into memory.
 
 apisip reads only local `$ref`s (inside the same document) and fetches no
 other URL from the spec. Recursive refs are cut. Known gap: a spec whose refs
@@ -48,8 +62,11 @@ branch at every level can make inlining use all available memory
   upgraded to https. A redirect or a next-page link to another host fails the
   stream instead of receiving them. The exception is the OAuth2 client id and
   secret, which go to the `token_url`, possibly on another host.
-- Credentials and values read from the environment are masked in request
-  URLs, logs and HTTP error messages.
+- Values filled from `${VAR}` references in `apisip.toml` are masked in
+  request URLs, logs and HTTP error messages. A value shorter than 6
+  characters is masked only where it is a whole query value.
+- `http://` is accepted for `base_url`, `token_url` and the spec URL without
+  a warning. Use `https://` whenever the API offers it.
 - `init` lists `.env` in `.gitignore`. Keep it out of version control, and
   give apisip a key with read access only when the API offers one.
 
