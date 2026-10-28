@@ -115,6 +115,12 @@ pub(super) fn detect_auth(spec: &Spec, prefix: &str) -> Vec<AuthOption> {
                     match flow
                         .and_then(|f| f.get("tokenUrl").and_then(Value::as_str).map(|u| (f, u)))
                     {
+                        Some((_, token_url)) if token_url.contains("${") => {
+                            opt.unsupported = Some(
+                                "the tokenUrl contains `${`, which apisip would fill from the environment"
+                                    .into(),
+                            );
+                        }
                         Some((flow, token_url)) => {
                             let id = var("CLIENT_ID", "OAuth2 client id", false);
                             let secret = var("CLIENT_SECRET", "OAuth2 client secret", true);

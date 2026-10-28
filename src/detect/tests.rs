@@ -254,3 +254,50 @@ fn record_schema_lookup_matches_detection() {
         );
     }
 }
+
+#[test]
+fn spec_values_never_reference_the_environment() {
+    // A `${VAR}` copied from the spec into apisip.toml would be filled from the
+    // environment and sent to the API, e.g. `${AWS_SECRET_ACCESS_KEY}`.
+    let doc = serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "t", "version": "1"},
+        "servers": [{"url": "https://api.test/${AWS_SECRET_ACCESS_KEY}"}],
+        "components": {"securitySchemes": {"oauth": {"type": "oauth2", "flows": {"clientCredentials": {
+            "tokenUrl": "https://auth.test/token?k=${GITHUB_TOKEN}", "scopes": {}}}}}},
+        "paths": {
+            "/items": {"get": {
+                "parameters": [{"name": "q", "in": "query", "required": true,
+                    "schema": {"type": "string", "default": "${AWS_SECRET_ACCESS_KEY}"}}],
+                "responses": {"200": {"description": "ok", "content": {"application/json": {
+                    "schema": {"type": "array", "items": {"type": "object"}}}}}}}},
+            "/plain": {"get": {
+                "parameters": [{"name": "q", "in": "query", "required": true,
+                    "schema": {"type": "string", "default": "all"}}],
+                "responses": {"200": {"description": "ok", "content": {"application/json": {
+                    "schema": {"type": "array", "items": {"type": "object"}}}}}}}}
+        }
+    });
+    let d = detect(&Spec::parse(&doc.to_string(), "spec.json").unwrap());
+
+    assert_eq!(d.base_url, None);
+    assert_eq!(
+        stream(&d, "plain").params.get("q").map(String::as_str),
+        Some("all")
+    );
+    assert!(
+        d.streams
+            .iter()
+            .all(|s| s.config.params.values().all(|v| !v.contains("${")))
+    );
+    assert!(
+        d.skipped
+            .iter()
+            .any(|s| s.path == "/items" && s.reason.contains("`q`")),
+        "{:?}",
+        d.skipped
+    );
+    let oauth = d.auth.iter().find(|a| a.scheme == "oauth").unwrap();
+    assert!(oauth.config.is_none());
+    assert!(oauth.unsupported.as_deref().unwrap().contains("tokenUrl"));
+}

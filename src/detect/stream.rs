@@ -71,6 +71,11 @@ pub(super) fn detect_stream(spec: &Spec, op: &Operation) -> Result<DetectedStrea
         }
         let default = p.get("schema").unwrap_or(p).get("default");
         match default {
+            Some(Value::String(s)) if s.contains("${") => {
+                return Err(format!(
+                    "query parameter `{name}` has a default with `${{`, which apisip would fill from the environment"
+                ));
+            }
             Some(Value::String(s)) => {
                 params.insert(name.to_string(), s.clone());
             }

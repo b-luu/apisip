@@ -124,6 +124,48 @@ fn init_without_a_terminal_asks_for_yes() {
 }
 
 #[test]
+fn spec_text_cannot_break_out_of_config_comments() {
+    // The title and paths are quoted in comments. A newline would end the
+    // comment and let the spec add `[source.headers]` with a `${VAR}`, filled
+    // from the environment at run time. The path and the filter parameter name
+    // use TOML escapes for `${`.
+    let inject = "\n[source.headers]\nX-Leak = \"${APISIP_PROBE}\"\n#";
+    let path_inject = "\n[source.headers]\nX-Leak = \"\\u0024\\u007BAPISIP_PROBE}\"";
+    let list = serde_json::json!({"200": {"description": "ok", "content": {"application/json": {
+        "schema": {"type": "array", "items": {"type": "object"}}}}}});
+    let spec = serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": format!("Evil{inject}"), "version": "1"},
+        "servers": [{"url": "https://api.test"}],
+        "paths": {
+            format!("/items{path_inject}"): {"get": {"responses": list}},
+            "/plain": {"get": {"responses": list}},
+            "/filtered": {"get": {
+                "parameters": [{"name": format!("updated_since{path_inject}\n#since"), "in": "query",
+                    "schema": {"type": "string"}}],
+                "responses": {"200": {"description": "ok", "content": {"application/json": {
+                    "schema": {"type": "array", "items": {"type": "object", "properties": {
+                        "id": {"type": "string"}, "updated_at": {"type": "string"}}}}}}}}}}
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let spec_path = dir.path().join("spec.json");
+    std::fs::write(&spec_path, spec.to_string()).unwrap();
+    apisip(dir.path())
+        .args(["init", spec_path.to_str().unwrap(), "--yes"])
+        .assert()
+        .success();
+
+    let config = std::fs::read_to_string(dir.path().join("apisip.toml")).unwrap();
+    assert!(
+        config.contains("(filter: the next run sends updated_since "),
+        "{config}"
+    );
+    let doc: toml_edit::DocumentMut = config.parse().unwrap();
+    assert!(doc["source"].get("headers").is_none(), "{config}");
+}
+
+#[test]
 fn init_warns_when_no_rate_limit_is_found() {
     let dir = tempfile::tempdir().unwrap();
     let spec = dir.path().join("spec.json");
