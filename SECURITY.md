@@ -56,8 +56,9 @@ API's vendor, not a copy from an unknown source.
 
 While reading the spec, apisip follows only local `$ref`s (inside the same
 document) and fetches no other URL. Recursive refs are cut, and one inlined
-schema stops at 100,000 nodes: the rest of it is untyped, and `init` and
-`check` warn about the stream. Known gap: the cap applies to each schema on
+schema stops at 100,000 nodes, where a long string or key counts one node per
+64 bytes: the rest of it is untyped, and `init` and `check` warn about the
+stream. Known gap: the cap applies to each schema on
 its own, so a spec that refers to one large schema from many places (many
 parameters, headers or endpoints) still multiplies memory use by the number
 of references.

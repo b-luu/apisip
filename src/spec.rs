@@ -169,7 +169,8 @@ impl Spec {
         depth: usize,
         nodes: &mut usize,
     ) -> Value {
-        *nodes += 1;
+        // A long string counts as one node per 64 bytes, so copies of it stay bounded too.
+        *nodes += 1 + v.as_str().map_or(0, |t| t.len() / 64);
         if depth > 64 || *nodes > INLINE_BUDGET {
             return Value::Object(Map::new());
         }
@@ -189,6 +190,7 @@ impl Spec {
                 }
                 let mut out = Map::new();
                 for (k, child) in map {
+                    *nodes += k.len() / 64;
                     out.insert(k.clone(), self.inline_inner(child, stack, depth + 1, nodes));
                 }
                 if let Some(Value::Array(parts)) = out.remove("allOf") {
@@ -536,7 +538,7 @@ mod tests {
 
     /// Each schema refers to the next one twice, so the inlined copy doubles
     /// at every level.
-    fn doubling(levels: usize) -> Spec {
+    fn doubling(levels: usize, leaf: Value) -> Spec {
         let mut schemas = Map::new();
         for i in 0..levels {
             let next = json!({"$ref": format!("#/components/schemas/S{}", i + 1)});
@@ -545,7 +547,7 @@ mod tests {
                 json!({"type": "object", "properties": {"a": next, "b": next}}),
             );
         }
-        schemas.insert(format!("S{levels}"), json!({"type": "integer"}));
+        schemas.insert(format!("S{levels}"), leaf);
         let root = json!({"openapi": "3.1.0", "paths": {}, "components": {"schemas": schemas}});
         Spec::parse(&root.to_string(), "x").unwrap()
     }
@@ -561,7 +563,7 @@ mod tests {
     #[test]
     fn inline_stops_at_the_node_budget() {
         let root = json!({"$ref": "#/components/schemas/S0"});
-        let (small, cut) = doubling(4).inline_bounded(&root);
+        let (small, cut) = doubling(4, json!({"type": "integer"})).inline_bounded(&root);
         assert!(!cut);
         assert_eq!(
             small.pointer("/properties/a/properties/b/properties/a/properties/b"),
@@ -570,10 +572,28 @@ mod tests {
         // 15 levels build about 160,000 nodes, 30 levels about 5 billion.
         for levels in [15, 30] {
             let start = std::time::Instant::now();
-            let (out, cut) = doubling(levels).inline_bounded(&root);
+            let (out, cut) = doubling(levels, json!({"type": "integer"})).inline_bounded(&root);
             assert!(cut, "{levels} levels");
             assert!(nodes(&out) <= INLINE_BUDGET + 1_000, "{levels} levels");
             assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        }
+    }
+
+    #[test]
+    fn inline_counts_string_bytes_against_the_budget() {
+        // 1,024 copies of a 20 KB value or key: few nodes, 20 MB of text.
+        let long = "x".repeat(20_000);
+        let mut props = Map::new();
+        props.insert(long.clone(), json!({"type": "integer"}));
+        let leaves = [
+            json!({"type": "integer", "description": long}),
+            json!({"type": "object", "properties": props}),
+        ];
+        for leaf in leaves {
+            let (out, cut) =
+                doubling(10, leaf).inline_bounded(&json!({"$ref": "#/components/schemas/S0"}));
+            assert!(cut);
+            assert!(out.to_string().len() < 64 * INLINE_BUDGET + 1_000_000);
         }
     }
 
