@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/b-luu/apisip/compare/v0.1.1...v0.1.2) - 2026-10-28
+
+### Fixed
+
+- *(init)* strip control characters where spec text enters a comment
+- *(detect)* keep spec titles and paths from breaking out of config comments
+- *(detect)* never copy a ${VAR} reference from the spec into apisip.toml
+
 ## [0.1.1](https://github.com/b-luu/apisip/compare/v0.1.0...v0.1.1) - 2026-10-27
 
 ### Fixed
