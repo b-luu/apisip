@@ -190,6 +190,52 @@ fn init_warns_when_no_rate_limit_is_found() {
     assert!(config.contains("# rate_limit = { max_calls = 100, period = \"1m\" }"));
 }
 
+#[test]
+fn init_and_check_warn_when_a_schema_is_too_large_to_inline() {
+    // Each schema refers to the next one twice: inlined in full, 30 levels
+    // would need billions of nodes.
+    let mut schemas = serde_json::Map::new();
+    for i in 0..30 {
+        let next = serde_json::json!({"$ref": format!("#/components/schemas/S{}", i + 1)});
+        schemas.insert(
+            format!("S{i}"),
+            serde_json::json!({"type": "object", "properties": {"a": next, "b": next}}),
+        );
+    }
+    schemas.insert("S30".into(), serde_json::json!({"type": "integer"}));
+    let spec = serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "Deep", "version": "1"},
+        "servers": [{"url": "http://127.0.0.1:9"}],
+        "paths": {"/things": {"get": {"responses": {"200": {"description": "ok",
+            "content": {"application/json": {"schema": {"type": "array",
+                "items": {"$ref": "#/components/schemas/S0"}}}}}}}}},
+        "components": {"schemas": schemas}
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let spec_path = dir.path().join("spec.json");
+    std::fs::write(&spec_path, spec.to_string()).unwrap();
+    let warning = "warning: the schema of stream things is too large to inline; fields past the limit are untyped";
+    apisip(dir.path())
+        .args(["init", spec_path.to_str().unwrap(), "--yes"])
+        .timeout(std::time::Duration::from_secs(30))
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(warning));
+    // Nothing listens on the server: fail the request without retrying.
+    let config_path = dir.path().join("apisip.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    let config = config.replacen("retry = { max_tries = 8,", "retry = { max_tries = 1,", 1);
+    assert!(config.contains("retry = { max_tries = 1,"), "{config}");
+    std::fs::write(&config_path, config).unwrap();
+    apisip(dir.path())
+        .arg("check")
+        .timeout(std::time::Duration::from_secs(30))
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(warning));
+}
+
 fn bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin("apisip")
 }

@@ -77,6 +77,9 @@ pub async fn fetch_text(src: &str, base_dir: &Path) -> Result<String> {
     }
 }
 
+/// The most nodes one `Spec::inline` call builds; real record schemas stay far below it.
+const INLINE_BUDGET: usize = 100_000;
+
 impl Spec {
     pub async fn load(src: &str, base_dir: &Path) -> Result<Spec> {
         let text = fetch_text(src, base_dir).await?;
@@ -146,12 +149,28 @@ impl Spec {
     /// Returns a deep copy of a schema with every local `$ref` inlined and
     /// `allOf` merged. A recursive ref is replaced by an empty (free-form) schema.
     pub fn inline(&self, v: &Value) -> Value {
-        let mut stack = Vec::new();
-        self.inline_inner(v, &mut stack, 0)
+        self.inline_bounded(v).0
     }
 
-    fn inline_inner(&self, v: &Value, stack: &mut Vec<String>, depth: usize) -> Value {
-        if depth > 64 {
+    /// As `inline`, and whether the copy hit `INLINE_BUDGET` nodes. Past the
+    /// budget, every remaining node is an empty (free-form) schema: refs that
+    /// fan out can make the copy exponential in the size of the spec.
+    pub fn inline_bounded(&self, v: &Value) -> (Value, bool) {
+        let mut stack = Vec::new();
+        let mut nodes = 0;
+        let out = self.inline_inner(v, &mut stack, 0, &mut nodes);
+        (out, nodes > INLINE_BUDGET)
+    }
+
+    fn inline_inner(
+        &self,
+        v: &Value,
+        stack: &mut Vec<String>,
+        depth: usize,
+        nodes: &mut usize,
+    ) -> Value {
+        *nodes += 1;
+        if depth > 64 || *nodes > INLINE_BUDGET {
             return Value::Object(Map::new());
         }
         match v {
@@ -164,13 +183,13 @@ impl Spec {
                         return Value::Object(Map::new());
                     };
                     stack.push(r.to_string());
-                    let out = self.inline_inner(target, stack, depth + 1);
+                    let out = self.inline_inner(target, stack, depth + 1, nodes);
                     stack.pop();
                     return out;
                 }
                 let mut out = Map::new();
                 for (k, child) in map {
-                    out.insert(k.clone(), self.inline_inner(child, stack, depth + 1));
+                    out.insert(k.clone(), self.inline_inner(child, stack, depth + 1, nodes));
                 }
                 if let Some(Value::Array(parts)) = out.remove("allOf") {
                     merge_all_of(&mut out, parts);
@@ -180,7 +199,7 @@ impl Spec {
             Value::Array(items) => Value::Array(
                 items
                     .iter()
-                    .map(|i| self.inline_inner(i, stack, depth + 1))
+                    .map(|i| self.inline_inner(i, stack, depth + 1, nodes))
                     .collect(),
             ),
             other => other.clone(),
@@ -326,6 +345,11 @@ impl Spec {
 
     /// The inlined JSON schema of the success response, if the spec declares one.
     pub fn response_schema(&self, op: &Value) -> Option<Value> {
+        self.response_schema_bounded(op).map(|(v, _)| v)
+    }
+
+    /// As `response_schema`, and whether it was cut at the inlining budget.
+    pub fn response_schema_bounded(&self, op: &Value) -> Option<(Value, bool)> {
         let resp = self.success_response(op)?;
         let schema = match self.version() {
             Version::Swagger2 => resp.get("schema")?,
@@ -339,7 +363,7 @@ impl Spec {
                 media.get("schema")?
             }
         };
-        Some(self.inline(schema))
+        Some(self.inline_bounded(schema))
     }
 
     /// Names of the headers the success response declares (lowercased).
@@ -508,6 +532,49 @@ mod tests {
         let out = spec.inline(&json!({"$ref": "#/components/schemas/A"}));
         assert_eq!(out["properties"]["n"]["type"], "integer");
         assert_eq!(out["properties"]["self"], json!({}));
+    }
+
+    /// Each schema refers to the next one twice, so the inlined copy doubles
+    /// at every level.
+    fn doubling(levels: usize) -> Spec {
+        let mut schemas = Map::new();
+        for i in 0..levels {
+            let next = json!({"$ref": format!("#/components/schemas/S{}", i + 1)});
+            schemas.insert(
+                format!("S{i}"),
+                json!({"type": "object", "properties": {"a": next, "b": next}}),
+            );
+        }
+        schemas.insert(format!("S{levels}"), json!({"type": "integer"}));
+        let root = json!({"openapi": "3.1.0", "paths": {}, "components": {"schemas": schemas}});
+        Spec::parse(&root.to_string(), "x").unwrap()
+    }
+
+    fn nodes(v: &Value) -> usize {
+        1 + match v {
+            Value::Object(m) => m.values().map(nodes).sum(),
+            Value::Array(a) => a.iter().map(nodes).sum(),
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn inline_stops_at_the_node_budget() {
+        let root = json!({"$ref": "#/components/schemas/S0"});
+        let (small, cut) = doubling(4).inline_bounded(&root);
+        assert!(!cut);
+        assert_eq!(
+            small.pointer("/properties/a/properties/b/properties/a/properties/b"),
+            Some(&json!({"type": "integer"}))
+        );
+        // 15 levels build about 160,000 nodes, 30 levels about 5 billion.
+        for levels in [15, 30] {
+            let start = std::time::Instant::now();
+            let (out, cut) = doubling(levels).inline_bounded(&root);
+            assert!(cut, "{levels} levels");
+            assert!(nodes(&out) <= INLINE_BUDGET + 1_000, "{levels} levels");
+            assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        }
     }
 
     #[test]

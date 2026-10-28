@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use url::Url;
 
 use crate::config::{Config, Pagination, StreamConfig, interpolate};
-use crate::detect::stream_record_schema;
+use crate::detect::{schema_truncated, stream_record_schema};
 use crate::http::ApiClient;
 use crate::schema::{RecordSchema, SOURCE_KEY};
 use crate::sink::Store;
@@ -110,6 +110,16 @@ pub fn load_schema(
         );
     }
     Ok(schema)
+}
+
+/// The warning for a stream whose spec schema is too large to inline in full.
+pub fn truncation_warning(spec: &Spec, s: &StreamConfig) -> Option<String> {
+    schema_truncated(spec, s).then(|| {
+        format!(
+            "warning: the schema of stream {} is too large to inline; fields past the limit are untyped",
+            s.name
+        )
+    })
 }
 
 /// The content of a schema file for a stream the spec describes.

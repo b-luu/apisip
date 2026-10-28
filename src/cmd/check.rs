@@ -10,7 +10,7 @@ use crate::sink::Store;
 use crate::state::{State, foreign_owner};
 use crate::workspace::Workspace;
 
-use super::{first_url, load_schema, print_rate_limit_warning, select_streams};
+use super::{first_url, load_schema, print_rate_limit_warning, select_streams, truncation_warning};
 
 /// Returns false when a check failed.
 pub async fn run(ws: &Workspace) -> Result<bool> {
@@ -56,6 +56,9 @@ pub async fn run(ws: &Workspace) -> Result<bool> {
     }
 
     for s in select_streams(&config, &[])? {
+        if let Some(w) = spec.as_ref().and_then(|sp| truncation_warning(sp, &s)) {
+            println!("{w}");
+        }
         let result = async {
             let url = Paginator::new(s.pagination.clone()).first(first_url(&client, &s)?);
             let page = client.get(&url).await?;

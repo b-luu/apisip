@@ -161,6 +161,13 @@ pub fn stream_record_schema(spec: &Spec, stream: &StreamConfig) -> Option<Value>
     item.get("properties").is_some().then_some(item)
 }
 
+/// Whether the spec's response schema for a stream hit the inlining budget.
+pub fn schema_truncated(spec: &Spec, stream: &StreamConfig) -> bool {
+    spec.operation("get", &stream.path)
+        .and_then(|op| spec.response_schema_bounded(op.op))
+        .is_some_and(|(_, cut)| cut)
+}
+
 fn escape_pointer(s: &str) -> String {
     s.replace('~', "~0").replace('/', "~1")
 }

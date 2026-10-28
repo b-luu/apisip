@@ -9,7 +9,7 @@ use crate::prompt::{self, Prompter};
 use crate::spec::Spec;
 use crate::workspace::Workspace;
 
-use super::{pagination_label, print_rate_limit_warning};
+use super::{pagination_label, print_rate_limit_warning, truncation_warning};
 
 #[derive(Debug, Default, Clone)]
 pub struct InitOptions {
@@ -249,7 +249,7 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
         &env_updates,
         &auth_vars,
     )?;
-    print_summary(ws, &det, &config, &auth_vars, &env_updates);
+    print_summary(ws, &spec, &det, &config, &auth_vars, &env_updates);
     Ok(())
 }
 
@@ -414,6 +414,7 @@ pub(crate) fn stream_note(s: &StreamConfig) -> String {
 
 fn print_summary(
     ws: &Workspace,
+    spec: &Spec,
     det: &Detection,
     config: &Config,
     auth_vars: &[detect::EnvVar],
@@ -437,6 +438,9 @@ fn print_summary(
             s.mode().label(),
             pagination_label(&s.pagination)
         );
+    }
+    for w in enabled.iter().filter_map(|s| truncation_warning(spec, s)) {
+        eprintln!("{w}");
     }
     if !det.skipped.is_empty() {
         println!("\nSkipped:");

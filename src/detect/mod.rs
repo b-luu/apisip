@@ -21,7 +21,7 @@ use auth::detect_auth;
 pub use names::{env_prefix, snake, stream_name};
 pub use rate_limit::detect_rate_limits;
 use stream::detect_stream;
-pub use stream::{records_location, stream_record_schema};
+pub use stream::{records_location, schema_truncated, stream_record_schema};
 
 #[derive(Debug, Clone)]
 pub struct Detection {
