@@ -6,6 +6,7 @@ use std::io::IsTerminal;
 use anyhow::{Result, bail};
 use inquire::{MultiSelect, Password, PasswordDisplayMode, Select, Text};
 
+use crate::cmd::printable;
 use crate::config::AuthConfig;
 use crate::detect::{AuthOption, EnvVar};
 
@@ -26,11 +27,13 @@ impl Prompter {
         if !self.interactive {
             return Ok(default.to_string());
         }
-        let mut p = Text::new(message);
+        let (message, default) = (printable(message), printable(default));
+        let help = help.map(printable);
+        let mut p = Text::new(&message);
         if !default.is_empty() {
-            p = p.with_default(default);
+            p = p.with_default(&default);
         }
-        if let Some(h) = help {
+        if let Some(h) = &help {
             p = p.with_help_message(h);
         }
         Ok(p.prompt()?.trim().to_string())
@@ -41,10 +44,11 @@ impl Prompter {
         if !self.interactive {
             return Ok(None);
         }
-        let v = Password::new(message)
+        let (message, help) = (printable(message), printable(help));
+        let v = Password::new(&message)
             .without_confirmation()
             .with_display_mode(PasswordDisplayMode::Masked)
-            .with_help_message(help)
+            .with_help_message(&help)
             .prompt()?;
         Ok((!v.is_empty()).then_some(v))
     }
@@ -59,7 +63,8 @@ impl Prompter {
             return default
                 .ok_or_else(|| anyhow::anyhow!("{message}: no default, a choice is required"));
         }
-        let picked = Select::new(message, options.to_vec())
+        let options = options.iter().map(|o| printable(o)).collect();
+        let picked = Select::new(&printable(message), options)
             .with_starting_cursor(default.unwrap_or(0))
             .raw_prompt()?;
         Ok(picked.index)
@@ -74,7 +79,8 @@ impl Prompter {
         if !self.interactive {
             return Ok(defaults.to_vec());
         }
-        let picked = MultiSelect::new(message, options.to_vec())
+        let options = options.iter().map(|o| printable(o)).collect();
+        let picked = MultiSelect::new(&printable(message), options)
             .with_default(defaults)
             .with_help_message("space to toggle, enter to confirm")
             .raw_prompt()?;
