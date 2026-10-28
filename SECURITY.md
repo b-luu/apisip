@@ -42,17 +42,19 @@ API's vendor, not a copy from an unknown source.
   comments cannot add TOML of its own. Earlier versions could be made to send
   any environment variable to the spec's server
   ([GHSA-q7qj-qp22-mmrc](https://github.com/b-luu/apisip/security/advisories/GHSA-q7qj-qp22-mmrc)).
-- The names of the credential variables come from the spec title: a spec
-  titled "OpenAI" gives `OPENAI_API_KEY`. A variable set in the shell takes
-  precedence over `.env`, so check that `base_url` is the API you meant
-  before the first run.
+- The names of the credential variables come from the spec title (and
+  scheme names): a spec titled "OpenAI" gives `OPENAI_API_KEY`. When that
+  variable is set in your shell, `init` offers its value and writes it to
+  `.env`, and at run time the shell takes precedence over `.env`. Check that
+  `base_url` is the API you meant before the first run.
 - An `apisip.toml` you did not write yourself is as untrusted as an unknown
-  spec: it names the hosts and the environment variables apisip sends.
+  spec: it names the hosts and the environment variables apisip sends, and
+  the S3 endpoint that receives your S3 credentials (`http://` allowed).
 - A spec given as a URL is fetched with redirects followed and read whole
   into memory.
 
-apisip reads only local `$ref`s (inside the same document) and fetches no
-other URL from the spec. Recursive refs are cut. Known gap: a spec whose refs
+While reading the spec, apisip follows only local `$ref`s (inside the same
+document) and fetches no other URL. Recursive refs are cut. Known gap: a spec whose refs
 branch at every level can make inlining use all available memory
 ([#38](https://github.com/b-luu/apisip/issues/38)).
 
@@ -63,7 +65,7 @@ branch at every level can make inlining use all available memory
   stream instead of receiving them. The exception is the OAuth2 client id and
   secret, which go to the `token_url`, possibly on another host.
 - Values filled from `${VAR}` references in `apisip.toml` are masked in
-  request URLs, logs and HTTP error messages. A value shorter than 6
+  API request URLs, logs and HTTP error messages. A value shorter than 6
   characters is masked only where it is a whole query value.
 - `http://` is accepted for `base_url`, `token_url` and the spec URL without
   a warning. Use `https://` whenever the API offers it.
@@ -80,6 +82,9 @@ branch at every level can make inlining use all available memory
   into memory, and there is no limit on the number of pages
   ([#39](https://github.com/b-luu/apisip/issues/39)). Run apisip against
   untrusted APIs only on a machine with no internal services to reach.
+- Known gap: parts of API error bodies, and names and descriptions from the
+  spec, are printed to the terminal without removing control characters, so
+  a hostile API or spec can send terminal escape sequences.
 
 ### The destination
 
@@ -88,8 +93,9 @@ branch at every level can make inlining use all available memory
 - The DuckDB views in `_apisip/views/` are SQL files that you run with
   `.read`. Anyone who can write to the destination can change them, so limit
   write access to the destination to apisip and its operators.
-- On S3, give apisip credentials limited to its own prefix (it reads,
-  writes and deletes there).
+- On S3, give apisip credentials limited to its own prefix: it lists,
+  reads, writes and deletes there, so `s3:ListBucket` needs a prefix
+  condition.
 
 ### Installing
 
