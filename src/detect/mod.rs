@@ -118,6 +118,14 @@ pub fn detect(spec: &Spec) -> Detection {
         if op.method != "get" {
             continue;
         }
+        // apisip.toml comments quote the path: a newline in it would end the comment.
+        if op.path.contains(char::is_control) {
+            skipped.push(Skipped {
+                path: op.path.escape_debug().to_string(),
+                reason: "the path contains control characters".into(),
+            });
+            continue;
+        }
         if op.path.contains('{') {
             skipped.push(Skipped {
                 path: op.path.to_string(),
@@ -149,7 +157,8 @@ pub fn detect(spec: &Spec) -> Detection {
     }
 
     Detection {
-        title: spec.title().to_string(),
+        // Quoted in an apisip.toml comment and printed to the terminal.
+        title: spec.title().replace(char::is_control, " "),
         auth: detect_auth(spec, &env_prefix),
         env_prefix,
         // `${VAR}` in apisip.toml is filled from the environment: never take one from the spec.
