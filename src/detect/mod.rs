@@ -152,7 +152,8 @@ pub fn detect(spec: &Spec) -> Detection {
         title: spec.title().to_string(),
         auth: detect_auth(spec, &env_prefix),
         env_prefix,
-        base_url: spec.base_url(),
+        // `${VAR}` in apisip.toml is filled from the environment: never take one from the spec.
+        base_url: spec.base_url().filter(|u| !u.contains("${")),
         rate_limits: detect_rate_limits(spec),
         streams,
         skipped,
