@@ -86,9 +86,11 @@ branch at every level can make inlining use all available memory
 - The parts of API response bodies shown in error messages, and the spec
   text that `init` prints, have their control characters replaced by spaces,
   so they cannot send terminal escape sequences.
-- Known gap: field names, from the spec or from records, are printed without
-  removing control characters in the schema and drift reports of `run`,
-  `check`, `inspect` and `update`.
+- Known gap: some text is still printed without removing control
+  characters: field names, from the spec or from records, in the schema and
+  drift reports of `run`, `check`, `inspect` and `update`; auth scheme names
+  from the spec in `update`; and text cursor values from records, shown as the
+  watermark and last range by `inspect` and in the overlap note of `run`.
 
 ### The destination
 
