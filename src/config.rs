@@ -35,10 +35,24 @@ pub struct Source {
     /// Extra headers sent with every request. Values may use `${VAR}`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
+    /// Largest response body read, in MB. A larger one fails the stream.
+    #[serde(default = "default_max_response_mb")]
+    pub max_response_mb: u64,
+    /// Most pages one stream fetches in one run; 0 for no limit.
+    #[serde(default = "default_max_pages")]
+    pub max_pages: u64,
 }
 
 fn default_concurrency() -> usize {
     4
+}
+
+pub fn default_max_response_mb() -> u64 {
+    64
+}
+
+pub fn default_max_pages() -> u64 {
+    1000
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -498,6 +512,9 @@ impl Config {
         }
         if self.source.retry.max_tries == 0 {
             anyhow::bail!("source.retry.max_tries must be at least 1");
+        }
+        if self.source.max_response_mb == 0 {
+            anyhow::bail!("source.max_response_mb must be at least 1");
         }
         Ok(())
     }

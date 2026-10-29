@@ -36,6 +36,8 @@ pub struct ApiClient {
     throttle: Throttle,
     retry: RetryPolicy,
     headers: HeaderMap,
+    max_response_bytes: u64,
+    max_pages: u64,
     /// Values from the environment, masked wherever a URL is shown. The
     /// credentials come from `auth`, which knows the tokens fetched since.
     secrets: Vec<String>,
@@ -196,6 +198,8 @@ impl ApiClient {
             throttle: Throttle::new(source.rate_limit.as_ref()),
             retry: RetryPolicy::from(&source.retry),
             headers,
+            max_response_bytes: source.max_response_mb.saturating_mul(1024 * 1024),
+            max_pages: source.max_pages,
             secrets,
         }))
     }
@@ -284,10 +288,9 @@ impl ApiClient {
                 continue;
             }
             if self.retry.is_success(status) {
-                let bytes = resp
-                    .bytes()
+                let bytes = self
+                    .read_body(resp)
                     .await
-                    .map_err(reqwest::Error::without_url)
                     .with_context(|| format!("GET {shown}"))?;
                 let body = if bytes.iter().all(u8::is_ascii_whitespace) {
                     Value::Null
@@ -329,7 +332,7 @@ impl ApiClient {
                 attempt += 1;
                 continue;
             }
-            let body = resp.bytes().await.unwrap_or_default();
+            let body = self.read_body(resp).await.unwrap_or_default();
             let hint = match status {
                 401 | 403 => " (check the credentials in .env)",
                 404 => " (check base_url and the stream path in apisip.toml)",
@@ -337,6 +340,34 @@ impl ApiClient {
             };
             bail!("GET {shown}: HTTP {status}{hint}: {}", self.snippet(&body));
         }
+    }
+}
+
+impl ApiClient {
+    /// The body, read in chunks so that a huge or endless response fails
+    /// at `max_response_mb` instead of exhausting memory.
+    async fn read_body(&self, mut resp: reqwest::Response) -> Result<Vec<u8>> {
+        let limit = self.max_response_bytes;
+        let too_big = |size: String| {
+            anyhow::anyhow!(
+                "the response is {size}, over max_response_mb = {} under [source]: raise it, \
+                 or lower the page size the stream requests if the API has a parameter for it",
+                limit / (1024 * 1024)
+            )
+        };
+        if let Some(len) = resp.content_length()
+            && len > limit
+        {
+            return Err(too_big(format!("{len} bytes")));
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(reqwest::Error::without_url)? {
+            if (body.len() + chunk.len()) as u64 > limit {
+                return Err(too_big(format!("more than {limit} bytes")));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
     }
 }
 
@@ -352,7 +383,19 @@ pub fn pages(
         let mut paginator = Paginator::new(pagination);
         let origin = first.clone();
         let mut next = Some(paginator.first(first));
+        let mut fetched = 0;
         while let Some(url) = next.take() {
+            // The stream fails rather than stops, so a runaway is not
+            // committed as if it were complete.
+            if client.max_pages > 0 && fetched >= client.max_pages {
+                Err(anyhow::anyhow!(
+                    "{} has more than max_pages = {} pages in this run: raise max_pages under \
+                     [source], or set it to 0 for no limit",
+                    client.shown(&origin),
+                    client.max_pages
+                ))?;
+            }
+            fetched += 1;
             let page = client.get(&url).await?;
             let recs = extract_records(&page.body, &records);
             next = paginator.next(&page, &recs);

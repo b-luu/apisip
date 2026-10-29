@@ -78,9 +78,15 @@ branch at every level can make inlining use all available memory
 - Records are written as received (JSONL) or typed from the schema
   (Parquet). apisip does not execute anything from a response.
 - A page that repeats the previous one stops pagination.
-- Known gaps: base URLs and next-page links are not checked against
-  loopback, private or cloud metadata addresses, a response is read whole
-  into memory, and there is no limit on the number of pages
+- A response body over `max_response_mb` (default 64 MB) fails the stream,
+  so a huge or endless response cannot exhaust memory. A stream with more
+  than `max_pages` pages in one run (default 1000, 0 for no limit) fails, so
+  an API that paginates forever cannot keep a run going.
+- A next-page link or a redirect to another host, scheme or port fails the
+  stream, so a response cannot steer apisip to an internal address.
+- Known gap: the configured `base_url` and `token_url` are not checked
+  again at run time, so a public name whose DNS answer later changes to a
+  loopback, private or cloud metadata address is still requested
   ([#39](https://github.com/b-luu/apisip/issues/39)). Run apisip against
   untrusted APIs only on a machine with no internal services to reach.
 - The parts of API response bodies shown in error messages, and the spec
