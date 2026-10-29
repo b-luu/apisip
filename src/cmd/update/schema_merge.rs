@@ -503,29 +503,33 @@ mod tests {
             dir.path(),
         )
         .unwrap();
-        let put =
-            async |run_id: &str, kind: &str, status: &str, records: u64, drift: Option<Value>| {
-                let mut report = json!({
-                    "status": status, "mode": "full", "records": records,
-                    "quarantined": 0, "pages": 1,
-                });
-                // A stream that failed before commit has no schema in its report.
-                if status == "committed" {
-                    report["schema"] = json!("spec");
-                }
-                if let Some(d) = drift {
-                    report["drift"] = d;
-                }
-                let manifest = json!({
-                    "run_id": run_id, "started_at": "2026-01-01T00:00:00Z",
-                    "status": "success", "full_refresh": false, "format": "jsonl",
-                    "streams": {"users": report}, "kind": kind,
-                });
-                store
-                    .put(&Manifest::path(run_id), manifest.to_string())
-                    .await
-                    .unwrap();
-            };
+        let put = async |run_id: &str,
+                         kind: &str,
+                         status: &str,
+                         records: u64,
+                         quarantined: u64,
+                         drift: Option<Value>| {
+            let mut report = json!({
+                "status": status, "mode": "full", "records": records,
+                "quarantined": quarantined, "pages": 1,
+            });
+            // A stream that failed before commit has no schema in its report.
+            if status == "committed" {
+                report["schema"] = json!("spec");
+            }
+            if let Some(d) = drift {
+                report["drift"] = d;
+            }
+            let manifest = json!({
+                "run_id": run_id, "started_at": "2026-01-01T00:00:00Z",
+                "status": "success", "full_refresh": false, "format": "jsonl",
+                "streams": {"users": report}, "kind": kind,
+            });
+            store
+                .put(&Manifest::path(run_id), manifest.to_string())
+                .await
+                .unwrap();
+        };
         let nickname =
             || json!({"undeclared": {"nickname": {"count": 1, "example": "ada"}}, "mistyped": {}});
         let offered = [("nickname".to_string(), json!("ada"))];
@@ -534,6 +538,7 @@ mod tests {
             "fetch",
             "committed",
             5,
+            0,
             Some(nickname()),
         )
         .await;
@@ -542,18 +547,19 @@ mod tests {
             "fetch",
             "committed",
             5,
+            0,
             Some(nickname()),
         )
         .await;
         assert_eq!(recent_undeclared(&store).await["users"], offered);
 
         // A failed stream and a replay checked no field and do not count.
-        put("20260103T000000Z-c", "fetch", "failed", 5, None).await;
-        put("20260104T000000Z-d", "replay", "committed", 5, None).await;
+        put("20260103T000000Z-c", "fetch", "failed", 5, 0, None).await;
+        put("20260104T000000Z-d", "replay", "committed", 5, 0, None).await;
         assert_eq!(recent_undeclared(&store).await["users"], offered);
 
         // A newer run that saw records and no drift: nickname was not always there.
-        put("20260105T000000Z-e", "fetch", "committed", 5, None).await;
+        put("20260105T000000Z-e", "fetch", "committed", 5, 0, None).await;
         assert!(recent_undeclared(&store).await["users"].is_empty());
 
         // A newer run that saw no record checked nothing and does not count.
@@ -562,6 +568,7 @@ mod tests {
             "fetch",
             "committed",
             5,
+            0,
             Some(nickname()),
         )
         .await;
@@ -570,6 +577,7 @@ mod tests {
             "fetch",
             "committed",
             5,
+            0,
             Some(nickname()),
         )
         .await;
@@ -578,10 +586,15 @@ mod tests {
             "fetch",
             "committed",
             5,
+            0,
             Some(nickname()),
         )
         .await;
-        put("20260109T000000Z-i", "fetch", "committed", 0, None).await;
+        put("20260109T000000Z-i", "fetch", "committed", 0, 0, None).await;
         assert_eq!(recent_undeclared(&store).await["users"], offered);
+
+        // A newer run whose records were all quarantined still checked them.
+        put("20260110T000000Z-j", "fetch", "committed", 0, 2, None).await;
+        assert!(recent_undeclared(&store).await["users"].is_empty());
     }
 }
