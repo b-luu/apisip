@@ -597,6 +597,88 @@ mod tests {
         }
     }
 
+    fn bare() -> Spec {
+        Spec::parse(r#"{"openapi": "3.1.0", "paths": {}}"#, "x").unwrap()
+    }
+
+    /// `n` integers in an array: the copy has exactly `n + 1` nodes.
+    fn ints(n: usize) -> Value {
+        Value::Array(vec![json!(1); n])
+    }
+
+    #[test]
+    fn inline_budget_boundary_is_exact() {
+        let spec = bare();
+        // Exactly INLINE_BUDGET nodes fit; one more does not.
+        let (out, cut) = spec.inline_bounded(&ints(INLINE_BUDGET - 1));
+        assert!(!cut);
+        assert_eq!(out, ints(INLINE_BUDGET - 1));
+        let (out, cut) = spec.inline_bounded(&ints(INLINE_BUDGET));
+        assert!(cut);
+        assert_eq!(out[INLINE_BUDGET - 1], json!({}));
+        // Every node past the budget is cut, not just the first.
+        let (out, _) = spec.inline_bounded(&ints(INLINE_BUDGET + 5));
+        assert_eq!(out[INLINE_BUDGET + 4], json!({}));
+    }
+
+    #[test]
+    fn inline_counts_each_64_bytes_of_a_string_or_key() {
+        let spec = bare();
+        // A 64-byte string costs 2 nodes: the array, 49,999 strings and one integer fill the budget.
+        let mut items = vec![json!("x".repeat(64)); (INLINE_BUDGET - 2) / 2];
+        items.push(json!(1));
+        assert!(!spec.inline_bounded(&Value::Array(items.clone())).1);
+        items.push(json!(1));
+        assert!(spec.inline_bounded(&Value::Array(items)).1);
+        // A 64-byte key costs one node on top of its value.
+        let keyed = |n: usize| {
+            Value::Object(Map::from_iter(
+                (0..n).map(|i| (format!("{i:064}"), json!(1))),
+            ))
+        };
+        assert!(!spec.inline_bounded(&keyed((INLINE_BUDGET - 1) / 2)).1);
+        assert!(spec.inline_bounded(&keyed(INLINE_BUDGET / 2)).1);
+    }
+
+    #[test]
+    fn inline_keeps_the_total_across_short_keys() {
+        let keyed = Value::Object(Map::from_iter(
+            (0..=INLINE_BUDGET).map(|i| (format!("k{i}"), json!(1))),
+        ));
+        assert!(bare().inline_bounded(&keyed).1);
+    }
+
+    #[test]
+    fn inline_stops_at_depth_64_through_arrays_and_refs() {
+        let spec = bare();
+        let nested = |depth: usize| (0..depth).fold(json!(1), |v, _| json!([v]));
+        assert_eq!(spec.inline(&nested(64)), nested(64));
+        // Depth 65 is cut to an empty schema, and nothing below it is kept.
+        let mut cursor = spec.inline(&nested(70));
+        for _ in 0..65 {
+            cursor = cursor[0].clone();
+        }
+        assert_eq!(cursor, json!({}));
+        // Object members deepen the copy too.
+        let nested_obj = |depth: usize| (0..depth).fold(json!(1), |v, _| json!({"k": v}));
+        assert_eq!(spec.inline(&nested_obj(64)), nested_obj(64));
+        assert_eq!(
+            spec.inline(&nested_obj(70)).pointer(&"/k".repeat(65)),
+            Some(&json!({}))
+        );
+        // Refs deepen the copy too: a chain of 70 distinct refs ends past the limit.
+        let mut schemas = Map::new();
+        for i in 0..70 {
+            let next = format!("#/components/schemas/S{}", i + 1);
+            schemas.insert(format!("S{i}"), json!({"$ref": next}));
+        }
+        schemas.insert("S70".into(), json!({"type": "integer"}));
+        let root = json!({"openapi": "3.1.0", "paths": {}, "components": {"schemas": schemas}});
+        let spec = Spec::parse(&root.to_string(), "x").unwrap();
+        let out = spec.inline(&json!({"$ref": "#/components/schemas/S0"}));
+        assert_eq!(out, json!({}));
+    }
+
     #[test]
     fn all_of_is_merged() {
         let spec = Spec::parse(

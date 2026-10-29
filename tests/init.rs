@@ -236,6 +236,16 @@ fn init_and_check_warn_when_a_schema_is_too_large_to_inline() {
         .stdout(predicate::str::contains(warning));
 }
 
+#[test]
+fn init_does_not_warn_about_inlining_for_a_normal_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    apisip(dir.path())
+        .args(["init", &fixture("openapi30.yaml"), "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("too large to inline").not());
+}
+
 fn bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin("apisip")
 }
