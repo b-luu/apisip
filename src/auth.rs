@@ -295,7 +295,7 @@ mod tests {
 
     async fn bearer_of(a: &Authenticator) -> String {
         let req = a
-            .apply(reqwest::Client::new().get("http://x.test/"))
+            .apply(reqwest::Client::new().get("https://x.test/"))
             .await
             .unwrap()
             .build()
@@ -418,12 +418,12 @@ mod tests {
                     value: "${APISIP_AUTH_TEST_KEY}".into(),
                 }),
                 reqwest::Client::new(),
-                "http://x.test",
+                "https://x.test",
             )
             .unwrap()
         };
         let req = |a: Authenticator| async move {
-            a.apply(reqwest::Client::new().get("http://x.test/a"))
+            a.apply(reqwest::Client::new().get("https://x.test/a"))
                 .await
                 .unwrap()
                 .build()
@@ -451,7 +451,7 @@ mod tests {
                 token: "${APISIP_AUTH_TEST_UNSET}".into(),
             }),
             reqwest::Client::new(),
-            "http://x.test",
+            "https://x.test",
         )
         .unwrap_err();
         assert!(format!("{err:#}").contains("APISIP_AUTH_TEST_UNSET"));
@@ -463,7 +463,7 @@ mod tests {
                 token: "${APISIP_AUTH_TEST_TOKEN}".into(),
             }),
             reqwest::Client::new(),
-            "http://x.test",
+            "https://x.test",
         )
         .unwrap();
         assert!(!format!("{a:?}").contains("do-not-print"));

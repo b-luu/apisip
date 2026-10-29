@@ -146,6 +146,12 @@ pub fn pagination_label(p: &Option<Pagination>) -> &'static str {
     }
 }
 
+/// Spec text made safe to print: a control character could start a terminal
+/// escape sequence that rewrites the screen.
+pub(crate) fn printable(s: &str) -> String {
+    s.replace(char::is_control, " ")
+}
+
 /// The warning printed when no static rate limit is configured.
 pub fn print_rate_limit_warning(long: bool) {
     if long {
