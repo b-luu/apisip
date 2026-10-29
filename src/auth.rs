@@ -394,7 +394,7 @@ mod tests {
         )
         .unwrap();
         let err = a
-            .apply(reqwest::Client::new().get("http://x.test/"))
+            .apply(reqwest::Client::new().get("https://x.test/"))
             .await
             .unwrap_err();
         let msg = format!("{err:#}");
