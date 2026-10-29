@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/b-luu/apisip/compare/v0.1.2...v0.1.3) - 2026-10-29
+
+### Fixed
+
+- *(run)* re-check destination ownership at commit
+- *(auth)* mask the token URL in the OAuth2 error message
+- *(prompt)* keep the real default when the user accepts its cleaned display
+- *(init)* strip control characters from spec text before printing it
+
+### Other
+
+- Potential fix for pull request finding 'CodeQL / Failure to use HTTPS URLs'
+- Merge branch 'main' into fix/mask-token-url
+- *(run)* read the folder id once per run for the owner check
+- *(auth)* use https URLs in the authenticator tests
+- *(security)* say what an S3 endpoint receives
+- *(security)* apply review notes to the trust model
+- *(security)* cover environment references and other spec-driven risks
+- *(security)* describe the trust model and its known gaps
+
 ## [0.1.2](https://github.com/b-luu/apisip/compare/v0.1.1...v0.1.2) - 2026-10-28
 
 ### Fixed
