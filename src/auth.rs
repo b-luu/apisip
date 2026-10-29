@@ -240,7 +240,7 @@ impl Authenticator {
             bail!("OAuth2 token request to {shown_token_url} failed: HTTP {status}");
         }
         // A token response is small: 1 MB bounds a hostile token endpoint.
-        let bytes = crate::http::read_limited(resp, 1024 * 1024)
+        let bytes = crate::http::read_limited(resp, 1024 * 1024, "over the 1 MB limit for a token")
             .await
             .context("reading the OAuth2 token response")?;
         let body: serde_json::Value =
@@ -343,7 +343,7 @@ mod tests {
             .unwrap_err();
         let err = format!("{err:#}");
         assert!(
-            err.contains("OAuth2 token response") && err.contains("bytes"),
+            err.contains("OAuth2 token response") && err.contains("over the 1 MB limit"),
             "{err}"
         );
     }

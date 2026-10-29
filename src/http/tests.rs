@@ -506,7 +506,7 @@ async fn a_response_over_max_response_mb_fails() {
         c.get(&c.endpoint("/big").unwrap()).await.unwrap_err()
     );
     assert!(
-        err.contains("max_response_mb = 1") && err.contains("is 1048577 bytes"),
+        err.contains("is 1048577 bytes, over max_response_mb = 1"),
         "{err}"
     );
 }
@@ -545,7 +545,37 @@ async fn a_chunked_response_over_max_response_mb_fails() {
         c.get(&c.endpoint("/big").unwrap()).await.unwrap_err()
     );
     assert!(
-        err.contains("max_response_mb = 1") && err.contains("more than 1048576 bytes"),
+        err.contains("more than 1048576 bytes, over max_response_mb = 1"),
         "{err}"
     );
+}
+
+#[tokio::test]
+async fn a_body_cut_off_midway_does_not_blame_max_response_mb() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut req = [0u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut req).await;
+        // Promises 100 bytes, sends 10, then hangs up.
+        let head = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                    content-length: 100\r\n\r\n[{\"id\": 1}";
+        let _ = sock.write_all(head.as_bytes()).await;
+    });
+    let c = ApiClient::new(&Source {
+        base_url: format!("http://{addr}"),
+        retry: RetryConfig {
+            max_tries: 1,
+            ..RetryConfig::default()
+        },
+        ..source(&MockServer::start().await)
+    })
+    .unwrap();
+    let err = format!(
+        "{:#}",
+        c.get(&c.endpoint("/cut").unwrap()).await.unwrap_err()
+    );
+    assert!(!err.contains("max_response_mb"), "{err}");
 }

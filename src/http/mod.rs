@@ -345,30 +345,27 @@ impl ApiClient {
 
 impl ApiClient {
     async fn read_body(&self, resp: reqwest::Response) -> Result<Vec<u8>> {
-        read_limited(resp, self.max_response_bytes)
-            .await
-            .with_context(|| {
-                format!(
-                    "over max_response_mb = {} under [source]: raise it, or lower the page size \
-                 the stream requests if the API has a parameter for it",
-                    self.max_response_bytes / (1024 * 1024)
-                )
-            })
+        let hint = format!(
+            "over max_response_mb = {} under [source]: raise it, or lower the page size the \
+             stream requests if the API has a parameter for it",
+            self.max_response_bytes / (1024 * 1024)
+        );
+        read_limited(resp, self.max_response_bytes, &hint).await
     }
 }
 
 /// The body, read in chunks so that a huge or endless response fails at
-/// `limit` bytes instead of exhausting memory.
-pub async fn read_limited(mut resp: reqwest::Response, limit: u64) -> Result<Vec<u8>> {
+/// `limit` bytes instead of exhausting memory. `hint` ends that error.
+pub async fn read_limited(mut resp: reqwest::Response, limit: u64, hint: &str) -> Result<Vec<u8>> {
     if let Some(len) = resp.content_length()
         && len > limit
     {
-        bail!("the response is {len} bytes");
+        bail!("the response is {len} bytes, {hint}");
     }
     let mut body = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(reqwest::Error::without_url)? {
         if (body.len() + chunk.len()) as u64 > limit {
-            bail!("the response is more than {limit} bytes");
+            bail!("the response is more than {limit} bytes, {hint}");
         }
         body.extend_from_slice(&chunk);
     }
