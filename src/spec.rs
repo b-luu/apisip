@@ -77,6 +77,23 @@ pub async fn fetch_text(src: &str, base_dir: &Path) -> Result<String> {
     }
 }
 
+/// YAML 1.2 booleans and last duplicate key wins, as with serde_yaml_ng. No node or event
+/// cap: real specs such as GitHub's pass 250,000 nodes. No alias/anchor ratio check: specs
+/// reuse one anchor (a shared error response) across hundreds of operations. Depth, scalar
+/// bytes, anchors, merge keys and alias replay stay bounded.
+fn yaml_options() -> serde_saphyr::Options {
+    serde_saphyr::options! {
+        budget: serde_saphyr::budget! {
+            max_events: usize::MAX,
+            max_nodes: usize::MAX,
+            max_depth: 128,
+            enforce_alias_anchor_ratio: false,
+        },
+        duplicate_keys: serde_saphyr::options::DuplicateKeyPolicy::LastWins,
+        strict_booleans: true,
+    }
+}
+
 impl Spec {
     pub async fn load(src: &str, base_dir: &Path) -> Result<Spec> {
         let text = fetch_text(src, base_dir).await?;
@@ -87,9 +104,8 @@ impl Spec {
     pub fn parse(text: &str, origin: &str) -> Result<Spec> {
         let root: Value = match serde_json::from_str(text) {
             Ok(v) => v,
-            Err(_) => {
-                serde_yaml_ng::from_str(text).context("the spec is neither valid JSON nor YAML")?
-            }
+            Err(_) => serde_saphyr::from_str_with_options(text, yaml_options())
+                .context("the spec is neither valid JSON nor YAML")?,
         };
         let spec = Spec {
             root,
@@ -458,6 +474,76 @@ mod tests {
         .unwrap();
         let op = spec.operation("get", "/a").unwrap();
         assert!(spec.success_response(op.op).is_some());
+    }
+
+    #[test]
+    fn yaml_anchors_aliases_and_merge_keys() {
+        let spec = Spec::parse(
+            "openapi: 3.0.3\npaths: {}\ncomponents:\n  schemas:\n    Id: &id {type: integer, format: int64}\n    Page:\n      type: object\n      properties:\n        id: *id\n        size: {<<: *id, maximum: 100}\n        ratio: {type: string, type: number, default: 1.5, minimum: 0}\n        on: {type: boolean, default: yes}\n",
+            "x.yaml",
+        )
+        .unwrap();
+        let props = &spec.root["components"]["schemas"]["Page"]["properties"];
+        assert_eq!(props["id"], json!({"type": "integer", "format": "int64"}));
+        assert_eq!(props["ratio"]["type"], "number");
+        assert!(props["ratio"]["default"].is_f64());
+        assert!(props["ratio"]["minimum"].is_u64());
+        // YAML 1.2: `on` and `yes` stay strings.
+        assert_eq!(props["on"]["default"], "yes");
+        assert_eq!(
+            props["size"],
+            json!({"type": "integer", "format": "int64", "maximum": 100})
+        );
+        assert!(props["size"]["maximum"].is_u64());
+    }
+
+    #[test]
+    fn large_yaml_spec() {
+        let items: String = (0..300_000).map(|i| format!("  - {i}\n")).collect();
+        let spec = Spec::parse(
+            &format!("openapi: 3.0.3\npaths: {{}}\nx-big:\n{items}"),
+            "x.yaml",
+        )
+        .unwrap();
+        assert_eq!(spec.root["x-big"].as_array().unwrap().len(), 300_000);
+    }
+
+    #[test]
+    fn yaml_anchor_reused_by_many_operations() {
+        let paths: String = (0..200)
+            .map(|i| format!("  /p{i}:\n    get:\n      responses:\n        '500': *err\n"))
+            .collect();
+        let spec = Spec::parse(
+            &format!("openapi: 3.0.3\nx-err: &err {{description: Error}}\npaths:\n{paths}"),
+            "x.yaml",
+        )
+        .unwrap();
+        assert_eq!(
+            spec.root["paths"]["/p199"]["get"]["responses"]["500"]["description"],
+            "Error"
+        );
+    }
+
+    #[test]
+    fn yaml_alias_bomb_is_refused() {
+        let mut text =
+            String::from("openapi: 3.0.3\npaths: {}\nl0: &l0 [x, x, x, x, x, x, x, x, x, x]\n");
+        for i in 1..10 {
+            let p = i - 1;
+            text += &format!(
+                "l{i}: &l{i} [*l{p}, *l{p}, *l{p}, *l{p}, *l{p}, *l{p}, *l{p}, *l{p}, *l{p}, *l{p}]\n"
+            );
+        }
+        let err = format!("{:#}", Spec::parse(&text, "x.yaml").unwrap_err());
+        assert!(err.contains("budget breached"), "{err}");
+    }
+
+    #[test]
+    fn invalid_yaml_error_names_the_line() {
+        let err = Spec::parse("openapi: 3.0.3\npaths:\n  /a: [unclosed\n", "x.yaml").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("neither valid JSON nor YAML"), "{msg}");
+        assert!(msg.contains("line 3"), "{msg}");
     }
 
     #[test]
