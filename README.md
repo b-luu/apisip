@@ -254,8 +254,8 @@ cast = "lossless"                 # default; "exact" or "none" for stricter typi
   pacing waits between successful pages do not. Keep it well under the time
   between two scheduled runs, so that a slow API never makes one run overlap
   the next.
-- **Limits:** `max_response_mb` (default 64) is the largest response body
-  apisip reads. A larger one fails the stream with its size; raise the
+- **Limits:** `max_response_mb` (default 64) is the largest API response
+  body apisip reads; an OAuth2 token response is capped at 1 MB. A larger one fails the stream with its size; raise the
   setting, or lower the page size the stream requests. `max_pages` (default
   1000) is the most pages one stream fetches in one run. A stream with more
   fails rather than commit part of its data; raise it, or set it to 0 for no

@@ -482,7 +482,10 @@ async fn max_pages_fails_a_stream_that_keeps_paginating() {
         .try_collect()
         .await;
     let err = format!("{:#}", all.unwrap_err());
-    assert!(err.contains("more than max_pages = 3 pages"), "{err}");
+    assert!(
+        err.contains("still has a next page after max_pages = 3 pages"),
+        "{err}"
+    );
     assert_eq!(server.received_requests().await.unwrap().len(), 3);
 }
 
@@ -503,7 +506,7 @@ async fn a_response_over_max_response_mb_fails() {
         c.get(&c.endpoint("/big").unwrap()).await.unwrap_err()
     );
     assert!(
-        err.contains("1048577 bytes, over max_response_mb = 1"),
+        err.contains("max_response_mb = 1") && err.contains("is 1048577 bytes"),
         "{err}"
     );
 }
@@ -542,7 +545,7 @@ async fn a_chunked_response_over_max_response_mb_fails() {
         c.get(&c.endpoint("/big").unwrap()).await.unwrap_err()
     );
     assert!(
-        err.contains("more than 1048576 bytes, over max_response_mb = 1"),
+        err.contains("max_response_mb = 1") && err.contains("more than 1048576 bytes"),
         "{err}"
     );
 }

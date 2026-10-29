@@ -344,31 +344,35 @@ impl ApiClient {
 }
 
 impl ApiClient {
-    /// The body, read in chunks so that a huge or endless response fails
-    /// at `max_response_mb` instead of exhausting memory.
-    async fn read_body(&self, mut resp: reqwest::Response) -> Result<Vec<u8>> {
-        let limit = self.max_response_bytes;
-        let too_big = |size: String| {
-            anyhow::anyhow!(
-                "the response is {size}, over max_response_mb = {} under [source]: raise it, \
-                 or lower the page size the stream requests if the API has a parameter for it",
-                limit / (1024 * 1024)
-            )
-        };
-        if let Some(len) = resp.content_length()
-            && len > limit
-        {
-            return Err(too_big(format!("{len} bytes")));
-        }
-        let mut body = Vec::new();
-        while let Some(chunk) = resp.chunk().await.map_err(reqwest::Error::without_url)? {
-            if (body.len() + chunk.len()) as u64 > limit {
-                return Err(too_big(format!("more than {limit} bytes")));
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok(body)
+    async fn read_body(&self, resp: reqwest::Response) -> Result<Vec<u8>> {
+        read_limited(resp, self.max_response_bytes)
+            .await
+            .with_context(|| {
+                format!(
+                    "over max_response_mb = {} under [source]: raise it, or lower the page size \
+                 the stream requests if the API has a parameter for it",
+                    self.max_response_bytes / (1024 * 1024)
+                )
+            })
     }
+}
+
+/// The body, read in chunks so that a huge or endless response fails at
+/// `limit` bytes instead of exhausting memory.
+pub async fn read_limited(mut resp: reqwest::Response, limit: u64) -> Result<Vec<u8>> {
+    if let Some(len) = resp.content_length()
+        && len > limit
+    {
+        bail!("the response is {len} bytes");
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(reqwest::Error::without_url)? {
+        if (body.len() + chunk.len()) as u64 > limit {
+            bail!("the response is more than {limit} bytes");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// The pages of one stream, lazily: records of each page in order. Dropping
@@ -389,8 +393,8 @@ pub fn pages(
             // committed as if it were complete.
             if client.max_pages > 0 && fetched >= client.max_pages {
                 Err(anyhow::anyhow!(
-                    "{} has more than max_pages = {} pages in this run: raise max_pages under \
-                     [source], or set it to 0 for no limit",
+                    "{} still has a next page after max_pages = {} pages in this run: raise \
+                     max_pages under [source], or set it to 0 for no limit",
                     client.shown(&origin),
                     client.max_pages
                 ))?;

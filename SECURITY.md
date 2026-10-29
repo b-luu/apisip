@@ -78,8 +78,10 @@ branch at every level can make inlining use all available memory
 - Records are written as received (JSONL) or typed from the schema
   (Parquet). apisip does not execute anything from a response.
 - A page that repeats the previous one stops pagination.
-- A response body over `max_response_mb` (default 64 MB) fails the stream,
-  so a huge or endless response cannot exhaust memory. A stream with more
+- An API response body over `max_response_mb` (default 64 MB) fails the
+  stream, and an OAuth2 token response over 1 MB fails the run, so a huge
+  or endless response cannot exhaust memory. The spec that `init` and
+  `update` download is still read whole. A stream with more
   than `max_pages` pages in one run (default 1000, 0 for no limit) fails, so
   an API that paginates forever cannot keep a run going.
 - A next-page link or a redirect to another host, scheme or port fails the
