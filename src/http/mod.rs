@@ -216,6 +216,20 @@ impl ApiClient {
         mask_text(text, &self.secrets())
     }
 
+    /// The start of a response body for an error message, masked. Control
+    /// characters become spaces: they could start a terminal escape sequence
+    /// that rewrites the screen, and a newline would break the one-line error.
+    fn snippet(&self, bytes: &[u8]) -> String {
+        let text = String::from_utf8_lossy(bytes);
+        let text = text.trim();
+        let text = if text.chars().count() > 300 {
+            format!("{}…", text.chars().take(300).collect::<String>())
+        } else {
+            text.to_string()
+        };
+        self.mask(text).replace(char::is_control, " ")
+    }
+
     /// `url` as shown in messages and logs.
     pub fn shown(&self, url: &Url) -> String {
         masked_url(url, &self.secrets())
@@ -281,7 +295,7 @@ impl ApiClient {
                     serde_json::from_slice(&bytes).with_context(|| {
                         format!(
                             "GET {shown}: the response is not JSON: {}",
-                            self.mask(snippet(&bytes))
+                            self.snippet(&bytes)
                         )
                     })?
                 };
@@ -321,10 +335,7 @@ impl ApiClient {
                 404 => " (check base_url and the stream path in apisip.toml)",
                 _ => "",
             };
-            bail!(
-                "GET {shown}: HTTP {status}{hint}: {}",
-                self.mask(snippet(&body))
-            );
+            bail!("GET {shown}: HTTP {status}{hint}: {}", self.snippet(&body));
         }
     }
 }
@@ -366,16 +377,6 @@ pub fn pages(
 fn parse_base(base: &str) -> Result<Url> {
     let base = interpolate(base).context("source.base_url")?;
     Url::parse(&base).with_context(|| format!("source.base_url {base:?} is not an absolute URL"))
-}
-
-fn snippet(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let text = text.trim();
-    if text.chars().count() > 300 {
-        format!("{}…", text.chars().take(300).collect::<String>())
-    } else {
-        text.to_string()
-    }
 }
 
 #[cfg(test)]
