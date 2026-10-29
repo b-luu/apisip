@@ -39,6 +39,7 @@ pub struct RunOptions {
 
 struct Ctx {
     ws: Workspace,
+    folder_id: String,
     config: Config,
     spec: Option<Spec>,
     client: Arc<ApiClient>,
@@ -69,6 +70,17 @@ pub(super) async fn claim(store: &Store, folder_id: &str) -> Result<State> {
     }
 }
 
+/// Stops a commit when another folder took the destination since `claim`.
+/// Called under the commit lock. Where the store refuses conditional writes,
+/// two folders that start on a fresh destination at once can both pass
+/// `claim`: the last owner written wins and the other run must not commit.
+pub(super) async fn check_owner(store: &Store, folder_id: &str) -> Result<()> {
+    match State::load(store).await?.owner.as_deref() {
+        Some(o) if o != folder_id => bail!(foreign_owner(&store.url, o, Some(folder_id))),
+        _ => Ok(()),
+    }
+}
+
 /// Returns false when a stream failed.
 pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
     let config = ws.load_config()?;
@@ -88,7 +100,8 @@ pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
     let client = ApiClient::for_config(&config)?;
     let store = Arc::new(Store::open(&config.destination, &ws.dir)?);
     let layout = Layout::new(Utc::now());
-    let state = claim(&store, &ws.folder_id()?).await?;
+    let folder_id = ws.folder_id()?;
+    let state = claim(&store, &folder_id).await?;
     // Leftovers of an interrupted run were never committed: drop them.
     store.delete_stale_staging(layout.started).await?;
 
@@ -113,6 +126,7 @@ pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
     let concurrency = config.source.concurrency;
     let ctx = Arc::new(Ctx {
         ws: ws.clone(),
+        folder_id,
         config,
         spec,
         client,
@@ -473,6 +487,7 @@ async fn commit(
     // Copies of this folder may commit to the same destination at the same
     // time. A local destination has no conditional writes: commits take turns.
     let _commit = ctx.store.commit_lock().await?;
+    check_owner(&ctx.store, &ctx.folder_id).await?;
 
     // 1. Move the files into the data path.
     let prefix = Layout::part_prefix(name);

@@ -23,7 +23,7 @@ use crate::spec::Spec;
 use crate::state::{Manifest, RunKind, RunStatus, State, StreamReport, StreamStatus};
 use crate::workspace::Workspace;
 
-use super::run::{claim, fail_point, lock, print_views};
+use super::run::{check_owner, claim, fail_point, lock, print_views};
 use super::{load_schema, select_streams};
 
 #[derive(Debug, Default, Clone)]
@@ -38,7 +38,8 @@ pub async fn run(ws: &Workspace, o: ReplayOptions) -> Result<bool> {
     let streams = select_streams(&config, &o.streams)?;
     let spec = ws.load_spec(&config).await.ok();
     let store = Arc::new(Store::open(&config.destination, &ws.dir)?);
-    claim(&store, &ws.folder_id()?).await?;
+    let folder_id = ws.folder_id()?;
+    claim(&store, &folder_id).await?;
     let layout = Layout::new(Utc::now());
     store.delete_stale_staging(layout.started).await?;
 
@@ -68,6 +69,7 @@ pub async fn run(ws: &Workspace, o: ReplayOptions) -> Result<bool> {
     let format = config.destination.format;
     let ctx = Replay {
         ws,
+        folder_id: &folder_id,
         spec: spec.as_ref(),
         store: &store,
         layout: &layout,
@@ -135,6 +137,7 @@ async fn quarantine_files(store: &Store, stream: &str) -> Result<Vec<String>> {
 
 struct Replay<'a> {
     ws: &'a Workspace,
+    folder_id: &'a str,
     spec: Option<&'a Spec>,
     store: &'a Arc<Store>,
     layout: &'a Layout,
@@ -265,6 +268,7 @@ impl Replay<'_> {
         };
 
         let _commit = self.store.commit_lock().await?;
+        check_owner(self.store, self.folder_id).await?;
         for f in &data_files {
             let target = self.store.promote(f, None).await?;
             if !report.files.contains(&target) {
