@@ -9,7 +9,7 @@ use crate::prompt::{self, Prompter};
 use crate::spec::Spec;
 use crate::workspace::Workspace;
 
-use super::{pagination_label, print_rate_limit_warning, truncation_warning};
+use super::{pagination_label, print_rate_limit_warning, printable, truncation_warning};
 
 #[derive(Debug, Default, Clone)]
 pub struct InitOptions {
@@ -208,7 +208,7 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
                             "--plan {want}: the spec documents {}",
                             plans
                                 .iter()
-                                .filter_map(|t| t.plan.clone())
+                                .filter_map(|t| t.plan.as_deref().map(printable))
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         )
@@ -272,8 +272,8 @@ fn pick_auth(
     for o in declared.iter().filter(|o| o.config.is_none()) {
         eprintln!(
             "note: auth scheme `{}` skipped: {}",
-            o.scheme,
-            o.unsupported.as_deref().unwrap_or("unsupported")
+            printable(&o.scheme),
+            printable(o.unsupported.as_deref().unwrap_or("unsupported"))
         );
     }
     let options = if declared.iter().any(|o| o.config.is_some()) {
@@ -296,6 +296,7 @@ fn pick_auth(
                         .filter(|o| o.config.is_some())
                         .map(|o| o.scheme.as_str())
                         .chain(["none"])
+                        .map(printable)
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -430,7 +431,7 @@ fn print_summary(
         let pk = if s.primary_key.is_empty() {
             "no primary key".to_string()
         } else {
-            format!("key {}", s.primary_key.join(","))
+            format!("key {}", printable(&s.primary_key.join(",")))
         };
         println!(
             "  {:<24} {:<13} {:<13} {pk}",
@@ -445,7 +446,7 @@ fn print_summary(
     if !det.skipped.is_empty() {
         println!("\nSkipped:");
         for s in &det.skipped {
-            println!("  {:<38} {}", s.path, s.reason);
+            println!("  {:<38} {}", printable(&s.path), printable(&s.reason));
         }
     }
     let mut blank: Vec<&str> = auth_vars

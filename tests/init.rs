@@ -299,3 +299,153 @@ fn init_interactive_prompts() {
     );
     assert_eq!(mode(&env), 0o600);
 }
+
+/// A spec with terminal escape sequences in the names and descriptions `init` shows.
+fn escape_spec(dir: &Path) -> PathBuf {
+    let osc = "\x1b]0;PWNED\x07";
+    let list = |props: serde_json::Value| {
+        serde_json::json!({"200": {"description": "ok", "content": {"application/json": {
+            "schema": {"type": "array", "items": {"type": "object", "properties": props}}}}}})
+    };
+    let spec = serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "Escapes", "version": "1"},
+        "servers": [{"url": "https://api.test"}],
+        "security": [{format!("tok{osc}"): []}],
+        "components": {"securitySchemes": {
+            format!("tok{osc}"): {"type": "http", "scheme": "bearer",
+                "description": format!("Bearer {osc}token")},
+            format!("odd{osc}"): {"type": format!("weird{osc}")}
+        }},
+        "paths": {
+            "/items": {"get": {"responses": list(serde_json::json!({
+                format!("item{osc}_id"): {"type": "string"}}))}},
+            "/search": {"get": {
+                "parameters": [{"name": format!("q{osc}"), "in": "query", "required": true,
+                    "schema": {"type": "string"}}],
+                "responses": list(serde_json::json!({}))}}
+        }
+    });
+    let path = dir.join("spec.json");
+    std::fs::write(&path, spec.to_string()).unwrap();
+    path
+}
+
+#[test]
+fn init_prints_no_escape_sequences_from_the_spec() {
+    let dir = tempfile::tempdir().unwrap();
+    let spec = escape_spec(dir.path());
+    let out = apisip(dir.path())
+        .args(["init", spec.to_str().unwrap(), "--yes"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    assert!(
+        text.contains("requires query parameter `q ]0;PWNED `"),
+        "{text}"
+    );
+    assert!(
+        text.contains("scheme type `weird ]0;PWNED ` is not supported"),
+        "{text}"
+    );
+    assert!(!text.contains('\x1b') && !text.contains('\x07'), "{text:?}");
+
+    let out = apisip(dir.path())
+        .args([
+            "init",
+            spec.to_str().unwrap(),
+            "--yes",
+            "--force",
+            "--auth",
+            "nope",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("available schemes are tok ]0;PWNED "), "{err}");
+    assert!(!err.contains('\x1b') && !err.contains('\x07'), "{err:?}");
+}
+
+/// The prompts show auth descriptions and field names from the spec.
+#[cfg(unix)]
+#[test]
+fn init_prompts_show_no_escape_sequences_from_the_spec() {
+    let dir = tempfile::tempdir().unwrap();
+    let spec = escape_spec(dir.path());
+    let mut cmd = std::process::Command::new(bin());
+    cmd.arg("-C")
+        .arg(dir.path())
+        .args(["init", spec.to_str().unwrap()])
+        .env("TERM", "xterm");
+    let mut p = rexpect::session::spawn_with_options(
+        cmd,
+        rexpect::reader::Options::new().timeout_ms(Some(15_000)),
+    )
+    .unwrap();
+    let mut out = String::new();
+    for prompt in [
+        "API base URL",
+        "Where should apisip write data?",
+        "Output format",
+        "Authentication",
+        "Bearer token",
+        "Streams to download",
+        "Primary key of `items`",
+    ] {
+        out += &p.exp_string(prompt).unwrap();
+        p.send_line("").unwrap();
+    }
+    out += &p.exp_eof().unwrap();
+    assert!(out.contains("Wrote apisip.toml"), "{out:?}");
+    assert!(out.contains("Bearer  ]0;PWNED token"), "{out:?}");
+    assert!(out.contains("item ]0;PWNED _id"), "{out:?}");
+    // inquire draws with CSI sequences, but never OSC or BEL.
+    assert!(!out.contains("\x1b]") && !out.contains('\x07'), "{out:?}");
+}
+
+/// Accepting a default shown without its control characters keeps the real value.
+#[cfg(unix)]
+#[test]
+fn init_prompt_default_keeps_control_characters() {
+    let dir = tempfile::tempdir().unwrap();
+    let spec = dir.path().join("spec.json");
+    std::fs::write(
+        &spec,
+        r#"{"openapi":"3.0.0","info":{"title":"Tabs","version":"1"},
+            "servers":[{"url":"https://tabs.test"}],"security":[{"basic":[]}],
+            "components":{"securitySchemes":{"basic":{"type":"http","scheme":"basic"}}},
+            "paths":{"/things":{"get":{"responses":{"200":{"description":"ok",
+            "content":{"application/json":{"schema":{"type":"array","items":{}}}}}}}}}}"#,
+    )
+    .unwrap();
+    let mut cmd = std::process::Command::new(bin());
+    cmd.arg("-C")
+        .arg(dir.path())
+        .args(["init", spec.to_str().unwrap()])
+        .env("TERM", "xterm")
+        .env("TABS_USERNAME", "a\tb");
+    let mut p = rexpect::session::spawn_with_options(
+        cmd,
+        rexpect::reader::Options::new()
+            .timeout_ms(Some(15_000))
+            .strip_ansi_escape_codes(true),
+    )
+    .unwrap();
+    for prompt in [
+        "API base URL",
+        "Where should apisip write data?",
+        "Output format",
+        "Authentication",
+        "TABS_USERNAME",
+        "TABS_PASSWORD",
+        "Streams to download",
+    ] {
+        p.exp_string(prompt).unwrap();
+        p.send_line("").unwrap();
+    }
+    p.exp_eof().unwrap();
+    let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+    assert!(env.contains("TABS_USERNAME=\"a\tb\""), "{env:?}");
+}
