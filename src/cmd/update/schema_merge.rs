@@ -21,7 +21,7 @@ use crate::config::Config;
 use crate::schema::{RecordSchema, Shape};
 use crate::sink::{META_DIR, Store};
 use crate::spec::Spec;
-use crate::state::Manifest;
+use crate::state::{Manifest, RunKind};
 use crate::workspace::Workspace;
 
 /// One property of a schema file, with whether it is required.
@@ -312,13 +312,23 @@ pub(super) async fn recent_undeclared(store: &Store) -> BTreeMap<String, Vec<(St
         let Ok(m) = serde_json::from_slice::<Manifest>(&bytes) else {
             continue;
         };
+        // A replay does not check fields.
+        if m.kind != RunKind::Fetch {
+            continue;
+        }
         for (name, r) in m.streams {
-            let Some(drift) = r.drift else { continue };
+            // A run with no record, or no schema (also a stream that failed
+            // before commit), checked no field. Any other run counts; it has
+            // no `drift` when every field was declared.
+            if r.records + r.quarantined == 0 || r.schema.is_none() {
+                continue;
+            }
             let runs = seen.entry(name).or_default();
             if runs.len() < RECENT_RUNS {
                 runs.push(
-                    drift
-                        .undeclared
+                    r.drift
+                        .map(|d| d.undeclared)
+                        .unwrap_or_default()
                         .into_iter()
                         .filter(|(p, _)| !p.contains(['.', '[']))
                         .map(|(p, s)| (p, s.example))
@@ -477,5 +487,101 @@ mod tests {
         let runs = [run(&["a", "b"]), run(&["a", "c"]), run(&["a", "b"])];
         assert_eq!(in_every_run(&runs), [("a".to_string(), Value::from("a"))]);
         assert!(in_every_run(&[]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_recent_run_without_drift_vetoes_the_offer() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(
+            &crate::config::Destination {
+                url: "file://out".into(),
+                format: Default::default(),
+                rotate: Default::default(),
+                endpoint: None,
+                region: None,
+            },
+            dir.path(),
+        )
+        .unwrap();
+        let put =
+            async |run_id: &str, kind: &str, status: &str, records: u64, drift: Option<Value>| {
+                let mut report = json!({
+                    "status": status, "mode": "full", "records": records,
+                    "quarantined": 0, "pages": 1,
+                });
+                // A stream that failed before commit has no schema in its report.
+                if status == "committed" {
+                    report["schema"] = json!("spec");
+                }
+                if let Some(d) = drift {
+                    report["drift"] = d;
+                }
+                let manifest = json!({
+                    "run_id": run_id, "started_at": "2026-01-01T00:00:00Z",
+                    "status": "success", "full_refresh": false, "format": "jsonl",
+                    "streams": {"users": report}, "kind": kind,
+                });
+                store
+                    .put(&Manifest::path(run_id), manifest.to_string())
+                    .await
+                    .unwrap();
+            };
+        let nickname =
+            || json!({"undeclared": {"nickname": {"count": 1, "example": "ada"}}, "mistyped": {}});
+        let offered = [("nickname".to_string(), json!("ada"))];
+        put(
+            "20260101T000000Z-a",
+            "fetch",
+            "committed",
+            5,
+            Some(nickname()),
+        )
+        .await;
+        put(
+            "20260102T000000Z-b",
+            "fetch",
+            "committed",
+            5,
+            Some(nickname()),
+        )
+        .await;
+        assert_eq!(recent_undeclared(&store).await["users"], offered);
+
+        // A failed stream and a replay checked no field and do not count.
+        put("20260103T000000Z-c", "fetch", "failed", 5, None).await;
+        put("20260104T000000Z-d", "replay", "committed", 5, None).await;
+        assert_eq!(recent_undeclared(&store).await["users"], offered);
+
+        // A newer run that saw records and no drift: nickname was not always there.
+        put("20260105T000000Z-e", "fetch", "committed", 5, None).await;
+        assert!(recent_undeclared(&store).await["users"].is_empty());
+
+        // A newer run that saw no record checked nothing and does not count.
+        put(
+            "20260106T000000Z-f",
+            "fetch",
+            "committed",
+            5,
+            Some(nickname()),
+        )
+        .await;
+        put(
+            "20260107T000000Z-g",
+            "fetch",
+            "committed",
+            5,
+            Some(nickname()),
+        )
+        .await;
+        put(
+            "20260108T000000Z-h",
+            "fetch",
+            "committed",
+            5,
+            Some(nickname()),
+        )
+        .await;
+        put("20260109T000000Z-i", "fetch", "committed", 0, None).await;
+        assert_eq!(recent_undeclared(&store).await["users"], offered);
     }
 }

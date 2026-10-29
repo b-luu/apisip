@@ -186,7 +186,7 @@ There is no lock on the destination. A lease on S3 needs an expiry, so a crashed
 
 - **Primary key and cursor changes** always ask, even when the user never edited them, because the views deduplicate and order on them. `--yes` refuses them.
 - **Schema files** get the same three-way merge per field, between `.apisip/schemas/<stream>.json` (the version apisip last wrote), the new spec and `schemas/<stream>.json`. Each change is classed against the current file: a new field, `integer` to `number`, a required change and a removed field are compatible and applied; any other type change is incompatible and asks, because files already written keep the old type. `--yes` refuses incompatible changes before writing anything. A field changed on both sides is a conflict; the default keeps the user's version.
-- **Undeclared fields** seen in every recent run (the drift of the last three manifests) are offered for declaration, unselected by default.
+- **Undeclared fields** seen in every recent run (the last three fetch runs that checked records against a schema; a run with no drift counts as one with no undeclared field) are offered for declaration, unselected by default.
 
 `update --check` prints the diff only, and exits with code 1 when something changed, so a CI job can flag a spec change. Undeclared candidates alone do not count.
 
