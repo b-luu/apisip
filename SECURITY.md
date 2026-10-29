@@ -83,9 +83,12 @@ branch at every level can make inlining use all available memory
   into memory, and there is no limit on the number of pages
   ([#39](https://github.com/b-luu/apisip/issues/39)). Run apisip against
   untrusted APIs only on a machine with no internal services to reach.
-- Known gap: parts of API error bodies, and names and descriptions from the
-  spec, are printed to the terminal without removing control characters, so
-  a hostile API or spec can send terminal escape sequences.
+- The parts of API response bodies shown in error messages, and the spec
+  text that `init` prints, have their control characters replaced by spaces,
+  so they cannot send terminal escape sequences.
+- Known gap: field names, from the spec or from records, are printed without
+  removing control characters in the schema and drift reports of `run`,
+  `check`, `inspect` and `update`.
 
 ### The destination
 
