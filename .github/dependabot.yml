@@ -11,6 +11,10 @@ updates:
         update-types: [minor, patch]
   - package-ecosystem: github-actions
     directory: /
+    # dist generates release.yml and pins its actions from dist-workspace.toml;
+    # a bump here makes `dist plan` fail on the drift. Bump them in that file.
+    exclude-paths:
+      - .github/workflows/release.yml
     schedule:
       interval: weekly
     cooldown:
