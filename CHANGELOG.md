@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/b-luu/apisip/compare/v0.1.3...v0.1.4) - 2026-10-30
+
+### Fixed
+
+- *(spec)* parse YAML specs with serde-saphyr instead of serde_yaml_ng ([#64](https://github.com/b-luu/apisip/pull/64))
+- *(spec)* parse YAML specs with serde-saphyr instead of serde_yaml_ng
+- *(http)* strip control characters from response snippets in errors
+- *(update)* count recent runs without drift when offering fields
+- *(config)* allow only letters, digits, `_` and `-` in stream names
+
+### Other
+
+- *(deps)* bump tokio
+- *(http)* cover the 300-character cut in response snippets
+- *(update)* cover a run whose records were all quarantined
+- *(security)* list auth scheme names and cursor values in the known gap
+- *(security)* narrow the control-character known gap to field names
+
 ## [0.1.3](https://github.com/b-luu/apisip/compare/v0.1.2...v0.1.3) - 2026-10-29
 
 ### Fixed
