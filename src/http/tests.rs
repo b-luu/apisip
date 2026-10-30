@@ -152,6 +152,43 @@ async fn non_json_body_is_a_clear_error() {
     assert!(err.contains("not JSON") && err.contains("<html>"), "{err}");
 }
 
+#[tokio::test]
+async fn response_snippets_drop_control_characters() {
+    let hostile = "\x1b]0;owned\x07\x1b[2Jfake\r\n$ \u{9b}31m";
+    for status in [200, 400] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(hostile))
+            .mount(&server)
+            .await;
+        let c = client(&server);
+        let err = format!(
+            "{:#}",
+            c.get(&c.endpoint("users").unwrap()).await.unwrap_err()
+        );
+        assert!(!err.contains(char::is_control), "{err:?}");
+        assert!(err.contains("[2Jfake"), "{err:?}");
+    }
+}
+
+#[tokio::test]
+async fn response_snippets_stop_after_300_characters() {
+    for (len, cut) in [(300, false), (301, true)] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("é".repeat(len)))
+            .mount(&server)
+            .await;
+        let c = client(&server);
+        let err = format!(
+            "{:#}",
+            c.get(&c.endpoint("users").unwrap()).await.unwrap_err()
+        );
+        assert_eq!(err.matches('é').count(), 300, "{err}");
+        assert_eq!(err.ends_with('…'), cut, "{err}");
+    }
+}
+
 #[test]
 fn masked_url_hides_keys_by_name_and_by_value() {
     let url =
