@@ -150,7 +150,8 @@ fn openapi30_auth_and_plan_tiers() {
 
 #[test]
 fn openapi31_next_url_filter_and_extension_limit() {
-    let d = detect(&load("openapi31.json"));
+    let spec = load("openapi31.json");
+    let d = detect(&spec);
     let readings = stream(&d, "readings");
     assert_eq!(readings.records, "/items");
     assert_eq!(
@@ -171,7 +172,7 @@ fn openapi31_next_url_filter_and_extension_limit() {
         .find(|s| s.config.name == "devices")
         .unwrap();
     assert!(
-        devices.record_schema.is_none(),
+        stream_record_schema(&spec, &devices.config).is_none(),
         "no response schema: falls back to inference"
     );
     let skipped: Vec<_> = d
@@ -246,12 +247,14 @@ fn record_schema_lookup_matches_detection() {
     let spec = load("openapi30.yaml");
     let d = detect(&spec);
     for s in &d.streams {
-        assert_eq!(
-            stream_record_schema(&spec, &s.config),
-            s.record_schema,
-            "stream {}",
-            s.config.name
-        );
+        let fields: Vec<String> = stream_record_schema(&spec, &s.config)
+            .and_then(|r| {
+                r["properties"]
+                    .as_object()
+                    .map(|p| p.keys().cloned().collect())
+            })
+            .unwrap_or_default();
+        assert_eq!(fields, s.fields, "stream {}", s.config.name);
     }
 }
 

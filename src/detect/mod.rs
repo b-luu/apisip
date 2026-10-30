@@ -96,8 +96,6 @@ impl RateLimitFinding {
 pub struct DetectedStream {
     pub config: StreamConfig,
     pub method: &'static str,
-    /// Inlined schema of one record, when the spec declares it.
-    pub record_schema: Option<Value>,
     /// Top-level record fields, for the primary-key prompt.
     pub fields: Vec<String>,
 }

@@ -207,21 +207,31 @@ fn init_and_check_warn_when_a_schema_is_too_large_to_inline() {
         "openapi": "3.0.0",
         "info": {"title": "Deep", "version": "1"},
         "servers": [{"url": "http://127.0.0.1:9"}],
-        "paths": {"/things": {"get": {"responses": {"200": {"description": "ok",
-            "content": {"application/json": {"schema": {"type": "array",
-                "items": {"$ref": "#/components/schemas/S0"}}}}}}}}},
+        "paths": {
+            "/things": {"get": {"responses": {"200": {"description": "ok",
+                "content": {"application/json": {"schema": {"type": "array",
+                    "items": {"$ref": "#/components/schemas/S0"}}}}}}}},
+            // A list envelope with `items` before `type`, as in Stripe's spec:
+            // the cut must not hide the array, or the stream is skipped.
+            "/wrapped": {"get": {"responses": {"200": {"description": "ok",
+                "content": {"application/json": {"schema": {"type": "object", "properties": {
+                    "data": {"items": {"$ref": "#/components/schemas/S0"}, "type": "array"},
+                    "has_more": {"type": "boolean"}}}}}}}}}
+        },
         "components": {"schemas": schemas}
     });
     let dir = tempfile::tempdir().unwrap();
     let spec_path = dir.path().join("spec.json");
     std::fs::write(&spec_path, spec.to_string()).unwrap();
     let warning = "warning: the schema of stream things is too large to inline; fields past the limit are untyped";
+    let wrapped = "warning: the schema of stream wrapped is too large to inline";
     apisip(dir.path())
         .args(["init", spec_path.to_str().unwrap(), "--yes"])
         .timeout(std::time::Duration::from_secs(30))
         .assert()
         .success()
-        .stderr(predicate::str::contains(warning));
+        .stderr(predicate::str::contains(warning))
+        .stderr(predicate::str::contains(wrapped));
     // Nothing listens on the server: fail the request without retrying.
     let config_path = dir.path().join("apisip.toml");
     let config = std::fs::read_to_string(&config_path).unwrap();

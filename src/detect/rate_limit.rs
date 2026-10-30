@@ -44,7 +44,7 @@ pub fn detect_rate_limits(spec: &Spec) -> RateLimitFinding {
             if let Some(h) = r.get("headers").and_then(Value::as_object) {
                 headers.extend(
                     h.iter()
-                        .map(|(k, v)| (k.to_ascii_lowercase(), spec.inline(v))),
+                        .map(|(k, v)| (k.to_ascii_lowercase(), spec.shallow(v))),
                 );
             }
             if let Some(d) = r.get("description").and_then(Value::as_str) {

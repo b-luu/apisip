@@ -105,7 +105,6 @@ pub(super) fn detect_stream(spec: &Spec, op: &Operation) -> Result<DetectedStrea
             cast: Default::default(),
         },
         method: op.method,
-        record_schema,
         fields,
     })
 }
