@@ -29,19 +29,22 @@ pub struct Operation<'a> {
     pub path: &'a str,
     pub op: &'a Value,
     /// Path-level and operation-level parameters, refs resolved, operation-level winning.
-    pub params: Vec<Value>,
+    /// Their `schema` is not resolved: readers call `Spec::resolve` on it.
+    pub params: Vec<&'a Value>,
 }
 
-impl Operation<'_> {
-    pub fn param(&self, name: &str) -> Option<&Value> {
+impl<'a> Operation<'a> {
+    pub fn param(&self, name: &str) -> Option<&'a Value> {
         self.params
             .iter()
+            .copied()
             .find(|p| p.get("name").and_then(Value::as_str) == Some(name))
     }
 
-    pub fn query_params(&self) -> impl Iterator<Item = &Value> {
+    pub fn query_params(&self) -> impl Iterator<Item = &'a Value> + '_ {
         self.params
             .iter()
+            .copied()
             .filter(|p| p.get("in").and_then(Value::as_str) == Some("query"))
     }
 
@@ -80,6 +83,11 @@ pub async fn fetch_text(src: &str, base_dir: &Path) -> Result<String> {
 /// Nodes past which one `Spec::inline` call follows no more refs. GitHub's largest
 /// record schema is about 9,400 nodes; Stripe's expandable objects pass it.
 const INLINE_BUDGET: usize = 20_000;
+
+/// Nodes past which one `Spec::inline` call copies nothing more. Literal nodes are still
+/// copied past `INLINE_BUDGET`, and refs into the middle of large schemas can make those
+/// many times the size of the spec.
+const INLINE_CEILING: usize = 5 * INLINE_BUDGET;
 
 /// YAML 1.2 booleans and last duplicate key wins, as with serde_yaml_ng. No node or event
 /// cap: real specs such as GitHub's pass 250,000 nodes. No alias/anchor ratio check: specs
@@ -173,26 +181,13 @@ impl Spec {
     /// budget, a ref is no longer followed and becomes an empty (free-form)
     /// schema: refs that fan out can make the copy exponential in the size of
     /// the spec. Nodes written in the spec itself are still copied, so a `type`
-    /// next to a cut ref survives.
+    /// next to a cut ref survives, up to `INLINE_CEILING` nodes. Past depth 64
+    /// the copy is cut too.
     pub fn inline_bounded(&self, v: &Value) -> (Value, bool) {
         let mut stack = Vec::new();
         let (mut nodes, mut cut) = (0, false);
         let out = self.inline_inner(v, &mut stack, 0, &mut nodes, &mut cut);
         (out, cut)
-    }
-
-    /// A copy of a parameter or header with its own ref, its `schema` and that
-    /// schema's `items` resolved one level. Unlike `inline`, nothing deeper is
-    /// expanded, so the copy is never larger than the spec.
-    pub fn shallow(&self, v: &Value) -> Value {
-        let mut out = self.resolve(v).clone();
-        if let Some(mut schema) = out.get("schema").map(|s| self.resolve(s).clone()) {
-            if let Some(items) = schema.get("items").map(|i| self.resolve(i).clone()) {
-                schema["items"] = items;
-            }
-            out["schema"] = schema;
-        }
-        out
     }
 
     fn inline_inner(
@@ -205,7 +200,8 @@ impl Spec {
     ) -> Value {
         // A long string counts as one node per 64 bytes, so copies of it stay bounded too.
         *nodes += 1 + v.as_str().map_or(0, |t| t.len() / 64);
-        if depth > 64 {
+        if depth > 64 || *nodes > INLINE_CEILING {
+            *cut = true;
             return Value::Object(Map::new());
         }
         match v {
@@ -228,6 +224,10 @@ impl Spec {
                 }
                 let mut out = Map::new();
                 for (k, child) in map {
+                    if *nodes > INLINE_CEILING {
+                        *cut = true;
+                        break;
+                    }
                     *nodes += k.len() / 64;
                     out.insert(
                         k.clone(),
@@ -239,12 +239,17 @@ impl Spec {
                 }
                 Value::Object(out)
             }
-            Value::Array(items) => Value::Array(
-                items
-                    .iter()
-                    .map(|i| self.inline_inner(i, stack, depth + 1, nodes, cut))
-                    .collect(),
-            ),
+            Value::Array(items) => {
+                let mut out = Vec::new();
+                for i in items {
+                    if *nodes > INLINE_CEILING {
+                        *cut = true;
+                        break;
+                    }
+                    out.push(self.inline_inner(i, stack, depth + 1, nodes, cut));
+                }
+                Value::Array(out)
+            }
             other => other.clone(),
         }
     }
@@ -305,19 +310,19 @@ impl Spec {
         };
         for (path, item) in paths {
             let item = self.resolve(item);
-            let path_params: Vec<Value> = item
+            let path_params: Vec<&Value> = item
                 .get("parameters")
                 .and_then(Value::as_array)
-                .map(|ps| ps.iter().map(|p| self.shallow(p)).collect())
+                .map(|ps| ps.iter().map(|p| self.resolve(p)).collect())
                 .unwrap_or_default();
             for method in METHODS {
                 let Some(op) = item.get(method) else { continue };
                 let mut params = path_params.clone();
                 if let Some(ps) = op.get("parameters").and_then(Value::as_array) {
                     for p in ps {
-                        let p = self.shallow(p);
+                        let p = self.resolve(p);
                         let key = |v: &Value| (v.get("name").cloned(), v.get("in").cloned());
-                        params.retain(|existing| key(existing) != key(&p));
+                        params.retain(|existing| key(existing) != key(p));
                         params.push(p);
                     }
                 }
@@ -409,14 +414,14 @@ impl Spec {
         Some(self.inline_bounded(schema))
     }
 
-    /// Names of the headers the success response declares (lowercased).
-    pub fn response_headers(&self, op: &Value) -> Vec<(String, Value)> {
+    /// Names of the headers the success response declares (lowercased), refs resolved.
+    pub fn response_headers<'a>(&'a self, op: &'a Value) -> Vec<(String, &'a Value)> {
         self.success_response(op)
             .and_then(|r| r.get("headers"))
             .and_then(Value::as_object)
             .map(|h| {
                 h.iter()
-                    .map(|(k, v)| (k.to_ascii_lowercase(), self.shallow(v)))
+                    .map(|(k, v)| (k.to_ascii_lowercase(), self.resolve(v)))
                     .collect()
             })
             .unwrap_or_default()
@@ -775,33 +780,54 @@ mod tests {
     }
 
     #[test]
-    fn parameters_and_headers_are_not_expanded() {
-        // 200 parameters and headers that each refer to a schema that doubles
-        // 30 times: only their own ref, `schema` and `items` are resolved.
+    fn parameters_and_headers_are_not_copied() {
+        // 200 parameters and headers that each refer to a large schema: each
+        // operation borrows them from the spec instead of copying them.
         let s0 = json!({"$ref": "#/components/schemas/S0"});
         let mut spec = doubling(30, json!({"type": "integer"})).root;
-        let params: Vec<Value> = (0..200)
+        spec["components"]["parameters"]["P"] = json!({"name": "p", "in": "query", "schema": s0});
+        let mut params: Vec<Value> = (0..199)
             .map(|i| json!({"name": format!("p{i}"), "in": "query", "schema": {"type": "array", "items": s0}}))
             .collect();
+        params.push(json!({"$ref": "#/components/parameters/P"}));
         let headers = Map::from_iter((0..200).map(|i| (format!("x-h{i}"), json!({"schema": s0}))));
         spec["paths"] = json!({"/things": {"parameters": params, "get": {"responses": {"200": {
             "description": "ok", "headers": headers}}}}});
         let spec = Spec::parse(&spec.to_string(), "x").unwrap();
-        let start = std::time::Instant::now();
         let op = spec.operation("get", "/things").unwrap();
-        let unexpanded = json!({"$ref": "#/components/schemas/S1"});
+        let declared = &spec.root["paths"]["/things"]["parameters"];
         assert_eq!(op.params.len(), 200);
-        assert_eq!(
-            op.params[0].pointer("/schema/items/properties/a"),
-            Some(&unexpanded)
-        );
+        assert!(std::ptr::eq(op.params[0], &declared[0]));
+        assert!(std::ptr::eq(
+            op.params[199],
+            &spec.root["components"]["parameters"]["P"]
+        ));
         let headers = spec.response_headers(op.op);
         assert_eq!(headers.len(), 200);
-        assert_eq!(
-            headers[0].1.pointer("/schema/properties/a"),
-            Some(&unexpanded)
-        );
-        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        assert!(std::ptr::eq(
+            headers[0].1,
+            &spec.root["paths"]["/things"]["get"]["responses"]["200"]["headers"]["x-h0"]
+        ));
+    }
+
+    #[test]
+    fn inline_copies_nothing_past_the_ceiling() {
+        // Each schema refers to the next before its own literal nodes, so every
+        // ref is followed under the budget and the literals pile up afterwards.
+        let levels = 25;
+        let mut schemas = Map::new();
+        for i in 0..levels {
+            schemas.insert(
+                format!("S{i}"),
+                json!({"a": {"$ref": format!("#/components/schemas/S{}", i + 1)}, "z": vec![1; 6_000]}),
+            );
+        }
+        schemas.insert(format!("S{levels}"), json!({"type": "integer"}));
+        let root = json!({"openapi": "3.1.0", "paths": {}, "components": {"schemas": schemas}});
+        let spec = Spec::parse(&root.to_string(), "x").unwrap();
+        let (out, cut) = spec.inline_bounded(&json!({"$ref": "#/components/schemas/S0"}));
+        assert!(cut);
+        assert!(nodes(&out) <= INLINE_CEILING + 1, "{}", nodes(&out));
     }
 
     #[test]

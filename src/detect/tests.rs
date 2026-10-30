@@ -304,3 +304,52 @@ fn spec_values_never_reference_the_environment() {
     assert!(oauth.config.is_none());
     assert!(oauth.unsupported.as_deref().unwrap().contains("tokenUrl"));
 }
+
+#[test]
+fn parameter_and_header_refs_are_resolved_where_read() {
+    let doc = serde_json::json!({
+        "openapi": "3.0.3",
+        "paths": {"/issues": {"get": {
+            "parameters": [
+                {"name": "state", "in": "query", "required": true,
+                 "schema": {"$ref": "#/components/schemas/State"}},
+                {"name": "sort", "in": "query", "schema": {"$ref": "#/components/schemas/Sort"}},
+                {"name": "direction", "in": "query",
+                 "schema": {"type": "array", "items": {"$ref": "#/components/schemas/Dir"}}}
+            ],
+            "responses": {
+                "200": {"description": "ok", "content": {"application/json": {"schema": {
+                    "type": "array", "items": {"type": "object", "properties": {
+                        "id": {"type": "integer"},
+                        "updated_at": {"type": "string", "format": "date-time"}}}}}}},
+                "429": {"description": "slow down",
+                        "headers": {"Retry-After": {"$ref": "#/components/headers/Limit"}}}
+            }
+        }}},
+        "components": {
+            "schemas": {
+                "State": {"type": "string", "default": "open"},
+                "Sort": {"type": "string", "enum": ["created", "updated"]},
+                "Dir": {"type": "string", "enum": ["asc", "desc"]}
+            },
+            "headers": {"Limit": {"description": "Clients may send up to 1,000 requests per hour.",
+                                  "schema": {"type": "integer"}}}
+        }
+    });
+    let d = detect(&Spec::parse(&doc.to_string(), "spec.json").unwrap());
+
+    let issues = stream(&d, "issues");
+    assert_eq!(issues.params.get("state").map(String::as_str), Some("open"));
+    let sort = issues.incremental.as_ref().unwrap().sort.as_ref().unwrap();
+    assert_eq!(
+        (sort.param.as_str(), sort.value.as_str()),
+        ("sort", "updated")
+    );
+    assert_eq!(
+        sort.params.get("direction").map(String::as_str),
+        Some("desc")
+    );
+    let t = &d.rate_limits.tiers;
+    assert_eq!(t.len(), 1, "{t:?}");
+    assert_eq!(t[0].limit.max_calls, 1000);
+}
