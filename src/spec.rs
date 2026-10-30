@@ -224,11 +224,11 @@ impl Spec {
                 }
                 let mut out = Map::new();
                 for (k, child) in map {
+                    *nodes += k.len() / 64;
                     if *nodes > INLINE_CEILING {
                         *cut = true;
                         break;
                     }
-                    *nodes += k.len() / 64;
                     out.insert(
                         k.clone(),
                         self.inline_inner(child, stack, depth + 1, nodes, cut),
@@ -428,7 +428,7 @@ impl Spec {
     }
 
     /// Declared security schemes, refs resolved, in declaration order.
-    pub fn security_schemes(&self) -> Vec<(String, Value)> {
+    pub fn security_schemes(&self) -> Vec<(String, &Value)> {
         let schemes = match self.version() {
             Version::Swagger2 => self.root.get("securityDefinitions"),
             _ => self.root.pointer("/components/securitySchemes"),
@@ -437,7 +437,7 @@ impl Spec {
             .and_then(Value::as_object)
             .map(|m| {
                 m.iter()
-                    .map(|(k, v)| (k.clone(), self.resolve(v).clone()))
+                    .map(|(k, v)| (k.clone(), self.resolve(v)))
                     .collect()
             })
             .unwrap_or_default()
@@ -828,6 +828,30 @@ mod tests {
         let (out, cut) = spec.inline_bounded(&json!({"$ref": "#/components/schemas/S0"}));
         assert!(cut);
         assert!(nodes(&out) <= INLINE_CEILING + 1, "{}", nodes(&out));
+        // The same holds for a wide object, and for a long string reached just under the ceiling.
+        let wide = Map::from_iter((0..INLINE_CEILING + 10).map(|i| (format!("k{i}"), json!(1))));
+        let (out, cut) = bare().inline_bounded(&Value::Object(wide));
+        assert!(cut);
+        assert!(nodes(&out) <= INLINE_CEILING + 1, "{}", nodes(&out));
+        let mut items = vec![json!(1); INLINE_CEILING - 2];
+        items.push(json!("x".repeat(64_000)));
+        let (out, cut) = bare().inline_bounded(&Value::Array(items));
+        assert!(cut);
+        assert_eq!(out[INLINE_CEILING - 2], json!({}));
+    }
+
+    #[test]
+    fn security_schemes_are_not_copied() {
+        let spec = Spec::parse(
+            r##"{"openapi": "3.1.0", "paths": {}, "components": {"securitySchemes": {
+                "a": {"$ref": "#/components/securitySchemes/b"},
+                "b": {"type": "http", "scheme": "bearer"}}}}"##,
+            "x",
+        )
+        .unwrap();
+        let b = &spec.root["components"]["securitySchemes"]["b"];
+        let schemes = spec.security_schemes();
+        assert!(schemes.iter().all(|(_, s)| std::ptr::eq(*s, b)));
     }
 
     #[test]
@@ -856,7 +880,8 @@ mod tests {
     fn inline_stops_at_depth_64_through_arrays_and_refs() {
         let spec = bare();
         let nested = |depth: usize| (0..depth).fold(json!(1), |v, _| json!([v]));
-        assert_eq!(spec.inline(&nested(64)), nested(64));
+        assert_eq!(spec.inline_bounded(&nested(64)), (nested(64), false));
+        assert!(spec.inline_bounded(&nested(65)).1);
         // Depth 65 is cut to an empty schema, and nothing below it is kept.
         let mut cursor = spec.inline(&nested(70));
         for _ in 0..65 {
