@@ -4,11 +4,7 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-    # serde_yaml_ng depends on it; it parses the OpenAPI spec given at init. No fixed
-    # release exists. Drop this when serde_yaml_ng moves to a maintained parser.
-    "RUSTSEC-2024-0449",
-]
+ignore = []
 
 [licenses]
 version = 2

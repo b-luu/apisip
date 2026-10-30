@@ -243,7 +243,7 @@ One crate, a lib plus the `apisip` binary:
 - **`cmd/update.rs`, `cmd/schema_merge.rs`:** the spec diff, the three-way merges against `.apisip/baseline.toml` and `.apisip/schemas/`, and in-place edits with `toml_edit`.
 - **`cmd/inspect.rs`, `cmd/replay.rs`:** read the destination's state, manifests and quarantine; replay commits through the same staged path as `run`.
 
-Main crates: `tokio`, `reqwest` (rustls), `serde`, `serde_json`, `serde_yaml_ng` (reads YAML specs), `toml`, `toml_edit`, `clap`, `inquire`, `dotenvy`, `object_store` (aws), `arrow`, `parquet` (async, object_store), `futures`, `async-stream`, `tracing`, `anyhow`, `chrono`, `url`, `rand`. Dev crates: `wiremock`, `tempfile`, `assert_cmd`, `rexpect`.
+Main crates: `tokio`, `reqwest` (rustls), `serde`, `serde_json`, `serde-saphyr` (reads YAML specs), `toml`, `toml_edit`, `clap`, `inquire`, `dotenvy`, `object_store` (aws), `arrow`, `parquet` (async, object_store), `futures`, `async-stream`, `tracing`, `anyhow`, `chrono`, `url`, `rand`. Dev crates: `wiremock`, `tempfile`, `assert_cmd`, `rexpect`.
 
 ## Repo setup
 
