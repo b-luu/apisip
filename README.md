@@ -499,9 +499,9 @@ version apisip last wrote (kept in `.apisip/schemas/`):
   to choose.
 - **A field both you and the spec changed** is a conflict that asks; the
   default keeps yours.
-- **Undeclared fields** seen in each recent run (the last three, or all of
-  them if there are fewer) are offered for declaration with their observed
-  type, unselected by default.
+- **Undeclared fields** seen in each recent run (the last three runs that
+  fetched records for the stream, or all of them if there are fewer) are
+  offered for declaration with their observed type, unselected by default.
 
 `update --check` lists every change and exits 1 when the spec changed.
 Undeclared fields alone do not make it fail.

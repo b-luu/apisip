@@ -87,9 +87,14 @@ of references.
   into memory, and there is no limit on the number of pages
   ([#39](https://github.com/b-luu/apisip/issues/39)). Run apisip against
   untrusted APIs only on a machine with no internal services to reach.
-- Known gap: parts of API error bodies, and names and descriptions from the
-  spec, are printed to the terminal without removing control characters, so
-  a hostile API or spec can send terminal escape sequences.
+- The parts of API response bodies shown in error messages, and the spec
+  text that `init` prints, have their control characters replaced by spaces,
+  so they cannot send terminal escape sequences.
+- Known gap: some text is still printed without removing control
+  characters: field names, from the spec or from records, in the schema and
+  drift reports of `run`, `check`, `inspect` and `update`; auth scheme names
+  from the spec in `update`; and text cursor values from records, shown as the
+  watermark and last range by `inspect` and in the overlap note of `run`.
 
 ### The destination
 

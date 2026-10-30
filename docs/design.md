@@ -162,7 +162,7 @@ There is no lock on the destination. A lease on S3 needs an expiry, so a crashed
 - **One run's streams** commit in parallel. `Store::commit_lock` first takes an in-process mutex, held across `promote` and `State::update`, so they take turns even where the cross-process protection below is missing.
 - **Local destinations** have no conditional update in `object_store`, so an exclusive `flock` on `_apisip/commit.lock` guards the read-modify-write and the JSONL merge in `promote`. A filesystem that cannot lock gets a warning and a commit without it: two copies running at once can then lose JSONL rows as well as move a watermark back.
 - **S3-compatible stores without conditional writes:** when the conditional write is refused as not implemented or not supported (a 501 with or without an error body), a plain write, with one warning per run. The refusal is seen at once and remembered for the rest of the run. Conditional state writes go through a client without object_store's retries, because object_store retries a 501 like any server error; apisip retries them itself with the same backoff and 3-minute limit, for 5xx other than 501 and 505, 408, 429 and connection errors. Any other client error fails the commit at once. A store that accepts the condition but ignores it gets plain-write behaviour with no warning. Two copies running at once can then move a watermark back: duplicates, no loss.
-- **Ownership.** `init` writes a random id to `.apisip/folder-id`; `.apisip/` is committed, so clones share it. A `run` or `replay` claims an unowned destination for its id at start, before fetching, and a run with another id stops there, as does `check`. A state without an owner is adopted. The claim is as safe as the state write: without `flock` or conditional writes, two foreign folders starting on an unowned destination at the same moment can both claim it.
+- **Ownership.** `init` writes a random id to `.apisip/folder-id`; `.apisip/` is committed, so clones share it. A `run` or `replay` claims an unowned destination for its id at start, before fetching, and a run with another id stops there, as does `check`. A state without an owner is adopted. The claim is as safe as the state write: without `flock` or conditional writes, two foreign folders starting on an unowned destination at the same moment can both claim it, and the last owner written wins. So each stream commit, under the commit lock and before it moves a file, reads the owner again and fails when it is not this folder. The window is narrowed, not closed: the last state written, by a claim or by a commit's plain write, decides the owner, and about one commit of the other run can go through before its later commits fail.
 
 ### `update`: follow API changes
 
@@ -186,7 +186,7 @@ There is no lock on the destination. A lease on S3 needs an expiry, so a crashed
 
 - **Primary key and cursor changes** always ask, even when the user never edited them, because the views deduplicate and order on them. `--yes` refuses them.
 - **Schema files** get the same three-way merge per field, between `.apisip/schemas/<stream>.json` (the version apisip last wrote), the new spec and `schemas/<stream>.json`. Each change is classed against the current file: a new field, `integer` to `number`, a required change and a removed field are compatible and applied; any other type change is incompatible and asks, because files already written keep the old type. `--yes` refuses incompatible changes before writing anything. A field changed on both sides is a conflict; the default keeps the user's version.
-- **Undeclared fields** seen in every recent run (the drift of the last three manifests) are offered for declaration, unselected by default.
+- **Undeclared fields** seen in every recent run (the last three fetch runs that checked records against a schema; a run with no drift counts as one with no undeclared field) are offered for declaration, unselected by default.
 
 `update --check` prints the diff only, and exits with code 1 when something changed, so a CI job can flag a spec change. Undeclared candidates alone do not count.
 
@@ -243,7 +243,7 @@ One crate, a lib plus the `apisip` binary:
 - **`cmd/update.rs`, `cmd/schema_merge.rs`:** the spec diff, the three-way merges against `.apisip/baseline.toml` and `.apisip/schemas/`, and in-place edits with `toml_edit`.
 - **`cmd/inspect.rs`, `cmd/replay.rs`:** read the destination's state, manifests and quarantine; replay commits through the same staged path as `run`.
 
-Main crates: `tokio`, `reqwest` (rustls), `serde`, `serde_json`, `serde_yaml_ng` (reads YAML specs), `toml`, `toml_edit`, `clap`, `inquire`, `dotenvy`, `object_store` (aws), `arrow`, `parquet` (async, object_store), `futures`, `async-stream`, `tracing`, `anyhow`, `chrono`, `url`, `rand`. Dev crates: `wiremock`, `tempfile`, `assert_cmd`, `rexpect`.
+Main crates: `tokio`, `reqwest` (rustls), `serde`, `serde_json`, `serde-saphyr` (reads YAML specs), `toml`, `toml_edit`, `clap`, `inquire`, `dotenvy`, `object_store` (aws), `arrow`, `parquet` (async, object_store), `futures`, `async-stream`, `tracing`, `anyhow`, `chrono`, `url`, `rand`. Dev crates: `wiremock`, `tempfile`, `assert_cmd`, `rexpect`.
 
 ## Repo setup
 

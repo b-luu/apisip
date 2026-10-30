@@ -28,6 +28,8 @@ enum Kind {
     OAuth2 {
         http: reqwest::Client,
         token_url: String,
+        /// `token_url` for messages, masked like every other URL.
+        shown_token_url: String,
         client_id: String,
         client_secret: String,
         scopes: Vec<String>,
@@ -90,20 +92,27 @@ impl Authenticator {
                 scopes,
                 ..
             }) => {
-                let token_url = interpolate(token_url)?;
-                let token_url = if token_url.starts_with("http") {
-                    token_url
+                let resolved = interpolate(token_url)?;
+                let parsed = if resolved.starts_with("http") {
+                    url::Url::parse(&resolved)
                 } else {
                     url::Url::parse(&format!("{}/", base_url.trim_end_matches('/')))
-                        .and_then(|b| b.join(token_url.trim_start_matches('/')))
-                        .map(|u| u.to_string())
-                        .context("OAuth2 token_url")?
-                };
+                        .and_then(|b| b.join(resolved.trim_start_matches('/')))
+                }
+                .context("OAuth2 token_url")?;
+                let client_secret = interpolate(client_secret).context("OAuth2 client secret")?;
+                // Values from the environment are secret wherever they appear in the URL.
+                let mut hidden: Vec<String> = crate::config::referenced_vars(token_url)
+                    .iter()
+                    .filter_map(|v| std::env::var(v).ok())
+                    .collect();
+                hidden.push(client_secret.clone());
                 Kind::OAuth2 {
                     http,
-                    token_url,
+                    shown_token_url: crate::http::masked_url(&parsed, &hidden),
+                    token_url: parsed.to_string(),
                     client_id: interpolate(client_id).context("OAuth2 client id")?,
-                    client_secret: interpolate(client_secret).context("OAuth2 client secret")?,
+                    client_secret,
                     scopes: scopes.clone(),
                     token: Mutex::new(None),
                     issued: Default::default(),
@@ -185,6 +194,7 @@ impl Authenticator {
         let Kind::OAuth2 {
             http,
             token_url,
+            shown_token_url,
             client_id,
             client_secret,
             scopes,
@@ -227,7 +237,7 @@ impl Authenticator {
         }
         let status = resp.status();
         if !status.is_success() {
-            bail!("OAuth2 token request to {token_url} failed: HTTP {status}");
+            bail!("OAuth2 token request to {shown_token_url} failed: HTTP {status}");
         }
         let body: serde_json::Value = resp
             .json()
@@ -355,6 +365,45 @@ mod tests {
             .mount(&server)
             .await;
         assert_eq!(bearer_of(&oauth(&server)).await, "Bearer posted");
+    }
+
+    #[tokio::test]
+    async fn oauth_error_masks_the_token_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        // SAFETY: test-only variables with names unique to this test.
+        unsafe {
+            std::env::set_var("APISIP_AUTH_TEST_URL_KEY", "url-key-value");
+            std::env::set_var("APISIP_AUTH_TEST_TENANT", "tenant-value");
+        }
+        let a = Authenticator::new(
+            Some(&AuthConfig::Oauth2ClientCredentials {
+                scheme: None,
+                token_url: "/oauth/token?api_key=${APISIP_AUTH_TEST_URL_KEY}&tenant=${APISIP_AUTH_TEST_TENANT}"
+                    .into(),
+                client_id: "client-1".into(),
+                client_secret: "client-secret".into(),
+                scopes: vec![],
+            }),
+            reqwest::Client::new(),
+            &server.uri(),
+        )
+        .unwrap();
+        let err = a
+            .apply(reqwest::Client::new().get("https://x.test/"))
+            .await
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("/oauth/token?") && msg.contains("HTTP 500"),
+            "{msg}"
+        );
+        assert!(!msg.contains("url-key-value"), "{msg}");
+        assert!(!msg.contains("tenant-value"), "{msg}");
     }
 
     #[tokio::test]
