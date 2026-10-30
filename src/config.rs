@@ -476,7 +476,13 @@ impl Config {
             if !seen.insert(&s.name) {
                 anyhow::bail!("stream `{}` is defined twice", s.name);
             }
-            if s.name.is_empty() || s.name.contains(['/', '\\', '.']) {
+            // The name lands in a DuckDB glob path, so `*`, `?` or `[` would read other streams.
+            if s.name.is_empty()
+                || !s
+                    .name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
                 anyhow::bail!(
                     "invalid stream name {:?}: use letters, digits, `_` or `-`",
                     s.name
@@ -655,6 +661,22 @@ incremental = { cursor = "updated_at", sort = { param = "sort", value = "-update
                 .to_string()
                 .contains("twice")
         );
+    }
+
+    #[test]
+    fn stream_names_allow_only_letters_digits_underscore_dash() {
+        let parse = |name: &str| {
+            Config::parse(&format!(
+                "[source]\nspec='a'\nbase_url='b'\n[destination]\n[[streams]]\nname='{name}'\npath='/a'\n"
+            ))
+        };
+        for ok in ["users", "user_events", "user-events", "Users2"] {
+            assert!(parse(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "user*", "a b", "a?", "a[b]", "a/b", "a.b", "é"] {
+            let err = parse(bad).unwrap_err().to_string();
+            assert!(err.contains("invalid stream name"), "{bad}: {err}");
+        }
     }
 
     #[test]
