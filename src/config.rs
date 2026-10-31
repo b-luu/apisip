@@ -641,6 +641,8 @@ incremental = { cursor = "updated_at", sort = { param = "sort", value = "-update
         assert_eq!(c.destination.url, "file://data");
         assert_eq!(c.destination.rotate.max_bytes, 64 << 20);
         assert_eq!(c.source.retry, RetryConfig::default());
+        assert_eq!(c.source.max_response_mb, 64);
+        assert_eq!(c.source.max_pages, 1000);
         assert_eq!(
             c.source.rate_limit.as_ref().unwrap().period,
             Duration::from_secs(60)

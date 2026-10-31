@@ -325,6 +325,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_large_oauth_token_under_1_mb_is_accepted() {
+        // JWTs with many claims run to several KB.
+        let server = MockServer::start().await;
+        let token = "t".repeat(64 * 1024);
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"access_token": token})),
+            )
+            .mount(&server)
+            .await;
+        assert_eq!(bearer_of(&oauth(&server)).await, format!("Bearer {token}"));
+    }
+
+    #[tokio::test]
     async fn an_oversized_oauth_token_response_fails() {
         let server = MockServer::start().await;
         let padding = " ".repeat(1024 * 1024);

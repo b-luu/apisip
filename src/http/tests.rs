@@ -512,8 +512,24 @@ async fn a_response_over_max_response_mb_fails() {
 }
 
 #[tokio::test]
-async fn a_chunked_response_over_max_response_mb_fails() {
-    // No Content-Length: the limit must hold while reading.
+async fn a_response_of_exactly_max_response_mb_passes() {
+    let server = MockServer::start().await;
+    let body = format!("[{}]", " ".repeat(1024 * 1024 - 2));
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+    let c = ApiClient::new(&Source {
+        max_response_mb: 1,
+        ..source(&server)
+    })
+    .unwrap();
+    c.get(&c.endpoint("/big").unwrap()).await.unwrap();
+}
+
+/// A server that answers once with a chunked body (no Content-Length) of
+/// `count` chunks: the first is `[`, the last `]`, the rest `size` spaces.
+async fn chunked_server(size: usize, count: usize) -> std::net::SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -526,20 +542,36 @@ async fn a_chunked_response_over_max_response_mb_fails() {
         if sock.write_all(head.as_bytes()).await.is_err() {
             return;
         }
-        let chunk = format!("{:x}\r\n{}\r\n", 64 * 1024, " ".repeat(64 * 1024));
-        for _ in 0..32 {
+        let spaces = format!("{size:x}\r\n{}\r\n", " ".repeat(size));
+        for i in 0..count {
+            let chunk = match i {
+                0 => "1\r\n[\r\n",
+                _ if i == count - 1 => "1\r\n]\r\n",
+                _ => &spaces,
+            };
             if sock.write_all(chunk.as_bytes()).await.is_err() {
                 return;
             }
         }
         let _ = sock.write_all(b"0\r\n\r\n").await;
     });
-    let c = ApiClient::new(&Source {
+    addr
+}
+
+async fn chunked_client(addr: std::net::SocketAddr) -> Arc<ApiClient> {
+    ApiClient::new(&Source {
         base_url: format!("http://{addr}"),
         max_response_mb: 1,
         ..source(&MockServer::start().await)
     })
-    .unwrap();
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_chunked_response_over_max_response_mb_fails() {
+    // No Content-Length: the limit must hold while reading. The body is
+    // 2 000 002 bytes, so a read rarely ends exactly at 1 MiB.
+    let c = chunked_client(chunked_server(100_000, 22).await).await;
     let err = format!(
         "{:#}",
         c.get(&c.endpoint("/big").unwrap()).await.unwrap_err()
@@ -548,6 +580,13 @@ async fn a_chunked_response_over_max_response_mb_fails() {
         err.contains("more than 1048576 bytes, over max_response_mb = 1"),
         "{err}"
     );
+}
+
+#[tokio::test]
+async fn a_chunked_response_of_exactly_max_response_mb_passes() {
+    // `[`, 2 × 524 287 spaces, `]`: exactly 1 MiB.
+    let c = chunked_client(chunked_server(524_287, 4).await).await;
+    c.get(&c.endpoint("/big").unwrap()).await.unwrap();
 }
 
 #[tokio::test]
