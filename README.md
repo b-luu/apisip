@@ -258,8 +258,9 @@ cast = "lossless"                 # default; "exact" or "none" for stricter typi
   body apisip reads. A larger one fails the stream with its size; raise the
   setting, or lower the page size the stream requests. An OAuth2 token
   response is capped at 1 MB. `max_pages` (default 1000) is the most pages
-  one stream fetches in one run. A stream with more fails rather than commit
-  part of its data; raise it, or set it to 0 for no limit.
+  one stream fetches in one run, counting the empty or repeated page that
+  ends pagination. A stream with more fails rather than commit part of its
+  data; raise it, or set it to 0 for no limit.
 - **S3:** the standard variables `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
   `AWS_REGION`, and `AWS_ENDPOINT_URL` for S3-compatible stores (R2, Garage,
   SeaweedFS, Ceph...). `init` asks for them when the destination is `s3://`.

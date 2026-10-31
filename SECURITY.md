@@ -85,10 +85,12 @@ branch at every level can make inlining use all available memory
   than `max_pages` pages in one run (default 1000, 0 for no limit) fails, so
   an API that paginates forever cannot keep a run going.
 - A next-page link or a redirect to another host, scheme or port fails the
-  stream, so a response cannot steer apisip to an internal address.
-- Known gap: the configured `base_url` and `token_url` are not checked
-  again at run time, so a public name whose DNS answer later changes to a
-  loopback, private or cloud metadata address is still requested
+  stream. A next link or redirect to the same host is followed.
+- Known gap: `base_url`, `token_url` and the spec URL are never checked
+  against loopback, private or cloud metadata addresses, whether `init`
+  took them from the spec or you wrote them. A spec whose `servers` entry
+  points at such an address, or a public name whose DNS answer changes to
+  one, is still requested
   ([#39](https://github.com/b-luu/apisip/issues/39)). Run apisip against
   untrusted APIs only on a machine with no internal services to reach.
 - The parts of API response bodies shown in error messages, and the spec
