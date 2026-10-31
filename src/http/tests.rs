@@ -490,6 +490,33 @@ async fn max_pages_fails_a_stream_that_keeps_paginating() {
 }
 
 #[tokio::test]
+async fn max_pages_0_means_no_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(EndlessPages)
+        .mount(&server)
+        .await;
+    let c = ApiClient::new(&Source {
+        max_pages: 0,
+        ..source(&server)
+    })
+    .unwrap();
+    let pagination = Some(Pagination::PageNumber {
+        param: "page".into(),
+        size_param: None,
+        size: None,
+        start: 1,
+    });
+    let first = c.endpoint("/events").unwrap();
+    let all: Vec<Vec<Value>> = pages(c, first, pagination, String::new())
+        .take(5)
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 5);
+}
+
+#[tokio::test]
 async fn a_response_over_max_response_mb_fails() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

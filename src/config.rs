@@ -683,6 +683,15 @@ incremental = { cursor = "updated_at", sort = { param = "sort", value = "-update
     }
 
     #[test]
+    fn rejects_a_zero_max_response_mb() {
+        let err =
+            Config::parse("[source]\nspec='a'\nbase_url='b'\nmax_response_mb=0\n[destination]\n")
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("max_response_mb must be at least 1"), "{err}");
+    }
+
+    #[test]
     fn stream_names_allow_only_letters_digits_underscore_dash() {
         let parse = |name: &str| {
             Config::parse(&format!(
