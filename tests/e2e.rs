@@ -1272,8 +1272,6 @@ fn live_github_detection() {
         .stdout(predicate::str::contains("/repositories"));
 }
 
-/// A query-string API key appears in reqwest's error URLs: it must never
-/// reach the terminal or the manifest.
 #[test]
 fn too_many_records_at_the_watermark_are_warned_about() {
     use wiremock::matchers::{method, path};
@@ -1347,11 +1345,13 @@ incremental = {{ cursor = "updated_at", param = "updated_since" }}
     let users = &state["streams"]["users"];
     assert_eq!(users["watermark"], "2026-01-01T00:00:00Z");
     assert!(
-        users["boundary"].as_array().is_none_or(|b| b.is_empty()),
+        users.get("boundary").is_none(),
         "no fingerprints are stored: {users}"
     );
 }
 
+/// A query-string API key appears in reqwest's error URLs: it must never
+/// reach the terminal or the manifest.
 #[test]
 fn a_query_api_key_is_never_shown() {
     let closed = std::net::TcpListener::bind("127.0.0.1:0")
