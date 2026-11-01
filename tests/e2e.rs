@@ -1275,6 +1275,84 @@ fn live_github_detection() {
 /// A query-string API key appears in reqwest's error URLs: it must never
 /// reach the terminal or the manifest.
 #[test]
+fn too_many_records_at_the_watermark_are_warned_about() {
+    use wiremock::matchers::{method, path};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(wiremock::MockServer::start());
+    // One more than `MAX_BOUNDARY` records, all at the same cursor value.
+    let users: Vec<Value> = (0..=10_000)
+        .map(|id| serde_json::json!({"id": id, "updated_at": "2026-01-01T00:00:00Z"}))
+        .collect();
+    rt.block_on(
+        wiremock::Mock::given(method("GET"))
+            .and(path("/users"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(users))
+            .mount(&server),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::write(
+        d.join("spec.json"),
+        serde_json::json!({
+            "openapi": "3.0.3",
+            "info": {"title": "Boundary", "version": "1"},
+            "paths": {"/users": {"get": {
+                "parameters": [{"name": "updated_since", "in": "query", "schema": {"type": "string"}}],
+                "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": {
+                        "id": {"type": "integer"},
+                        "updated_at": {"type": "string", "format": "date-time"}
+                    }}
+                }}}}}
+            }}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("apisip.toml"),
+        format!(
+            r#"
+[source]
+spec = "spec.json"
+base_url = "{}"
+retry = {{ max_tries = 1 }}
+
+[destination]
+url = "file://out"
+
+[[streams]]
+name = "users"
+path = "/users"
+primary_key = "id"
+incremental = {{ cursor = "updated_at", param = "updated_since" }}
+"#,
+            server.uri()
+        ),
+    )
+    .unwrap();
+
+    let out = stdout(&apisip(d).arg("run").assert().success());
+    assert!(
+        out.contains(
+            "warning: more than 10000 records share the newest `updated_at` value: \
+             the next run writes them again"
+        ),
+        "{out}"
+    );
+    let state: Value =
+        serde_json::from_str(&std::fs::read_to_string(d.join("out/_apisip/state.json")).unwrap())
+            .unwrap();
+    let users = &state["streams"]["users"];
+    assert_eq!(users["watermark"], "2026-01-01T00:00:00Z");
+    assert!(
+        users["boundary"].as_array().is_none_or(|b| b.is_empty()),
+        "no fingerprints are stored: {users}"
+    );
+}
+
+#[test]
 fn a_query_api_key_is_never_shown() {
     let closed = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
