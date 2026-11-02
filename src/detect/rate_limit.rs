@@ -42,10 +42,11 @@ pub fn detect_rate_limits(spec: &Spec) -> RateLimitFinding {
 }
 
 /// Every tier the spec states, before deduplication. A text many operations
-/// share through `$ref` is parsed once, so its tiers appear once.
+/// share through `$ref` or a YAML alias is parsed once, so its tiers appear once.
 fn collect(spec: &Spec) -> RateLimitFinding {
     let mut f = RateLimitFinding::default();
-    let mut parsed: HashSet<*const str> = HashSet::new();
+    // Keyed by content: a YAML alias copies the text to a new address.
+    let mut parsed: HashSet<&str> = HashSet::new();
 
     // 1. Vendor extensions anywhere in the document.
     walk_extensions(&spec.root, 0, &mut f.tiers);
@@ -344,6 +345,28 @@ mod tests {
         assert_eq!(f.tiers[0].source, "429 response description");
         assert_eq!(f.tiers[1].source, "header x-ratelimit-limit");
         assert_eq!(detect_rate_limits(&s).tiers, f.tiers);
+    }
+
+    #[test]
+    fn yaml_aliased_response_text_is_parsed_once() {
+        let paths: String = (0..50)
+            .map(|i| format!("  /p{i}:\n    get:\n      responses:\n        '429': *throttled\n"))
+            .collect();
+        let s = Spec::parse(
+            &format!(
+                "openapi: 3.0.3\ninfo: {{title: t, version: '1'}}\n\
+                 x-throttled: &throttled\n  description: 10 requests per second\n  \
+                 headers: {{X-RateLimit-Limit: {{description: 100 requests per hour}}}}\n\
+                 paths:\n{paths}"
+            ),
+            "spec.yaml",
+        )
+        .unwrap();
+        let f = collect(&s);
+        assert!(f.headers_declared);
+        assert_eq!(f.tiers.len(), 2, "{:?}", f.tiers);
+        assert_eq!(f.tiers[0].source, "429 response description");
+        assert_eq!(f.tiers[1].source, "header x-ratelimit-limit");
     }
 
     #[test]
