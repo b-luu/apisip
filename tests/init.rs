@@ -403,3 +403,116 @@ fn init_prompt_default_keeps_control_characters() {
     let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
     assert!(env.contains("TABS_USERNAME=\"a\tb\""), "{env:?}");
 }
+
+#[test]
+fn update_never_takes_an_environment_reference_from_the_spec() {
+    // `update` re-runs detection on the new spec: the same rule as `init`
+    // must keep `${VAR}` out of the fields it adds or changes.
+    let list = serde_json::json!({"200": {"description": "ok", "content": {"application/json": {
+        "schema": {"type": "array", "items": {"type": "object"}}}}}});
+    let with_q = |default: &str| {
+        serde_json::json!({"get": {
+            "parameters": [{"name": "q", "in": "query", "required": true,
+                "schema": {"type": "string", "default": default}}],
+            "responses": list}})
+    };
+    let v1 = serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "t", "version": "1"},
+        "servers": [{"url": "https://api.test/v1"}],
+        "paths": {"/items": {"get": {"responses": list}}, "/plain": with_q("all")}
+    });
+    let v2 = serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "t", "version": "2"},
+        "servers": [{"url": "https://api.test/{v}", "variables": {"v": {"default": "${AWS_SECRET_ACCESS_KEY}"}}}],
+        "paths": {
+            "/items": {"get": {"responses": list}},
+            "/plain": with_q("${AWS_SECRET_ACCESS_KEY}"),
+            "/added": with_q("${GITHUB_TOKEN}"),
+            "/clean": with_q("open")
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (v1_path, v2_path) = (dir.path().join("v1.json"), dir.path().join("v2.json"));
+    std::fs::write(&v1_path, v1.to_string()).unwrap();
+    std::fs::write(&v2_path, v2.to_string()).unwrap();
+    apisip(dir.path())
+        .args(["init", v1_path.to_str().unwrap(), "--yes"])
+        .assert()
+        .success();
+    let before = std::fs::read_to_string(dir.path().join("apisip.toml")).unwrap();
+    apisip(dir.path())
+        .args(["update", "--yes", v2_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let config = std::fs::read_to_string(dir.path().join("apisip.toml")).unwrap();
+    assert_ne!(config, before, "the update must have merged something");
+    let refs = |text: &str| -> Vec<String> {
+        text.match_indices("${")
+            .map(|(i, _)| text[i..].split('}').next().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(refs(&config), refs(&before), "{config}");
+    let doc: toml_edit::DocumentMut = config.parse().unwrap();
+    assert_eq!(
+        doc["source"]["base_url"].as_str(),
+        Some("https://api.test/v1")
+    );
+    let streams = doc["streams"].as_array_of_tables().unwrap();
+    let find = |name: &str| streams.iter().find(|s| s["name"].as_str() == Some(name));
+    assert!(find("added").is_none(), "{config}");
+    let plain = find("plain").unwrap();
+    assert_eq!(plain["params"]["q"].as_str(), Some("all"), "{config}");
+    // The refused endpoint is disabled with its old value: fail closed.
+    assert_eq!(plain["enabled"].as_bool(), Some(false), "{config}");
+    assert_eq!(
+        find("clean").unwrap()["params"]["q"].as_str(),
+        Some("open"),
+        "{config}"
+    );
+}
+
+#[test]
+fn update_refuses_a_token_url_that_references_the_environment() {
+    let spec = |token_url: &str| {
+        serde_json::json!({
+            "openapi": "3.0.0",
+            "info": {"title": "t", "version": "1"},
+            "servers": [{"url": "https://api.test/v1"}],
+            "components": {"securitySchemes": {"oauth": {"type": "oauth2", "flows": {"clientCredentials": {
+                "tokenUrl": token_url, "scopes": {}}}}}},
+            "security": [{"oauth": []}],
+            "paths": {"/items": {"get": {"responses": {"200": {"description": "ok", "content": {
+                "application/json": {"schema": {"type": "array", "items": {"type": "object"}}}}}}}}}
+        })
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (v1_path, v2_path) = (dir.path().join("v1.json"), dir.path().join("v2.json"));
+    std::fs::write(&v1_path, spec("https://auth.test/token").to_string()).unwrap();
+    std::fs::write(
+        &v2_path,
+        spec("https://auth.test/token?k=${GITHUB_TOKEN}").to_string(),
+    )
+    .unwrap();
+    apisip(dir.path())
+        .args(["init", v1_path.to_str().unwrap(), "--yes"])
+        .assert()
+        .success();
+    let before = std::fs::read_to_string(dir.path().join("apisip.toml")).unwrap();
+    assert!(
+        before.contains("token_url = \"https://auth.test/token\""),
+        "{before}"
+    );
+
+    apisip(dir.path())
+        .args(["update", "--yes", v2_path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("`oauth`"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("apisip.toml")).unwrap(),
+        before
+    );
+}
