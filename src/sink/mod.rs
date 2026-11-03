@@ -404,6 +404,59 @@ mod tests {
         assert_eq!(names.len(), 2, "no temp file left behind: {names:?}");
     }
 
+    #[test]
+    fn concurrent_local_promotes_into_one_part_keep_every_row() {
+        // Two stores on one folder stand for two processes: each has its own
+        // in-process turn, so only the file lock keeps their merges apart.
+        const PER_RUN: usize = 200;
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(local(tmp.path()).put("s/dt=1/s-z.jsonl", "seed\n"))
+            .unwrap();
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let runs: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|run| {
+                let dir = tmp.path().to_path_buf();
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    rt.block_on(async {
+                        let store = local(&dir);
+                        start.wait();
+                        for i in 0..PER_RUN {
+                            let f = StagedFile {
+                                staged: format!(
+                                    "_apisip/staging/{run}/s/dt=1/s-{run}-{i:04}.jsonl"
+                                ),
+                                target: format!("s/dt=1/s-{run}-{i:04}.jsonl"),
+                                rows: 1,
+                                bytes: 7,
+                            };
+                            store
+                                .put(&f.staged, format!("{run}{i:04}\n"))
+                                .await
+                                .unwrap();
+                            let _guard = store.commit_lock().await.unwrap();
+                            let out = store.promote(&f, Some(("s-", u64::MAX))).await.unwrap();
+                            assert_eq!(out, "s/dt=1/s-z.jsonl");
+                        }
+                    })
+                })
+            })
+            .collect();
+        for r in runs {
+            r.join().unwrap();
+        }
+        let text = std::fs::read_to_string(tmp.path().join("out/s/dt=1/s-z.jsonl")).unwrap();
+        let rows: std::collections::BTreeSet<_> = text.lines().collect();
+        assert_eq!(text.lines().count(), 2 * PER_RUN + 1);
+        assert_eq!(rows.len(), 2 * PER_RUN + 1, "every row is kept once");
+    }
+
     #[tokio::test]
     async fn promote_never_merges_into_a_replay_file() {
         let tmp = tempfile::tempdir().unwrap();

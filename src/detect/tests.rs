@@ -353,3 +353,38 @@ fn parameter_and_header_refs_are_resolved_where_read() {
     assert_eq!(t.len(), 1, "{t:?}");
     assert_eq!(t[0].limit.max_calls, 1000);
 }
+
+#[test]
+fn server_variables_never_reference_the_environment() {
+    let base_url = |server: serde_json::Value| {
+        let doc = serde_json::json!({"openapi": "3.0.0", "info": {"title": "t", "version": "1"},
+            "servers": [server], "paths": {}});
+        detect(&Spec::parse(&doc.to_string(), "spec.json").unwrap()).base_url
+    };
+
+    // Defaults are substituted; an enum does not change which value is taken.
+    assert_eq!(
+        base_url(
+            serde_json::json!({"url": "https://{region}.api.test/{version}",
+            "variables": {"region": {"default": "eu", "enum": ["us", "eu"]},
+                "version": {"default": "v2"}}})
+        ),
+        Some("https://eu.api.test/v2".into())
+    );
+    // Enum values are never substituted, so `${` in an enum is harmless.
+    assert_eq!(
+        base_url(serde_json::json!({"url": "https://api.test/{v}",
+            "variables": {"v": {"default": "v1", "enum": ["v1", "${GITHUB_TOKEN}"]}}})),
+        Some("https://api.test/v1".into())
+    );
+    // A default or an unresolved variable that produces `${` leaves the base URL unset.
+    for server in [
+        serde_json::json!({"url": "https://api.test/{v}",
+            "variables": {"v": {"default": "${AWS_SECRET_ACCESS_KEY}"}}}),
+        serde_json::json!({"url": "https://api.test/{d}{AWS_SECRET_ACCESS_KEY}",
+            "variables": {"d": {"default": "$"}}}),
+        serde_json::json!({"url": "https://api.test/${v}", "variables": {"v": {"enum": ["a"]}}}),
+    ] {
+        assert_eq!(base_url(server.clone()), None, "{server}");
+    }
+}
