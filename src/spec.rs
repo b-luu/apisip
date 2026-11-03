@@ -798,6 +798,8 @@ mod tests {
         let declared = &spec.root["paths"]["/things"]["parameters"];
         assert_eq!(op.params.len(), 200);
         assert!(std::ptr::eq(op.params[0], &declared[0]));
+        assert!(std::ptr::eq(op.param("p1").unwrap(), &declared[1]));
+        assert!(op.param("missing").is_none());
         assert!(std::ptr::eq(
             op.params[199],
             &spec.root["components"]["parameters"]["P"]
@@ -838,6 +840,33 @@ mod tests {
         let (out, cut) = bare().inline_bounded(&Value::Array(items));
         assert!(cut);
         assert_eq!(out[INLINE_CEILING - 2], json!({}));
+    }
+
+    #[test]
+    fn inline_ceiling_boundary_is_exact() {
+        // The array and n integers: copied whole while that is at most INLINE_CEILING nodes.
+        let ints = |n: usize| Value::Array(vec![json!(1); n]);
+        let (out, cut) = bare().inline_bounded(&ints(INLINE_CEILING - 1));
+        assert!(!cut);
+        assert_eq!(out, ints(INLINE_CEILING - 1));
+        // One more node is cut, and nothing after it is visited.
+        let (out, cut) = bare().inline_bounded(&ints(INLINE_CEILING + 5));
+        assert!(cut);
+        let out = out.as_array().unwrap();
+        assert_eq!(out.len(), INLINE_CEILING);
+        assert_eq!(out[INLINE_CEILING - 2], json!(1));
+        assert_eq!(out[INLINE_CEILING - 1], json!({}));
+        // The same for an object's members.
+        let keys = |n: usize| Map::from_iter((0..n).map(|i| (format!("k{i:06}"), json!(1))));
+        let (out, cut) = bare().inline_bounded(&Value::Object(keys(INLINE_CEILING - 1)));
+        assert!(!cut);
+        assert_eq!(out.as_object().unwrap().len(), INLINE_CEILING - 1);
+        let (out, cut) = bare().inline_bounded(&Value::Object(keys(INLINE_CEILING + 5)));
+        assert!(cut);
+        let out = out.as_object().unwrap();
+        assert_eq!(out.len(), INLINE_CEILING);
+        assert_eq!(out[&format!("k{:06}", INLINE_CEILING - 2)], json!(1));
+        assert_eq!(out[&format!("k{:06}", INLINE_CEILING - 1)], json!({}));
     }
 
     #[test]
