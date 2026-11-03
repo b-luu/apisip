@@ -49,7 +49,7 @@ fn collect(spec: &Spec) -> RateLimitFinding {
     let mut parsed: HashSet<&str> = HashSet::new();
 
     // 1. Vendor extensions anywhere in the document.
-    walk_extensions(&spec.root, 0, &mut f.tiers);
+    walk_extensions(&spec.root, 0, &mut HashSet::new(), &mut f.tiers);
 
     // 2. Declared rate-limit response headers, on success and 429 responses.
     for op in spec.operations() {
@@ -88,22 +88,27 @@ fn collect(spec: &Spec) -> RateLimitFinding {
         parse_text(d, "info.description", &mut f.tiers);
     }
     if f.tiers.is_empty() {
-        // Paths that share a path item through `$ref` share its operations.
-        let mut ops: HashSet<*const Value> = HashSet::new();
+        // Keyed by content, so operations shared through `$ref` or a YAML alias
+        // are parsed once.
+        let mut descriptions: HashSet<String> = HashSet::new();
         for op in spec.operations() {
-            if ops.insert(op.op) {
+            let d = op.description();
+            if !descriptions.contains(&d) {
                 parse_text(
-                    &op.description(),
+                    &d,
                     &format!("{} {}", op.method.to_uppercase(), op.path),
                     &mut f.tiers,
                 );
+                descriptions.insert(d);
             }
         }
     }
     f
 }
 
-fn walk_extensions(v: &Value, depth: usize, out: &mut Vec<Tier>) {
+/// `seen` holds each extension value parsed so far, serialized: an extension
+/// aliased under many operations is parsed once.
+fn walk_extensions(v: &Value, depth: usize, seen: &mut HashSet<String>, out: &mut Vec<Tier>) {
     if depth > 6 {
         return;
     }
@@ -112,15 +117,17 @@ fn walk_extensions(v: &Value, depth: usize, out: &mut Vec<Tier>) {
             for (k, child) in m {
                 let n = norm(k);
                 if n.starts_with('x') && (n.contains("ratelimit") || n.contains("throttl")) {
-                    parse_extension(child, None, k, out);
+                    if seen.insert(child.to_string()) {
+                        parse_extension(child, None, k, out);
+                    }
                 } else {
-                    walk_extensions(child, depth + 1, out);
+                    walk_extensions(child, depth + 1, seen, out);
                 }
             }
         }
         Value::Array(items) => items
             .iter()
-            .for_each(|i| walk_extensions(i, depth + 1, out)),
+            .for_each(|i| walk_extensions(i, depth + 1, seen, out)),
         _ => {}
     }
 }
@@ -384,6 +391,40 @@ mod tests {
         let f = collect(&s);
         assert_eq!(f.tiers.len(), 1, "{:?}", f.tiers);
         assert_eq!(f.tiers[0].source, "GET /a");
+    }
+
+    fn yaml_spec(anchor: &str, op: &str) -> Spec {
+        let paths: String = (0..50)
+            .map(|i| format!("  /p{i}:\n    get: {op}\n"))
+            .collect();
+        Spec::parse(
+            &format!("openapi: 3.0.3\ninfo: {{title: t, version: '1'}}\n{anchor}\npaths:\n{paths}"),
+            "spec.yaml",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn yaml_aliased_operation_description_is_parsed_once() {
+        let s = yaml_spec(
+            "x-op: &op {description: 5 calls per minute, responses: {'200': {description: ok}}}",
+            "*op",
+        );
+        let f = collect(&s);
+        assert_eq!(f.tiers.len(), 1, "{:?}", f.tiers);
+        assert_eq!(f.tiers[0].source, "GET /p0");
+    }
+
+    #[test]
+    fn yaml_aliased_extension_is_parsed_once() {
+        let s = yaml_spec(
+            "x-shared: &rl {limit: 10, period: second}",
+            "{x-ratelimit: *rl, responses: {'200': {description: ok}}}",
+        );
+        let f = collect(&s);
+        assert_eq!(f.tiers.len(), 1, "{:?}", f.tiers);
+        assert_eq!(f.tiers[0].limit.max_calls, 10);
+        assert_eq!(f.tiers[0].limit.period, Duration::from_secs(1));
     }
 
     #[test]
