@@ -267,7 +267,9 @@ cast = "lossless"                 # default; "exact" or "none" for stricter typi
   `check` refuse a host that now resolves to another class, and connect only
   to the addresses they checked. When the change is intended, edit the
   class or re-run `init`. IP literals and hosts written with `${VAR}` are not
-  recorded.
+  recorded. A recorded host is resolved once per run, so a name that does
+  not resolve fails the run at the start, and the run keeps the addresses
+  it checked until it ends. Write host names in lowercase.
 - **S3:** the standard variables `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
   `AWS_REGION`, and `AWS_ENDPOINT_URL` for S3-compatible stores (R2, Garage,
   SeaweedFS, Ceph...). `init` asks for them when the destination is `s3://`.
