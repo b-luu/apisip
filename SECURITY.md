@@ -84,8 +84,8 @@ branch at every level can make inlining use all available memory
   `update` download is still read whole. A stream with more
   than `max_pages` pages in one run (default 1000, 0 for no limit) fails, so
   an API that paginates forever cannot keep a run going.
-- A next-page link or a redirect to another host, scheme or port fails the
-  stream. A next link or redirect to the same host is followed.
+- A next-page link or a redirect fails the stream unless it stays on the
+  API's host, over the same scheme and port or upgraded from http to https.
 - Known gap: `base_url`, `token_url` and the spec URL are never checked
   against loopback, private or cloud metadata addresses, whether `init`
   took them from the spec or you wrote them. A spec whose `servers` entry
