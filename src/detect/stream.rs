@@ -28,8 +28,8 @@ pub(super) fn detect_stream(spec: &Spec, op: &Operation) -> Result<DetectedStrea
         .unwrap_or_default();
 
     let headers = spec.response_headers(op.op);
-    let pagination = detect_pagination(op, schema.as_ref(), &records, &headers);
-    let incremental = detect_incremental(op, &fields, record_schema.as_ref());
+    let pagination = detect_pagination(spec, op, schema.as_ref(), &records, &headers);
+    let incremental = detect_incremental(spec, op, &fields, record_schema.as_ref());
 
     let mut used: BTreeSet<String> = BTreeSet::new();
     match &pagination {
@@ -69,7 +69,7 @@ pub(super) fn detect_stream(spec: &Spec, op: &Operation) -> Result<DetectedStrea
         if used.contains(name) || !p.get("required").and_then(Value::as_bool).unwrap_or(false) {
             continue;
         }
-        let default = p.get("schema").unwrap_or(p).get("default");
+        let default = spec.resolve(p.get("schema").unwrap_or(p)).get("default");
         match default {
             Some(Value::String(s)) if s.contains("${") => {
                 return Err(format!(
@@ -105,7 +105,6 @@ pub(super) fn detect_stream(spec: &Spec, op: &Operation) -> Result<DetectedStrea
             cast: Default::default(),
         },
         method: op.method,
-        record_schema,
         fields,
     })
 }
@@ -161,6 +160,13 @@ pub fn stream_record_schema(spec: &Spec, stream: &StreamConfig) -> Option<Value>
     item.get("properties").is_some().then_some(item)
 }
 
+/// Whether the spec's response schema for a stream hit the inlining budget.
+pub fn schema_truncated(spec: &Spec, stream: &StreamConfig) -> bool {
+    spec.operation("get", &stream.path)
+        .and_then(|op| spec.response_schema_bounded(op.op))
+        .is_some_and(|(_, cut)| cut)
+}
+
 fn escape_pointer(s: &str) -> String {
     s.replace('~', "~0").replace('/', "~1")
 }
@@ -173,17 +179,20 @@ struct QueryParam<'a> {
     norm: String,
     name: &'a str,
     schema: &'a Value,
+    items: Option<&'a Value>,
     description: &'a str,
 }
 
-fn query_params<'a>(op: &'a Operation) -> Vec<QueryParam<'a>> {
+fn query_params<'a>(spec: &'a Spec, op: &Operation<'a>) -> Vec<QueryParam<'a>> {
     op.query_params()
         .filter_map(|p| {
             let name = p.get("name")?.as_str()?;
+            let schema = spec.resolve(p.get("schema").unwrap_or(p));
             Some(QueryParam {
                 norm: norm(name),
                 name,
-                schema: p.get("schema").unwrap_or(p),
+                schema,
+                items: schema.get("items").map(|i| spec.resolve(i)),
                 description: p.get("description").and_then(Value::as_str).unwrap_or(""),
             })
         })
@@ -224,12 +233,13 @@ const SIZE_PARAMS: [&str; 14] = [
 ];
 
 fn detect_pagination(
+    spec: &Spec,
     op: &Operation,
     schema: Option<&Value>,
     records: &str,
-    headers: &[(String, Value)],
+    headers: &[(String, &Value)],
 ) -> Option<Pagination> {
-    let params = query_params(op);
+    let params = query_params(spec, op);
     let size = find_param(&params, &SIZE_PARAMS);
     let records_key = records.trim_start_matches('/');
 
@@ -422,6 +432,7 @@ const CURSOR_FIELDS: [&str; 22] = [
 ];
 
 fn detect_incremental(
+    spec: &Spec,
     op: &Operation,
     fields: &[String],
     record_schema: Option<&Value>,
@@ -435,7 +446,7 @@ fn detect_incremental(
                     .is_some_and(|t| matches!(t, "string" | "integer" | "number"))
         })
     })?;
-    let params = query_params(op);
+    let params = query_params(spec, op);
 
     let is_filter = |n: &str| {
         if n == "since" || n == "updatedsince" || n == "modifiedsince" {
@@ -469,10 +480,11 @@ fn detect_incremental(
     })
 }
 
-fn enum_values(schema: &Value) -> Vec<String> {
-    let e = schema
+fn enum_values(p: &QueryParam) -> Vec<String> {
+    let e = p
+        .schema
         .get("enum")
-        .or_else(|| schema.get("items").and_then(|i| i.get("enum")));
+        .or_else(|| p.items.and_then(|i| i.get("enum")));
     e.and_then(Value::as_array)
         .map(|vs| {
             vs.iter()
@@ -520,12 +532,12 @@ fn detect_sort(params: &[QueryParam], cursor: &str) -> Option<Sort> {
             .iter()
             .filter_map(|n| params.iter().find(|p| p.norm == *n && p.name != sp.name))
             .find_map(|p| {
-                enum_values(p.schema)
+                enum_values(p)
                     .into_iter()
                     .find(|v| v.to_ascii_lowercase().starts_with("desc"))
                     .map(|v| (p.name.to_string(), v))
             });
-        let values = enum_values(sp.schema);
+        let values = enum_values(sp);
         if !values.is_empty() {
             let desc = values.iter().find(|v| {
                 matches_cursor(v) && (v.starts_with('-') || v.to_ascii_lowercase().contains("desc"))

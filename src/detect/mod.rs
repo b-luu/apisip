@@ -21,7 +21,7 @@ use auth::detect_auth;
 pub use names::{env_prefix, snake, stream_name};
 pub use rate_limit::detect_rate_limits;
 use stream::detect_stream;
-pub use stream::{records_location, stream_record_schema};
+pub use stream::{records_location, schema_truncated, stream_record_schema};
 
 #[derive(Debug, Clone)]
 pub struct Detection {
@@ -96,8 +96,6 @@ impl RateLimitFinding {
 pub struct DetectedStream {
     pub config: StreamConfig,
     pub method: &'static str,
-    /// Inlined schema of one record, when the spec declares it.
-    pub record_schema: Option<Value>,
     /// Top-level record fields, for the primary-key prompt.
     pub fields: Vec<String>,
 }
