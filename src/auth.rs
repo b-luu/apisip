@@ -57,6 +57,18 @@ impl std::fmt::Debug for Authenticator {
     }
 }
 
+/// `token_url` with its `${VAR}`s filled, relative to `base_url` unless absolute.
+pub fn resolve_token_url(token_url: &str, base_url: &str) -> Result<url::Url> {
+    let resolved = interpolate(token_url)?;
+    if resolved.starts_with("http") {
+        url::Url::parse(&resolved)
+    } else {
+        url::Url::parse(&format!("{}/", base_url.trim_end_matches('/')))
+            .and_then(|b| b.join(resolved.trim_start_matches('/')))
+    }
+    .context("OAuth2 token_url")
+}
+
 impl Authenticator {
     /// Resolves `${VAR}` references. Fails with the variable names when some are unset.
     pub fn new(
@@ -92,14 +104,7 @@ impl Authenticator {
                 scopes,
                 ..
             }) => {
-                let resolved = interpolate(token_url)?;
-                let parsed = if resolved.starts_with("http") {
-                    url::Url::parse(&resolved)
-                } else {
-                    url::Url::parse(&format!("{}/", base_url.trim_end_matches('/')))
-                        .and_then(|b| b.join(resolved.trim_start_matches('/')))
-                }
-                .context("OAuth2 token_url")?;
+                let parsed = resolve_token_url(token_url, base_url)?;
                 let client_secret = interpolate(client_secret).context("OAuth2 client secret")?;
                 // Values from the environment are secret wherever they appear in the URL.
                 let mut hidden: Vec<String> = crate::config::referenced_vars(token_url)
