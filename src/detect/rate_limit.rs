@@ -1,6 +1,7 @@
 //! Rate limits the spec states: headers, vendor extensions, or prose in the
 //! descriptions.
 
+use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -31,31 +32,47 @@ const RATE_HEADERS: [&str; 8] = [
 ];
 
 pub fn detect_rate_limits(spec: &Spec) -> RateLimitFinding {
+    let mut f = collect(spec);
+    let mut seen = HashSet::new();
+    f.tiers.retain(|t| {
+        let plan = t.plan.as_ref().map(|p| p.to_lowercase());
+        seen.insert((plan, t.limit.max_calls, t.limit.period))
+    });
+    f
+}
+
+/// Every tier the spec states, before deduplication. A text many operations
+/// share through `$ref` is parsed once, so its tiers appear once.
+fn collect(spec: &Spec) -> RateLimitFinding {
     let mut f = RateLimitFinding::default();
+    let mut parsed: HashSet<*const str> = HashSet::new();
 
     // 1. Vendor extensions anywhere in the document.
     walk_extensions(&spec.root, 0, &mut f.tiers);
 
     // 2. Declared rate-limit response headers, on success and 429 responses.
     for op in spec.operations() {
-        let mut headers = spec.response_headers(op.op);
-        if let Some(r) = op.op.pointer("/responses/429") {
-            let r = spec.resolve(r);
-            if let Some(h) = r.get("headers").and_then(Value::as_object) {
-                headers.extend(
-                    h.iter()
-                        .map(|(k, v)| (k.to_ascii_lowercase(), spec.inline(v))),
-                );
-            }
-            if let Some(d) = r.get("description").and_then(Value::as_str) {
-                parse_text(d, "429 response description", &mut f.tiers);
-            }
+        let throttled = op.op.pointer("/responses/429").map(|r| spec.resolve(r));
+        if let Some(d) = throttled
+            .and_then(|r| r.get("description"))
+            .and_then(Value::as_str)
+            && parsed.insert(d)
+        {
+            parse_text(d, "429 response description", &mut f.tiers);
         }
-        for (name, h) in &headers {
+        let headers = [spec.success_response(op.op), throttled]
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r.get("headers").and_then(Value::as_object))
+            .flatten();
+        for (name, h) in headers {
+            let name = name.to_ascii_lowercase();
             if RATE_HEADERS.contains(&name.as_str()) {
                 f.headers_declared = true;
             }
-            if let Some(d) = h.get("description").and_then(Value::as_str) {
+            if let Some(d) = spec.resolve(h).get("description").and_then(Value::as_str)
+                && parsed.insert(d)
+            {
                 parse_text(d, &format!("header {name}"), &mut f.tiers);
             }
         }
@@ -70,25 +87,18 @@ pub fn detect_rate_limits(spec: &Spec) -> RateLimitFinding {
         parse_text(d, "info.description", &mut f.tiers);
     }
     if f.tiers.is_empty() {
+        // Paths that share a path item through `$ref` share its operations.
+        let mut ops: HashSet<*const Value> = HashSet::new();
         for op in spec.operations() {
-            parse_text(
-                &op.description(),
-                &format!("{} {}", op.method.to_uppercase(), op.path),
-                &mut f.tiers,
-            );
+            if ops.insert(op.op) {
+                parse_text(
+                    &op.description(),
+                    &format!("{} {}", op.method.to_uppercase(), op.path),
+                    &mut f.tiers,
+                );
+            }
         }
     }
-
-    let mut seen = Vec::new();
-    f.tiers.retain(|t| {
-        let key = (t.plan.clone().map(|p| p.to_lowercase()), t.limit.clone());
-        if seen.contains(&key) {
-            false
-        } else {
-            seen.push(key);
-            true
-        }
-    });
     f
 }
 
@@ -248,6 +258,10 @@ fn parse_text(text: &str, source: &str, out: &mut Vec<Tier>) {
 }
 
 fn plan_name(line: &str, prefix: &str) -> Option<String> {
+    // A plan name is a few words; this bound keeps a long line with many matches linear.
+    if prefix.len() > 256 {
+        return None;
+    }
     let cleaned: String = prefix
         .chars()
         .map(|c| {
@@ -297,5 +311,68 @@ mod tests {
         assert_eq!(out[0].plan, None);
         assert_eq!(out[1].plan.as_deref(), Some("Enterprise"));
         assert_eq!(out[1].limit.period, Duration::from_secs(10));
+    }
+
+    fn spec(paths: serde_json::Value, components: serde_json::Value) -> Spec {
+        let doc = serde_json::json!({
+            "openapi": "3.1.0",
+            "info": {"title": "t", "version": "1"},
+            "paths": paths,
+            "components": components,
+        });
+        Spec::parse(&doc.to_string(), "spec.json").unwrap()
+    }
+
+    #[test]
+    fn shared_response_text_is_parsed_once() {
+        let op = serde_json::json!({"get": {"responses": {
+            "200": {"description": "", "headers": {
+                "X-RateLimit-Limit": {"$ref": "#/components/headers/L"}
+            }},
+            "429": {"$ref": "#/components/responses/R"},
+        }}});
+        let s = spec(
+            serde_json::json!({"/a": op, "/b": op, "/c": op}),
+            serde_json::json!({
+                "responses": {"R": {"description": "10 requests per second"}},
+                "headers": {"L": {"description": "100 requests per hour"}},
+            }),
+        );
+        let f = collect(&s);
+        assert!(f.headers_declared);
+        assert_eq!(f.tiers.len(), 2, "{:?}", f.tiers);
+        assert_eq!(f.tiers[0].source, "429 response description");
+        assert_eq!(f.tiers[1].source, "header x-ratelimit-limit");
+        assert_eq!(detect_rate_limits(&s).tiers, f.tiers);
+    }
+
+    #[test]
+    fn shared_path_item_is_parsed_once() {
+        let s = spec(
+            serde_json::json!({
+                "/a": {"$ref": "#/components/pathItems/P"},
+                "/b": {"$ref": "#/components/pathItems/P"},
+            }),
+            serde_json::json!({"pathItems": {"P": {"get": {
+                "description": "5 calls per minute",
+                "responses": {"200": {"description": ""}},
+            }}}}),
+        );
+        let f = collect(&s);
+        assert_eq!(f.tiers.len(), 1, "{:?}", f.tiers);
+        assert_eq!(f.tiers[0].source, "GET /a");
+    }
+
+    #[test]
+    fn plan_name_reads_a_short_prefix_only() {
+        let line = |pad: usize| format!("- Gold{} 10 requests per second", " ".repeat(pad));
+        let plan = |line: &str| {
+            let mut out = Vec::new();
+            parse_text(line, "t", &mut out);
+            out[0].plan.clone()
+        };
+        // "- Gold", 249 padding spaces and one space: 256 bytes before the match.
+        assert_eq!(plan(&line(249)).as_deref(), Some("Gold"));
+        assert_eq!(plan(&line(250)), None);
     }
 }
