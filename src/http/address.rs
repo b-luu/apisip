@@ -31,12 +31,20 @@ pub fn classify(ip: IpAddr) -> AddressClass {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return classify(IpAddr::V4(v4));
             }
-            let first = v6.segments()[0];
+            let seg = v6.segments();
+            // NAT64 (64:ff9b::/96) reaches the IPv4 address in its last 32 bits.
+            if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                let o = v6.octets();
+                return classify(IpAddr::V4(std::net::Ipv4Addr::new(
+                    o[12], o[13], o[14], o[15],
+                )));
+            }
+            let first = seg[0];
             if v6.is_loopback() || v6.is_unspecified() {
                 AddressClass::Loopback
             } else if first & 0xffc0 == 0xfe80 {
                 AddressClass::LinkLocal
-            } else if first & 0xfe00 == 0xfc00 {
+            } else if first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfec0 {
                 AddressClass::Private
             } else {
                 AddressClass::Public
@@ -55,7 +63,9 @@ fn host_names(source: &Source) -> Result<Vec<String>> {
         super::parse_base(&source.base_url)?,
     )];
     if let Some(AuthConfig::Oauth2ClientCredentials { token_url, .. }) = &source.auth {
-        let raw = if token_url.starts_with("http") {
+        // Absolute once filled, as `resolve_token_url` decides, so a
+        // `${TOKEN_URL}` host counts as written with `${VAR}`.
+        let raw = if crate::config::interpolate(token_url)?.starts_with("http") {
             token_url.as_str()
         } else {
             source.base_url.as_str()
@@ -120,8 +130,8 @@ pub fn pinned(source: &Source) -> Result<Vec<(String, Vec<SocketAddr>)>> {
         let Some(&want) = source.address_class.get(&host) else {
             eprintln!(
                 "warning: apisip.toml records no address class for {host}, so a DNS change \
-                 to an internal address goes unnoticed: re-run `apisip init`, or add it to \
-                 address_class under [source]"
+                 to an internal address goes unnoticed: add it to address_class under \
+                 [source], or re-run `apisip init`"
             );
             continue;
         };
@@ -172,6 +182,9 @@ mod tests {
             ("fc00::1", AddressClass::Private),
             ("::ffff:169.254.169.254", AddressClass::LinkLocal),
             ("::ffff:8.8.8.8", AddressClass::Public),
+            ("64:ff9b::a00:5", AddressClass::Private),
+            ("64:ff9b::808:808", AddressClass::Public),
+            ("fec0::1", AddressClass::Private),
         ] {
             assert_eq!(classify(ip.parse().unwrap()), want, "{ip}");
         }
@@ -212,6 +225,11 @@ mod tests {
                 "https://api.example.test",
                 Some("/oauth/token?k=${APISIP_ADDR_TEST_HOST}")
             ),
+            ["api.example.test"]
+        );
+        unsafe { std::env::set_var("APISIP_ADDR_TEST_URL", "https://tenant.example.test/token") };
+        assert_eq!(
+            names("https://api.example.test", Some("${APISIP_ADDR_TEST_URL}")),
             ["api.example.test"]
         );
         assert!(names("http://127.0.0.1:8080", None).is_empty());
