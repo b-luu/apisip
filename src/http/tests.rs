@@ -22,6 +22,7 @@ fn source(server: &MockServer) -> Source {
         headers: [("X-Client".to_string(), "apisip-test".to_string())].into(),
         max_response_mb: crate::config::default_max_response_mb(),
         max_pages: crate::config::default_max_pages(),
+        address_class: Default::default(),
     }
 }
 
@@ -644,4 +645,33 @@ async fn a_body_cut_off_midway_does_not_blame_max_response_mb() {
         c.get(&c.endpoint("/cut").unwrap()).await.unwrap_err()
     );
     assert!(!err.contains("max_response_mb"), "{err}");
+}
+
+#[tokio::test]
+async fn the_client_connects_to_the_pinned_address() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    // `.invalid` never resolves, so only the pin can reach the server.
+    let http = http_client(&[("pinned.invalid".into(), vec![*server.address()])]).unwrap();
+    let url = format!("http://pinned.invalid:{}/v1", server.address().port());
+    assert!(http.get(&url).send().await.unwrap().status().is_success());
+}
+
+#[tokio::test]
+async fn a_host_whose_class_changed_is_refused() {
+    let server = MockServer::start().await;
+    let base_url = format!("http://localhost:{}/v1", server.address().port());
+    let with = |class| Source {
+        base_url: base_url.clone(),
+        address_class: [("localhost".to_string(), class)].into(),
+        ..source(&server)
+    };
+    ApiClient::new(&with(crate::config::AddressClass::Loopback)).unwrap();
+    let err = ApiClient::new(&with(crate::config::AddressClass::Public))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("records it as public"), "{err}");
 }

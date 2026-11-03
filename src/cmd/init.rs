@@ -224,7 +224,7 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
         Some(plans[i].limit.clone())
     };
 
-    let config = Config {
+    let mut config = Config {
         source: Source {
             spec: o.spec.clone(),
             base_url: base_url.clone(),
@@ -235,11 +235,13 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
             headers: BTreeMap::new(),
             max_response_mb: crate::config::default_max_response_mb(),
             max_pages: crate::config::default_max_pages(),
+            address_class: BTreeMap::new(),
         },
         destination,
         streams,
     };
     config.validate()?;
+    config.source.address_class = crate::http::address::record(&config.source);
 
     let baseline = det.baseline(&config.source);
     write_files(
