@@ -173,6 +173,41 @@ async fn early_stop_keeps_fetching_after_a_far_future_cursor() {
 }
 
 #[tokio::test]
+async fn full_refresh_keeps_a_watermark_under_the_cap() {
+    let server = MockServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let ws = setup(
+        dir,
+        &server,
+        r#"{ cursor = "updated_at", param = "updated_since" }"#,
+        "",
+    );
+    Mock::given(method("GET"))
+        .and(path("/users"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(users(&[(2, "2026-01-02T00:00:00Z")])),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(users(&[(1, "2026-01-01T00:00:00Z")])),
+        )
+        .mount(&server)
+        .await;
+    assert!(run(&ws, RunOptions::default()).await.unwrap());
+    let full = RunOptions {
+        full_refresh: true,
+        ..Default::default()
+    };
+    assert!(run(&ws, full).await.unwrap());
+    assert_eq!(watermark(dir).as_deref(), Some("2026-01-02T00:00:00Z"));
+}
+
+#[tokio::test]
 async fn full_refresh_lowers_a_far_future_watermark() {
     let server = MockServer::start().await;
     let tmp = tempfile::tempdir().unwrap();

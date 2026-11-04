@@ -306,7 +306,8 @@ Raise the setting if your API has real future dates (scheduled records); a
 large value such as `"200y"` turns the cap off. Number and text cursors are
 not capped. If a run before this check stored a far-future watermark, `run`
 warns about it, and `apisip run --full-refresh --stream <name>` resets it to
-the newest real value.
+the newest value under the cap (it needs at least one). A far-future record is
+written again on every run; the views deduplicate it.
 
 ## Understanding the output
 

@@ -148,7 +148,10 @@ impl Range {
             [Kind::Time, Kind::Number, Kind::Text]
                 .into_iter()
                 .rev()
-                .max_by_key(|k| self.by_kind[*k as usize].count)
+                // Capped timestamps still vote: a stray text value must not win.
+                .max_by_key(|k| {
+                    self.by_kind[*k as usize].count + if *k == Kind::Time { self.future } else { 0 }
+                })
                 .unwrap_or(Kind::Time)
         });
         &self.by_kind[kind as usize]
@@ -449,6 +452,12 @@ mod tests {
         assert!(r.observe(&json!(4_102_444_800_u64)));
         assert!(r.observe(&json!("zzz")));
         assert_eq!(r.future(), 0);
+        // Capped timestamps still outvote a stray text value.
+        let mut r = Range::new(None, cap);
+        r.observe(&json!("2099-01-01T00:00:00Z"));
+        r.observe(&json!("N/A"));
+        assert_eq!(r.max_raw(), None);
+        assert_eq!((r.future(), r.ignored()), (1, 1));
     }
 
     #[test]
