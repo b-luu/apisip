@@ -90,7 +90,8 @@ branch at every level can make inlining use all available memory
   address: they are written by `init` and reviewed by you, so apisip trusts
   them. What it checks is that this stays true. `init` records the address
   class of each host name (public, private, loopback or link-local) under
-  `address_class` in `apisip.toml`. `run` and `check` resolve each name
+  `address_class` in `apisip.toml`, and `update` does the same for a host
+  that a new spec or auth brings in. `run` and `check` resolve each name
   once, refuse to connect when an address has another class, and connect
   only to the addresses they checked, so a DNS answer that changes later,
   for example to `169.254.169.254`, is not requested. Not checked: IP
