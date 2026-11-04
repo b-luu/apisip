@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/b-luu/apisip/compare/v0.1.4...v0.2.0) - 2026-11-04
+
+### Fixed
+
+- cap response size and page count for untrusted APIs ([#74](https://github.com/b-luu/apisip/pull/74))
+- *(detect)* key the rate-limit parse cache by content
+- *(detect)* parse each shared rate-limit description once
+- *(http)* name max_response_mb only when the limit is hit
+- *(auth)* cap the OAuth2 token response at 1 MB
+- *(http)* cap response size and page count per stream
+- *(spec)* borrow security schemes and test every inlining limit
+- *(spec)* borrow parameters and cap every inlined copy
+- *(spec)* bound inlining without losing streams or memory
+- *(spec)* count long strings and keys against the inlining budget
+- *(spec)* cap $ref inlining at 100,000 nodes
+
+### Other
+
+- *(security)* state the same-host rule for next links and redirects exactly
+- *(spec)* pin the inlining ceiling boundary and Operation::param
+- Merge remote-tracking branch 'origin/main' into fix/bound-ref-inlining
+- fix the e2e doc comment placement and the boundary check
+- cover the local commit lock and the boundary cap warning
+- *(contributing)* sync dist pins when Dependabot bumps release.yml
+- *(update)* keep environment references from the spec out of updates
+- *(detect)* cover server-variable substitution in the base URL
+- cover max_pages = 0 and a rejected max_response_mb = 0
+- keep the unchecked-address gap explicit in SECURITY.md
+- pin the limit defaults and the exact-limit boundaries
+- *(security)* describe the inlining bounds that remain
+- Merge branch 'main' into fix/bound-ref-inlining
+- *(spec)* pin the inlining budget and depth limit boundaries
+- Merge branch 'main' into fix/bound-ref-inlining
+- *(security)* describe the inlining cap and what it leaves open
+
 ## [0.1.4](https://github.com/b-luu/apisip/compare/v0.1.3...v0.1.4) - 2026-10-30
 
 ### Fixed
