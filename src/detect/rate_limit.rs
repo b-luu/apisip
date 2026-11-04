@@ -428,6 +428,26 @@ mod tests {
     }
 
     #[test]
+    fn extension_walk_stops_at_depth_six_and_skips_other_extensions() {
+        let rl = serde_json::json!({"x-ratelimit": {"limit": 5, "period": "second"}});
+        let walk = |v: Value| {
+            let mut out = Vec::new();
+            walk_extensions(&v, 0, &mut HashSet::new(), &mut out);
+            out.len()
+        };
+        let nest = |wrap: fn(Value) -> Value, n| (0..n).fold(rl.clone(), |v, _| wrap(v));
+        assert_eq!(walk(nest(|v| serde_json::json!({"a": v}), 6)), 1);
+        assert_eq!(walk(nest(|v| serde_json::json!({"a": v}), 7)), 0);
+        assert_eq!(walk(nest(|v| serde_json::json!([v]), 6)), 1);
+        assert_eq!(walk(nest(|v| serde_json::json!([v]), 7)), 0);
+        // An unrelated extension is not parsed as a limit.
+        assert_eq!(
+            walk(serde_json::json!({"x-meta": {"limit": 5, "period": "second"}})),
+            0
+        );
+    }
+
+    #[test]
     fn plan_name_reads_a_short_prefix_only() {
         let line = |pad: usize| format!("- Gold{} 10 requests per second", " ".repeat(pad));
         let plan = |line: &str| {
