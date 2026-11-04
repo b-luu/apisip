@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -20,6 +20,8 @@ fn source(server: &MockServer) -> Source {
         },
         concurrency: 4,
         headers: [("X-Client".to_string(), "apisip-test".to_string())].into(),
+        max_response_mb: crate::config::default_max_response_mb(),
+        max_pages: crate::config::default_max_pages(),
     }
 }
 
@@ -439,4 +441,207 @@ async fn a_spent_budget_on_a_success_is_pacing_not_a_retry() {
     let c = ApiClient::new(&src).unwrap();
     let page = c.get(&c.endpoint("/users").unwrap()).await.unwrap();
     assert_eq!(page.body, json!([{"id": 1}]));
+}
+
+/// Each page holds one record with the page number, so pages never repeat.
+struct EndlessPages;
+
+impl wiremock::Respond for EndlessPages {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let page = request
+            .url
+            .query_pairs()
+            .find(|(k, _)| k == "page")
+            .map(|(_, v)| v.to_string());
+        ResponseTemplate::new(200).set_body_json(json!([{ "page": page }]))
+    }
+}
+
+#[tokio::test]
+async fn max_pages_fails_a_stream_that_keeps_paginating() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(EndlessPages)
+        .mount(&server)
+        .await;
+    let c = ApiClient::new(&Source {
+        max_pages: 3,
+        ..source(&server)
+    })
+    .unwrap();
+    let pagination = Some(Pagination::PageNumber {
+        param: "page".into(),
+        size_param: None,
+        size: None,
+        start: 1,
+    });
+    let first = c.endpoint("/events").unwrap();
+    // Without the limit the stream would never end: stop it at 10 pages.
+    let all: Result<Vec<Vec<Value>>> = pages(c, first, pagination, String::new())
+        .take(10)
+        .try_collect()
+        .await;
+    let err = format!("{:#}", all.unwrap_err());
+    assert!(
+        err.contains("still has a next page after max_pages = 3 pages"),
+        "{err}"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn max_pages_0_means_no_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(EndlessPages)
+        .mount(&server)
+        .await;
+    let c = ApiClient::new(&Source {
+        max_pages: 0,
+        ..source(&server)
+    })
+    .unwrap();
+    let pagination = Some(Pagination::PageNumber {
+        param: "page".into(),
+        size_param: None,
+        size: None,
+        start: 1,
+    });
+    let first = c.endpoint("/events").unwrap();
+    let all: Vec<Vec<Value>> = pages(c, first, pagination, String::new())
+        .take(5)
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 5);
+}
+
+#[tokio::test]
+async fn a_response_over_max_response_mb_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(" ".repeat(1024 * 1024 + 1)))
+        .mount(&server)
+        .await;
+    let c = ApiClient::new(&Source {
+        max_response_mb: 1,
+        ..source(&server)
+    })
+    .unwrap();
+    let err = format!(
+        "{:#}",
+        c.get(&c.endpoint("/big").unwrap()).await.unwrap_err()
+    );
+    assert!(
+        err.contains("is 1048577 bytes, over max_response_mb = 1"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn a_response_of_exactly_max_response_mb_passes() {
+    let server = MockServer::start().await;
+    let body = format!("[{}]", " ".repeat(1024 * 1024 - 2));
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+    let c = ApiClient::new(&Source {
+        max_response_mb: 1,
+        ..source(&server)
+    })
+    .unwrap();
+    c.get(&c.endpoint("/big").unwrap()).await.unwrap();
+}
+
+/// A server that answers once with a chunked body (no Content-Length) of
+/// `count` chunks: the first is `[`, the last `]`, the rest `size` spaces.
+async fn chunked_server(size: usize, count: usize) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut req = [0u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut req).await;
+        let head = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                    transfer-encoding: chunked\r\n\r\n";
+        if sock.write_all(head.as_bytes()).await.is_err() {
+            return;
+        }
+        let spaces = format!("{size:x}\r\n{}\r\n", " ".repeat(size));
+        for i in 0..count {
+            let chunk = match i {
+                0 => "1\r\n[\r\n",
+                _ if i == count - 1 => "1\r\n]\r\n",
+                _ => &spaces,
+            };
+            if sock.write_all(chunk.as_bytes()).await.is_err() {
+                return;
+            }
+        }
+        let _ = sock.write_all(b"0\r\n\r\n").await;
+    });
+    addr
+}
+
+async fn chunked_client(addr: std::net::SocketAddr) -> Arc<ApiClient> {
+    ApiClient::new(&Source {
+        base_url: format!("http://{addr}"),
+        max_response_mb: 1,
+        ..source(&MockServer::start().await)
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_chunked_response_over_max_response_mb_fails() {
+    // No Content-Length: the limit must hold while reading. The body is
+    // 2 000 002 bytes, so a read rarely ends exactly at 1 MiB.
+    let c = chunked_client(chunked_server(100_000, 22).await).await;
+    let err = format!(
+        "{:#}",
+        c.get(&c.endpoint("/big").unwrap()).await.unwrap_err()
+    );
+    assert!(
+        err.contains("more than 1048576 bytes, over max_response_mb = 1"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn a_chunked_response_of_exactly_max_response_mb_passes() {
+    // `[`, 2 × 524 287 spaces, `]`: exactly 1 MiB.
+    let c = chunked_client(chunked_server(524_287, 4).await).await;
+    c.get(&c.endpoint("/big").unwrap()).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_body_cut_off_midway_does_not_blame_max_response_mb() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut req = [0u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut req).await;
+        // Promises 100 bytes, sends 10, then hangs up.
+        let head = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                    content-length: 100\r\n\r\n[{\"id\": 1}";
+        let _ = sock.write_all(head.as_bytes()).await;
+    });
+    let c = ApiClient::new(&Source {
+        base_url: format!("http://{addr}"),
+        retry: RetryConfig {
+            max_tries: 1,
+            ..RetryConfig::default()
+        },
+        ..source(&MockServer::start().await)
+    })
+    .unwrap();
+    let err = format!(
+        "{:#}",
+        c.get(&c.endpoint("/cut").unwrap()).await.unwrap_err()
+    );
+    assert!(!err.contains("max_response_mb"), "{err}");
 }

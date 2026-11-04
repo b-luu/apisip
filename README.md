@@ -207,6 +207,8 @@ auth = { type = "bearer", scheme = "bearerAuth", token = "${MOCKSHOP_TOKEN}" }
 rate_limit = { max_calls = 1000, period = "1m" }
 retry = { max_tries = 8, max_backoff = "1m", max_wait = "10m", on_status = [408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524] }
 concurrency = 4
+max_response_mb = 64
+max_pages = 1000
 
 [destination]
 url = "file://data"               # relative to this folder, or s3://bucket/prefix
@@ -252,6 +254,13 @@ cast = "lossless"                 # default; "exact" or "none" for stricter typi
   pacing waits between successful pages do not. Keep it well under the time
   between two scheduled runs, so that a slow API never makes one run overlap
   the next.
+- **Limits:** `max_response_mb` (default 64) is the largest API response
+  body apisip reads. A larger one fails the stream with its size; raise the
+  setting, or lower the page size the stream requests. An OAuth2 token
+  response is capped at 1 MB. `max_pages` (default 1000) is the most pages
+  one stream fetches in one run, counting the empty or repeated page that
+  ends pagination. A stream with more fails rather than commit part of its
+  data; raise it, or set it to 0 for no limit.
 - **S3:** the standard variables `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
   `AWS_REGION`, and `AWS_ENDPOINT_URL` for S3-compatible stores (R2, Garage,
   SeaweedFS, Ceph...). `init` asks for them when the destination is `s3://`.

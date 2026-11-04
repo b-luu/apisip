@@ -239,11 +239,12 @@ impl Authenticator {
         if !status.is_success() {
             bail!("OAuth2 token request to {shown_token_url} failed: HTTP {status}");
         }
-        let body: serde_json::Value = resp
-            .json()
+        // A token response is small: 1 MB bounds a hostile token endpoint.
+        let bytes = crate::http::read_limited(resp, 1024 * 1024, "over the 1 MB limit for a token")
             .await
-            .map_err(reqwest::Error::without_url)
-            .context("OAuth2 token response is not JSON")?;
+            .context("reading the OAuth2 token response")?;
+        let body: serde_json::Value =
+            serde_json::from_slice(&bytes).context("OAuth2 token response is not JSON")?;
         let access = body
             .get("access_token")
             .and_then(|v| v.as_str())
@@ -321,6 +322,46 @@ mod tests {
         let a = oauth(&server);
         assert_eq!(bearer_of(&a).await, "Bearer t1");
         assert_eq!(bearer_of(&a).await, "Bearer t1");
+    }
+
+    #[tokio::test]
+    async fn a_large_oauth_token_under_1_mb_is_accepted() {
+        // JWTs with many claims run to several KB.
+        let server = MockServer::start().await;
+        let token = "t".repeat(64 * 1024);
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"access_token": token})),
+            )
+            .mount(&server)
+            .await;
+        assert_eq!(bearer_of(&oauth(&server)).await, format!("Bearer {token}"));
+    }
+
+    #[tokio::test]
+    async fn an_oversized_oauth_token_response_fails() {
+        let server = MockServer::start().await;
+        let padding = " ".repeat(1024 * 1024);
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(format!(r#"{{"access_token": "t1"}}{padding}"#)),
+            )
+            .mount(&server)
+            .await;
+        let a = oauth(&server);
+        let err = a
+            .apply(reqwest::Client::new().get("https://x.test/"))
+            .await
+            .unwrap_err();
+        let err = format!("{err:#}");
+        assert!(
+            err.contains("OAuth2 token response") && err.contains("over the 1 MB limit"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

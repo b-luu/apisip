@@ -35,10 +35,24 @@ pub struct Source {
     /// Extra headers sent with every request. Values may use `${VAR}`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
+    /// Largest response body read, in MB. A larger one fails the stream.
+    #[serde(default = "default_max_response_mb")]
+    pub max_response_mb: u64,
+    /// Most pages one stream fetches in one run; 0 for no limit.
+    #[serde(default = "default_max_pages")]
+    pub max_pages: u64,
 }
 
 fn default_concurrency() -> usize {
     4
+}
+
+pub fn default_max_response_mb() -> u64 {
+    64
+}
+
+pub fn default_max_pages() -> u64 {
+    1000
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -499,6 +513,9 @@ impl Config {
         if self.source.retry.max_tries == 0 {
             anyhow::bail!("source.retry.max_tries must be at least 1");
         }
+        if self.source.max_response_mb == 0 {
+            anyhow::bail!("source.max_response_mb must be at least 1");
+        }
         Ok(())
     }
 
@@ -624,6 +641,8 @@ incremental = { cursor = "updated_at", sort = { param = "sort", value = "-update
         assert_eq!(c.destination.url, "file://data");
         assert_eq!(c.destination.rotate.max_bytes, 64 << 20);
         assert_eq!(c.source.retry, RetryConfig::default());
+        assert_eq!(c.source.max_response_mb, 64);
+        assert_eq!(c.source.max_pages, 1000);
         assert_eq!(
             c.source.rate_limit.as_ref().unwrap().period,
             Duration::from_secs(60)
@@ -661,6 +680,15 @@ incremental = { cursor = "updated_at", sort = { param = "sort", value = "-update
                 .to_string()
                 .contains("twice")
         );
+    }
+
+    #[test]
+    fn rejects_a_zero_max_response_mb() {
+        let err =
+            Config::parse("[source]\nspec='a'\nbase_url='b'\nmax_response_mb=0\n[destination]\n")
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("max_response_mb must be at least 1"), "{err}");
     }
 
     #[test]

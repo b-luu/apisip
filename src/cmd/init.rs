@@ -233,6 +233,8 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
             retry: RetryConfig::default(),
             concurrency: 4,
             headers: BTreeMap::new(),
+            max_response_mb: crate::config::default_max_response_mb(),
+            max_pages: crate::config::default_max_pages(),
         },
         destination,
         streams,
