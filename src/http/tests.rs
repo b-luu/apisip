@@ -661,6 +661,31 @@ async fn the_client_connects_to_the_pinned_address() {
 }
 
 #[tokio::test]
+async fn the_api_client_connects_to_the_checked_address() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    // `.invalid` never resolves through the system, so the request reaches
+    // the server only if `build` hands the checked address to the client.
+    address::FAKE_DNS.with_borrow_mut(|f| {
+        f.insert("pinned.invalid".into(), vec![*server.address()]);
+    });
+    let c = ApiClient::new(&Source {
+        base_url: format!("http://pinned.invalid:{}/v1", server.address().port()),
+        address_class: [(
+            "pinned.invalid".to_string(),
+            crate::config::AddressClass::Loopback,
+        )]
+        .into(),
+        ..source(&server)
+    })
+    .unwrap();
+    c.get(&c.endpoint("/users").unwrap()).await.unwrap();
+}
+
+#[tokio::test]
 async fn a_host_whose_class_changed_is_refused() {
     let server = MockServer::start().await;
     let base_url = format!("http://localhost:{}/v1", server.address().port());
