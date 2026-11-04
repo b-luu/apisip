@@ -78,6 +78,8 @@ pub fn raw(v: &Value) -> String {
 pub struct Range {
     kind: Option<Kind>,
     by_kind: [KindRange; 3],
+    cap: Option<DateTime<Utc>>,
+    future: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -110,18 +112,25 @@ impl CursorValue {
 }
 
 impl Range {
-    /// A range whose values must be of the same kind as this watermark.
-    pub fn new(watermark: Option<&str>) -> Range {
+    /// A range whose values must be of the same kind as this watermark, and
+    /// whose timestamps must not be later than `cap`.
+    pub fn new(watermark: Option<&str>, cap: Option<DateTime<Utc>>) -> Range {
         Range {
             kind: watermark.map(|w| CursorValue::parse(w).kind()),
+            cap,
             ..Range::default()
         }
     }
 
-    pub fn observe(&mut self, v: &Value) {
+    /// Returns false when the value is left out: not a cursor, or past the cap.
+    pub fn observe(&mut self, v: &Value) -> bool {
         let Some(c) = CursorValue::from_json(v) else {
-            return;
+            return false;
         };
+        if beyond(&c, self.cap) {
+            self.future += 1;
+            return false;
+        }
         let r = &mut self.by_kind[c.kind() as usize];
         r.count += 1;
         if r.min.as_ref().is_none_or(|(m, _)| c < *m) {
@@ -130,6 +139,7 @@ impl Range {
         if r.max.as_ref().is_none_or(|(m, _)| c > *m) {
             r.max = Some((c, raw(v)));
         }
+        true
     }
 
     fn chosen(&self) -> &KindRange {
@@ -150,6 +160,11 @@ impl Range {
         total - self.chosen().count
     }
 
+    /// Timestamps left out because they are later than the cap.
+    pub fn future(&self) -> usize {
+        self.future
+    }
+
     pub fn min_raw(&self) -> Option<String> {
         self.chosen().min.as_ref().map(|(_, r)| r.clone())
     }
@@ -157,6 +172,13 @@ impl Range {
     pub fn max_raw(&self) -> Option<String> {
         self.chosen().max.as_ref().map(|(_, r)| r.clone())
     }
+}
+
+/// Whether a cursor is a timestamp later than the cap. One far-future value
+/// (bad data, a sentinel date) would otherwise become the watermark, and
+/// every later record would never be fetched. Numbers and text are not capped.
+pub fn beyond(c: &CursorValue, cap: Option<DateTime<Utc>>) -> bool {
+    matches!((c, cap), (CursorValue::Time(t), Some(cap)) if *t > cap)
 }
 
 /// Most fingerprints kept for one watermark. Past this, none are kept and
@@ -395,19 +417,38 @@ mod tests {
     fn a_stray_text_value_never_becomes_the_watermark() {
         let dates = [json!("2026-01-01T00:00:00Z"), json!("2026-01-02T00:00:00Z")];
         // No watermark yet: the kind seen most often wins.
-        let mut r = Range::new(None);
+        let mut r = Range::new(None, None);
         for v in dates.iter().chain([&json!("N/A")]) {
             r.observe(v);
         }
         assert_eq!(r.max_raw().as_deref(), Some("2026-01-02T00:00:00Z"));
         assert_eq!(r.ignored(), 1);
         // With a watermark, its kind wins even when outnumbered.
-        let mut r = Range::new(Some("2025-12-31T00:00:00Z"));
+        let mut r = Range::new(Some("2025-12-31T00:00:00Z"), None);
         for v in [json!("N/A"), json!("unknown"), dates[0].clone()] {
             r.observe(&v);
         }
         assert_eq!(r.max_raw().as_deref(), Some("2026-01-01T00:00:00Z"));
         assert_eq!(r.ignored(), 2);
+    }
+
+    #[test]
+    fn a_far_future_timestamp_never_becomes_the_watermark() {
+        let cap = crate::schema::parse_timestamp("2026-02-01T00:00:00Z");
+        let mut r = Range::new(None, cap);
+        assert!(r.observe(&json!("2026-01-01T00:00:00Z")));
+        assert!(!r.observe(&json!("2099-01-01T00:00:00Z")));
+        assert!(
+            r.observe(&json!("2026-02-01T00:00:00Z")),
+            "the cap itself is kept"
+        );
+        assert_eq!(r.max_raw().as_deref(), Some("2026-02-01T00:00:00Z"));
+        assert_eq!((r.future(), r.ignored()), (1, 0));
+        // Numbers and text are not capped.
+        let mut r = Range::new(None, cap);
+        assert!(r.observe(&json!(4_102_444_800_u64)));
+        assert!(r.observe(&json!("zzz")));
+        assert_eq!(r.future(), 0);
     }
 
     #[test]

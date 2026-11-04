@@ -235,6 +235,7 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
             headers: BTreeMap::new(),
             max_response_mb: crate::config::default_max_response_mb(),
             max_pages: crate::config::default_max_pages(),
+            max_cursor_skew: crate::config::default_max_cursor_skew(),
         },
         destination,
         streams,

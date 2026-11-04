@@ -8,7 +8,7 @@ use std::pin::pin;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::{StreamExt, TryStreamExt};
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use crate::config::{Cast, Config, Format, Mode, StreamConfig};
 use crate::http::{self, ApiClient};
 use crate::incremental::{
-    Boundary, BoundaryTracker, CursorValue, EarlyStop, MAX_BOUNDARY, Range, field,
+    Boundary, BoundaryTracker, CursorValue, EarlyStop, MAX_BOUNDARY, Range, beyond, field,
 };
 use crate::schema::{Drift, RecordSchema};
 use crate::sink::writer::quarantine_line;
@@ -221,6 +221,23 @@ struct Fetch<'a> {
     mistyped_cursors: usize,
 }
 
+/// The latest timestamp cursor that may move a watermark in this run. None
+/// when the skew is too large to add: no cap.
+fn cursor_cap(ctx: &Ctx) -> Option<DateTime<Utc>> {
+    chrono::Duration::from_std(ctx.config.source.max_cursor_skew)
+        .ok()
+        .and_then(|d| ctx.layout.started.checked_add_signed(d))
+}
+
+/// How the cap reads in a warning: the time, and where it comes from.
+fn cap_text(ctx: &Ctx, cap: DateTime<Utc>) -> String {
+    format!(
+        "{} (run start + {})",
+        cap.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        humantime::format_duration(ctx.config.source.max_cursor_skew)
+    )
+}
+
 /// The first URL and the stream's starting point: watermark, mode and schema.
 async fn prepare<'a>(
     ctx: &Ctx,
@@ -244,6 +261,16 @@ async fn prepare<'a>(
         (false, Some(c)) => previous.watermark_for(c).map(str::to_string),
         _ => None,
     };
+    let cap = cursor_cap(ctx);
+    if let (Some(w), Some(c)) = (&watermark, cap)
+        && beyond(&CursorValue::parse(w), cap)
+    {
+        report.warnings.push(format!(
+            "the stored watermark ({w}) is later than {}: records after it are never fetched. \
+             Run `apisip run --full-refresh --stream {name}` to reset it",
+            cap_text(ctx, c)
+        ));
+    }
 
     let mut url = first_url(&ctx.client, s)?;
     let mut early = None;
@@ -312,7 +339,7 @@ async fn prepare<'a>(
         drift,
         writer,
         quarantine: None,
-        range: Range::new(watermark.as_deref()),
+        range: Range::new(watermark.as_deref(), cap),
         tracker: BoundaryTracker::default(),
         mistyped_cursors: 0,
     };
@@ -386,8 +413,7 @@ impl Fetch<'_> {
             {
                 if violations.iter().any(|v| v.path == c) {
                     self.mistyped_cursors += 1;
-                } else {
-                    self.range.observe(v);
+                } else if self.range.observe(v) {
                     self.tracker.observe(&record, v);
                 }
             }
@@ -466,6 +492,15 @@ async fn commit(
             cursor.unwrap_or_default()
         ));
     }
+    let cap = cursor_cap(ctx);
+    if let (n @ 1.., Some(c)) = (range.future(), cap) {
+        report.warnings.push(format!(
+            "{n} record(s) have a `{}` value later than {}: they were written but do not \
+             move the watermark. Raise max_cursor_skew under [source] if these values are real",
+            cursor.unwrap_or_default(),
+            cap_text(ctx, c)
+        ));
+    }
     if let Some(d) = &mut drift {
         d.finish(report.records + report.quarantined);
         if !d.is_empty() {
@@ -536,10 +571,15 @@ async fn commit(
         }
         if let (Some(c), Some(obs)) = (cursor, &observed) {
             let new = CursorValue::parse(&obs.max);
-            match entry
-                .watermark_for(c)
-                .map(|w| new.partial_cmp(&CursorValue::parse(w)))
-            {
+            let stored = entry.watermark_for(c).map(CursorValue::parse);
+            // A full refresh saw every record: it may lower a watermark
+            // that a far-future value pushed past the cap in an earlier run.
+            let reset = ctx.options.full_refresh && stored.as_ref().is_some_and(|w| beyond(w, cap));
+            match stored.map(|w| new.partial_cmp(&w)) {
+                _ if reset => {
+                    entry.watermark = Some(obs.max.clone());
+                    entry.boundary = written_at_max.clone();
+                }
                 None | Some(Some(Ordering::Greater)) => {
                     entry.watermark = Some(obs.max.clone());
                     entry.boundary = written_at_max.clone();
