@@ -144,7 +144,7 @@ fn shown_origin(url: &Url) -> String {
 }
 
 /// The client, connecting each name in `pins` only to the addresses given.
-pub fn http_client(pins: &[(String, Vec<std::net::SocketAddr>)]) -> Result<reqwest::Client> {
+pub(crate) fn http_client(pins: &[(String, Vec<std::net::SocketAddr>)]) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder();
     for (host, addrs) in pins {
         builder = builder.resolve_to_addrs(host, addrs);
