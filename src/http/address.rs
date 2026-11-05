@@ -195,9 +195,9 @@ fn check(host: &str, want: AddressClass, addrs: &[SocketAddr]) -> Result<()> {
         let got = classify(a.ip());
         bail!(
             "{host} now resolves to {}, a {got} address, but apisip.toml records it as \
-             {want}, so apisip does not connect: if the change is intended, set \
-             address_class = {{ \"{host}\" = \"{got}\" }} under [source], or re-run \
-             `apisip init`",
+             {want}, so apisip does not connect: if the change is intended, change \
+             the \"{host}\" entry of address_class under [source] to \"{got}\", \
+             keeping the other entries, or re-run `apisip init`",
             a.ip()
         );
     }
@@ -307,7 +307,7 @@ mod tests {
             "169.254.169.254",
             "a link-local address",
             "records it as public",
-            "address_class = { \"api.example.test\" = \"link-local\" }",
+            "the \"api.example.test\" entry of address_class under [source] to \"link-local\"",
         ] {
             assert!(err.contains(part), "{part}: {err}");
         }
