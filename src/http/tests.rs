@@ -23,6 +23,7 @@ fn source(server: &MockServer) -> Source {
         max_response_mb: crate::config::default_max_response_mb(),
         max_pages: crate::config::default_max_pages(),
         max_cursor_skew: crate::config::default_max_cursor_skew(),
+        address_class: Default::default(),
     }
 }
 
@@ -645,4 +646,58 @@ async fn a_body_cut_off_midway_does_not_blame_max_response_mb() {
         c.get(&c.endpoint("/cut").unwrap()).await.unwrap_err()
     );
     assert!(!err.contains("max_response_mb"), "{err}");
+}
+
+#[tokio::test]
+async fn the_client_connects_to_the_pinned_address() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    // `.invalid` never resolves, so only the pin can reach the server.
+    let http = http_client(&[("pinned.invalid".into(), vec![*server.address()])]).unwrap();
+    let url = format!("http://pinned.invalid:{}/v1", server.address().port());
+    assert!(http.get(&url).send().await.unwrap().status().is_success());
+}
+
+#[tokio::test]
+async fn the_api_client_connects_to_the_checked_address() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    // `.invalid` never resolves through the system, so the request reaches
+    // the server only if `build` hands the checked address to the client.
+    address::FAKE_DNS.with_borrow_mut(|f| {
+        f.insert("pinned.invalid".into(), vec![*server.address()]);
+    });
+    let c = ApiClient::new(&Source {
+        base_url: format!("http://pinned.invalid:{}/v1", server.address().port()),
+        address_class: [(
+            "pinned.invalid".to_string(),
+            crate::config::AddressClass::Loopback,
+        )]
+        .into(),
+        ..source(&server)
+    })
+    .unwrap();
+    c.get(&c.endpoint("/users").unwrap()).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_host_whose_class_changed_is_refused() {
+    let server = MockServer::start().await;
+    let base_url = format!("http://localhost:{}/v1", server.address().port());
+    let with = |class| Source {
+        base_url: base_url.clone(),
+        address_class: [("localhost".to_string(), class)].into(),
+        ..source(&server)
+    };
+    ApiClient::new(&with(crate::config::AddressClass::Loopback)).unwrap();
+    let err = ApiClient::new(&with(crate::config::AddressClass::Public))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("records it as public"), "{err}");
 }

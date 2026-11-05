@@ -1,6 +1,7 @@
 //! The HTTP side of a run: one shared client per API with auth, throttle
 //! and retry, plus pagination that turns each response into the next request.
 
+pub(crate) mod address;
 pub mod paginate;
 pub mod retry;
 pub mod throttle;
@@ -142,8 +143,13 @@ fn shown_origin(url: &Url) -> String {
     )
 }
 
-pub fn http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+/// The client, connecting each name in `pins` only to the addresses given.
+pub(crate) fn http_client(pins: &[(String, Vec<std::net::SocketAddr>)]) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+    for (host, addrs) in pins {
+        builder = builder.resolve_to_addrs(host, addrs);
+    }
+    builder
         .user_agent(concat!("apisip/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(300))
@@ -166,7 +172,7 @@ impl ApiClient {
     }
 
     fn build(source: &Source, extra_vars: &[String]) -> Result<Arc<ApiClient>> {
-        let http = http_client()?;
+        let http = http_client(&address::pinned(source)?)?;
         let base_url = parse_base(&source.base_url)?;
         let auth = Authenticator::new(source.auth.as_ref(), http.clone(), &source.base_url)?;
         let mut secrets = Vec::new();

@@ -49,6 +49,30 @@ pub struct Source {
         skip_serializing_if = "is_default_max_cursor_skew"
     )]
     pub max_cursor_skew: Duration,
+    /// Address class of each configured host name, recorded by `init`.
+    /// `run` and `check` refuse a host that now resolves to another class.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub address_class: BTreeMap<String, AddressClass>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AddressClass {
+    Public,
+    Private,
+    Loopback,
+    LinkLocal,
+}
+
+impl std::fmt::Display for AddressClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            AddressClass::Public => "public",
+            AddressClass::Private => "private",
+            AddressClass::Loopback => "loopback",
+            AddressClass::LinkLocal => "link-local",
+        })
+    }
 }
 
 fn default_concurrency() -> usize {
@@ -566,9 +590,10 @@ impl Config {
                 rank(a.get()).cmp(&rank(b.get()))
             });
         }
-        const ORDER: [&str; 20] = [
+        const ORDER: [&str; 21] = [
             "spec",
             "base_url",
+            "address_class",
             "auth",
             "rate_limit",
             "retry",
@@ -589,7 +614,10 @@ impl Config {
             "incremental",
         ];
         if let Some(source) = doc.get_mut("source").and_then(Item::as_table_mut) {
-            inline(source, &["auth", "rate_limit", "retry", "headers"]);
+            inline(
+                source,
+                &["address_class", "auth", "rate_limit", "retry", "headers"],
+            );
         }
         if let Some(dest) = doc.get_mut("destination").and_then(Item::as_table_mut) {
             inline(dest, &["rotate"]);

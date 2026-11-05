@@ -94,13 +94,22 @@ holds every stream's schema in memory at once.
   an API that paginates forever cannot keep a run going.
 - A next-page link or a redirect fails the stream unless it stays on the
   API's host, over the same scheme and port or upgraded from http to https.
-- Known gap: `base_url`, `token_url` and the spec URL are never checked
-  against loopback, private or cloud metadata addresses, whether `init`
-  took them from the spec or you wrote them. A spec whose `servers` entry
-  points at such an address, or a public name whose DNS answer changes to
-  one, is still requested
-  ([#39](https://github.com/b-luu/apisip/issues/39)). Run apisip against
-  untrusted APIs only on a machine with no internal services to reach.
+- `base_url` and `token_url` may point at a loopback, private or link-local
+  address: they are written by `init` and reviewed by you, so apisip trusts
+  them. What it checks is that this stays true. `init` records the address
+  class of each host name (public, private, loopback or link-local) under
+  `address_class` in `apisip.toml`, and `update` does the same for a host
+  that a new spec or auth brings in. `run` and `check` resolve each name
+  once, refuse to connect when an address has another class, and connect
+  only to the addresses they checked, so a DNS answer that changes later,
+  for example to `169.254.169.254`, is not requested. Not checked: IP
+  literals, whose class cannot change; host names written with `${VAR}`,
+  so that the value never lands in `apisip.toml`; hosts with no recorded
+  class, for which `run` and `check` print a warning; and requests sent
+  through an HTTP proxy, which resolves the name itself.
+- Known gap: the spec URL that `init` and `update` download is never
+  checked against loopback, private or cloud metadata addresses. Download an
+  untrusted spec only on a machine with no internal services to reach.
 - The parts of API response bodies shown in error messages, and the spec
   text that `init` prints, have their control characters replaced by spaces,
   so they cannot send terminal escape sequences.

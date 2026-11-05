@@ -10,6 +10,7 @@ use toml_edit::{DocumentMut, Item, Table};
 
 use crate::cmd::init::stream_note;
 use crate::config::{AuthConfig, Config, StreamConfig};
+use crate::http::address::NewHosts;
 
 /// Merged keys: the source settings detection owns, then per-stream fields.
 const SOURCE_KEYS: [&str; 2] = ["base_url", "rate_limit"];
@@ -245,6 +246,37 @@ pub fn apply(text: &str, d: &Diff, theirs: &Config, r: &Resolution) -> Result<St
     Ok(out)
 }
 
+/// Adds to `address_class` the class of each host the merged `text` connects
+/// to and `mine` did not, as `init` records it. Returns the new text and every
+/// such host, with `None` for one that could not be classified.
+pub fn record_new_hosts(text: &str, mine: &Config) -> Result<(String, NewHosts)> {
+    let merged = Config::parse(text).context("the merged apisip.toml is invalid")?;
+    let hosts = match crate::http::address::new_hosts(&merged.source, &mine.source) {
+        Ok(hosts) => hosts,
+        Err(e) => {
+            eprintln!("warning: no address class recorded for a new host: {e:#}");
+            return Ok((text.to_string(), vec![]));
+        }
+    };
+    if hosts.iter().all(|(_, c)| c.is_none()) {
+        return Ok((text.to_string(), hosts));
+    }
+    let mut doc: DocumentMut = text.parse().context("apisip.toml is not valid TOML")?;
+    let classes = table_mut(&mut doc, "source")?
+        .entry("address_class")
+        .or_insert_with(|| toml_edit::value(toml_edit::InlineTable::new()))
+        .as_table_like_mut()
+        .context("address_class under [source] is not a table")?;
+    for (host, class) in &hosts {
+        if let Some(class) = class {
+            classes.insert(host, toml_edit::value(class.to_string()));
+        }
+    }
+    let out = doc.to_string();
+    Config::parse(&out).context("the merged apisip.toml is invalid")?;
+    Ok((out, hosts))
+}
+
 fn table_mut<'a>(doc: &'a mut DocumentMut, key: &str) -> Result<&'a mut Table> {
     doc.get_mut(key)
         .and_then(Item::as_table_mut)
@@ -279,6 +311,7 @@ pub(super) fn changes_views(c: &FieldChange) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AddressClass;
 
     const BASE: &str = r#"
 [source]
@@ -448,5 +481,54 @@ path = "/legacy"
         );
         let d = diff(&cfg(&with), &cfg(BASE), &cfg(&with));
         assert!(d.fields.iter().all(|f| f.key != "rate_limit"), "{d:?}");
+    }
+
+    #[test]
+    fn records_the_class_of_a_new_host_only() {
+        let at = |base: &str| BASE.replace("https://api.example.test/v1", base);
+        let mine = cfg(&at("http://127.0.0.1:1/v1"));
+        let text = at("http://localhost:1/v1").replace("[destination]", "# kept\n[destination]");
+        let (out, hosts) = record_new_hosts(&text, &mine).unwrap();
+        assert_eq!(
+            hosts,
+            [("localhost".to_string(), Some(AddressClass::Loopback))]
+        );
+        assert!(
+            out.contains("address_class = { localhost = \"loopback\" }"),
+            "{out}"
+        );
+        assert!(out.contains("# kept\n[destination]"), "{out}");
+
+        // A host the config already used, or already recorded, is left as is.
+        let same = record_new_hosts(&text, &cfg(&text)).unwrap();
+        assert_eq!(same, (text.clone(), vec![]));
+        let recorded = text.replace(
+            "base_url = \"http://localhost:1/v1\"",
+            "base_url = \"http://localhost:1/v1\"\naddress_class = { localhost = \"public\" }",
+        );
+        assert_eq!(
+            record_new_hosts(&recorded, &mine).unwrap(),
+            (recorded, vec![])
+        );
+
+        // A new token_url host.
+        let text = at("http://127.0.0.1:1/v1").replace(
+            "[destination]",
+            "auth = { type = \"oauth2_client_credentials\", token_url = \"http://localhost:1/token\", \
+             client_id = \"i\", client_secret = \"s\" }\n\n[destination]",
+        );
+        let (out, hosts) = record_new_hosts(&text, &mine).unwrap();
+        assert_eq!(
+            hosts,
+            [("localhost".to_string(), Some(AddressClass::Loopback))]
+        );
+        assert_eq!(
+            cfg(&out).source.address_class,
+            BTreeMap::from([("localhost".to_string(), AddressClass::Loopback)])
+        );
+
+        // An unset variable in token_url warns, and does not fail the update.
+        let unset = text.replace("/token", "/token?k=${APISIP_UPDATE_TEST_UNSET}");
+        assert_eq!(record_new_hosts(&unset, &mine).unwrap(), (unset, vec![]));
     }
 }
