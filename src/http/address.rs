@@ -142,6 +142,16 @@ pub fn record(source: &Source) -> BTreeMap<String, AddressClass> {
     out
 }
 
+/// The class `address_class` records for `host`. URL hosts are lowercase,
+/// so a key written in another case still matches.
+fn recorded(source: &Source, host: &str) -> Option<AddressClass> {
+    source
+        .address_class
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(host))
+        .map(|(_, &c)| c)
+}
+
 /// Each new host with its class, `None` when it could not be classified.
 pub type NewHosts = Vec<(String, Option<AddressClass>)>;
 
@@ -152,7 +162,7 @@ pub fn new_hosts(source: &Source, before: &Source) -> Result<NewHosts> {
     let old = host_names(before).unwrap_or_default();
     Ok(host_names(source)?
         .into_iter()
-        .filter(|h| !old.contains(h) && !source.address_class.contains_key(h))
+        .filter(|h| !old.contains(h) && recorded(source, h).is_none())
         .map(|h| {
             let class = lookup(&h).ok().and_then(|a| class_of(&a));
             (h, class)
@@ -165,7 +175,7 @@ pub fn new_hosts(source: &Source, before: &Source) -> Result<NewHosts> {
 pub fn pinned(source: &Source) -> Result<Vec<(String, Vec<SocketAddr>)>> {
     let mut out = Vec::new();
     for host in host_names(source)? {
-        let Some(&want) = source.address_class.get(&host) else {
+        let Some(want) = recorded(source, &host) else {
             eprintln!(
                 "warning: apisip.toml records no address class for {host}, so a DNS change \
                  to an internal address goes unnoticed: add it to address_class under \
@@ -319,6 +329,11 @@ mod tests {
         s.address_class
             .insert("localhost".into(), AddressClass::Public);
         assert!(pinned(&s).is_err());
+        s.address_class = BTreeMap::from([("LocalHost".to_string(), AddressClass::Public)]);
+        assert!(
+            pinned(&s).is_err(),
+            "a key in another case is still checked"
+        );
     }
 
     #[test]
