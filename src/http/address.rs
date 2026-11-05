@@ -65,12 +65,21 @@ fn host_names(source: &Source) -> Result<Vec<String>> {
     if let Some(AuthConfig::Oauth2ClientCredentials { token_url, .. }) = &source.auth {
         // Absolute once filled, as `resolve_token_url` decides, so a
         // `${TOKEN_URL}` host counts as written with `${VAR}`.
-        let raw = if crate::config::interpolate(token_url)?.starts_with("http") {
-            token_url.as_str()
-        } else {
-            source.base_url.as_str()
-        };
-        urls.push((raw, resolve_token_url(token_url, &source.base_url)?));
+        // A `token_url` that cannot be filled yet (an unset `${VAR}`) is
+        // skipped, so the `base_url` host is still recorded and checked;
+        // `ApiClient::build` then fails in `Authenticator::new`, before any
+        // connection.
+        if let (Ok(filled), Ok(url)) = (
+            crate::config::interpolate(token_url),
+            resolve_token_url(token_url, &source.base_url),
+        ) {
+            let raw = if filled.starts_with("http") {
+                token_url.as_str()
+            } else {
+                source.base_url.as_str()
+            };
+            urls.push((raw, url));
+        }
     }
     let mut hosts = Vec::new();
     for (raw, url) in urls {
@@ -281,5 +290,18 @@ mod tests {
         s.address_class
             .insert("localhost".into(), AddressClass::Public);
         assert!(pinned(&s).is_err());
+    }
+
+    #[test]
+    fn an_unset_token_url_variable_still_records_the_base_url_host() {
+        let s = source(
+            "http://localhost:1/v1",
+            Some("${APISIP_ADDR_TEST_NEVER_SET}"),
+        );
+        assert_eq!(
+            record(&s),
+            BTreeMap::from([("localhost".to_string(), AddressClass::Loopback)])
+        );
+        assert_eq!(host_names(&s).unwrap(), ["localhost"]);
     }
 }
