@@ -16,9 +16,6 @@ Not in 0.1.0. Each item becomes a GitHub issue labelled `roadmap`.
 - **Renamed streams in `update`:** a stream the user renamed in `apisip.toml`
   is offered again as a new endpoint, because streams are matched by name. Match
   them by path as well.
-- **Cap far-future cursors:** a record whose cursor is far in the future (bad
-  source data) moves the watermark past later records, which filter mode then
-  never fetches. Cap the watermark at the run time plus a configurable skew.
 - **History view after an empty snapshot:** when the last committed
   full-refresh snapshot is empty, the history view has no upper time bound, so
   rows of a later crashed snapshot show up as non-current versions.

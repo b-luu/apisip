@@ -41,6 +41,14 @@ pub struct Source {
     /// Most pages one stream fetches in one run; 0 for no limit.
     #[serde(default = "default_max_pages")]
     pub max_pages: u64,
+    /// How far past the run start a timestamp cursor may be and still move
+    /// the watermark. Later values are written but do not count.
+    #[serde(
+        default = "default_max_cursor_skew",
+        with = "duration_str",
+        skip_serializing_if = "is_default_max_cursor_skew"
+    )]
+    pub max_cursor_skew: Duration,
 }
 
 fn default_concurrency() -> usize {
@@ -53,6 +61,14 @@ pub fn default_max_response_mb() -> u64 {
 
 pub fn default_max_pages() -> u64 {
     1000
+}
+
+pub fn default_max_cursor_skew() -> Duration {
+    Duration::from_secs(24 * 3600)
+}
+
+fn is_default_max_cursor_skew(d: &Duration) -> bool {
+    *d == default_max_cursor_skew()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -643,6 +659,7 @@ incremental = { cursor = "updated_at", sort = { param = "sort", value = "-update
         assert_eq!(c.source.retry, RetryConfig::default());
         assert_eq!(c.source.max_response_mb, 64);
         assert_eq!(c.source.max_pages, 1000);
+        assert_eq!(c.source.max_cursor_skew, Duration::from_secs(86_400));
         assert_eq!(
             c.source.rate_limit.as_ref().unwrap().period,
             Duration::from_secs(60)
@@ -665,6 +682,19 @@ incremental = { cursor = "updated_at", sort = { param = "sort", value = "-update
         );
         assert!(text.contains("# users: early stop\n[[streams]]"), "{text}");
         assert!(text.contains("max_bytes = \"64MiB\""), "{text}");
+        assert_eq!(Config::parse(&text).unwrap(), c);
+        assert!(
+            !text.contains("max_cursor_skew"),
+            "the default is not written"
+        );
+    }
+
+    #[test]
+    fn max_cursor_skew_reads_a_duration_and_is_written_when_set() {
+        let mut c = sample();
+        c.source.max_cursor_skew = Duration::from_secs(7 * 86_400);
+        let text = c.render("", &BTreeMap::new(), None);
+        assert!(text.contains("max_cursor_skew = \"7days\""), "{text}");
         assert_eq!(Config::parse(&text).unwrap(), c);
     }
 
