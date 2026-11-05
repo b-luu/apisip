@@ -145,9 +145,10 @@ Maintainers only. Releases follow the conventional commits on `main`.
   SHAs updated too. Dependabot bumps these actions in `release.yml` but cannot
   edit `dist-workspace.toml`, so the `plan` job fails on its pull request until
   you copy the new SHA into `github-action-commits` on that branch.
-- To check `release.yml` before pushing, run `nix develop -c dist generate --check`. dist refuses to run when its version differs from `cargo-dist-version`, so a `nix flake update` that moves nixpkgs to another
-  dist release needs a `cargo-dist-version` bump and a `dist generate` in the
-  same pull request.
+- To check `release.yml` before pushing, run `nix develop -c dist generate --check`.
+  `dist` refuses to run when its version differs from `cargo-dist-version`, so a
+  `nix flake update` that moves nixpkgs to another dist release needs a
+  `cargo-dist-version` bump and a `dist generate` in the same pull request.
 - The first release (0.1.0) was published by hand, because crates.io trusted
   publishing needs the crate to exist. Trusted publishing is now configured for
   this repository and the `release-plz.yml` workflow, so every later release
