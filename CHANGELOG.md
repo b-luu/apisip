@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/b-luu/apisip/compare/v0.2.0...v0.3.0) - 2026-11-05
+
+### Fixed
+
+- *(http)* keep the address module inside the crate
+- *(http)* name one address_class entry in the refusal hint
+- *(http)* keep http_client inside the crate
+- *(http)* match address_class keys in any case
+- *(update)* record the address class of a new host ([#97](https://github.com/b-luu/apisip/pull/97))
+- *(http)* still record the base_url host when token_url has an unset variable
+- *(update)* record the address class of a new host
+- let capped timestamps still choose the cursor kind
+- keep far-future cursors from moving the watermark
+- *(detect)* key the description fallback and extension walk by content
+- *(http)* skip a token_url host filled from ${VAR} and classify NAT64
+- *(http)* refuse a configured host whose address class changed
+
+### Other
+
+- Merge remote-tracking branch 'origin/main' into fix/address-class
+- *(http)* check that ApiClient::build connects to the checked addresses ([#99](https://github.com/b-luu/apisip/pull/99))
+- Fix formatting and enhance contributing guidelines
+- Update CONTRIBUTING.md for release process clarity
+- *(http)* check that ApiClient::build connects to the checked addresses
+- *(detect)* cover the extension walk's depth limit and key filter
+- *(nix)* provide dist in the dev shell at the pinned version
+- note when a recorded host is resolved
+- describe the recorded address class
+- *(auth)* share the token_url resolution
+
 ## [0.2.0](https://github.com/b-luu/apisip/compare/v0.1.4...v0.2.0) - 2026-11-04
 
 ### Fixed
