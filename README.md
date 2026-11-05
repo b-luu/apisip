@@ -308,6 +308,17 @@ A cursor value that breaks the spec, or whose type differs from the others
 (such as `"N/A"` among timestamps), never moves the watermark. The manifest
 counts those records.
 
+A timestamp cursor later than the run start plus `max_cursor_skew` (under
+`[source]`, default `"1d"`) does not move the watermark either. One record
+dated 2099 by mistake would otherwise become the watermark, and every later
+record would never be fetched. The record is still written, and the run warns.
+Raise the setting if your API has real future dates (scheduled records); a
+large value such as `"200y"` turns the cap off. Number and text cursors are
+not capped. If a run before this check stored a far-future watermark, `run`
+warns about it, and `apisip run --full-refresh --stream <name>` resets it to
+the newest value under the cap (it needs at least one). A far-future record is
+written again on every run; the views deduplicate it.
+
 ## Understanding the output
 
 apisip never updates or deletes a row it has written. Each run appends what it

@@ -55,9 +55,17 @@ API's vendor, not a copy from an unknown source.
   into memory.
 
 While reading the spec, apisip follows only local `$ref`s (inside the same
-document) and fetches no other URL. Recursive refs are cut. Known gap: a spec whose refs
-branch at every level can make inlining use all available memory
-([#38](https://github.com/b-luu/apisip/issues/38)).
+document) and fetches no other URL. Only a stream's response schema is
+copied with its refs inlined; parameters, headers and security schemes are
+read from the spec in place. Recursive refs are cut. One inlined schema
+follows no more refs once it holds 20,000 nodes and copies nothing more once
+it holds 100,000, where a long string or key counts one node per 64 bytes. The
+cut parts become untyped, and `init` and `check` warn about the stream. `init`
+and `check` hold one inlined schema at a time. What still grows with the
+number of list endpoints is linear: each stream's schema holds at most
+100,000 nodes, up to about 25 MB written twice (`schemas/` and its baseline
+in `.apisip/`), and `update`, which plans every stream before writing any,
+holds every stream's schema in memory at once.
 
 ### Credentials
 

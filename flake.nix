@@ -60,6 +60,8 @@
             rustfmt
             rust-analyzer
             duckdb
+            # Must match cargo-dist-version in dist-workspace.toml.
+            cargo-dist
           ];
         };
       });

@@ -22,6 +22,7 @@ fn source(server: &MockServer) -> Source {
         headers: [("X-Client".to_string(), "apisip-test".to_string())].into(),
         max_response_mb: crate::config::default_max_response_mb(),
         max_pages: crate::config::default_max_pages(),
+        max_cursor_skew: crate::config::default_max_cursor_skew(),
         address_class: Default::default(),
     }
 }

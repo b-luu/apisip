@@ -190,6 +190,72 @@ fn init_warns_when_no_rate_limit_is_found() {
     assert!(config.contains("# rate_limit = { max_calls = 100, period = \"1m\" }"));
 }
 
+#[test]
+fn init_and_check_warn_when_a_schema_is_too_large_to_inline() {
+    // Each schema refers to the next one twice: inlined in full, 30 levels
+    // would need billions of nodes.
+    let mut schemas = serde_json::Map::new();
+    for i in 0..30 {
+        let next = serde_json::json!({"$ref": format!("#/components/schemas/S{}", i + 1)});
+        schemas.insert(
+            format!("S{i}"),
+            serde_json::json!({"type": "object", "properties": {"a": next, "b": next}}),
+        );
+    }
+    schemas.insert("S30".into(), serde_json::json!({"type": "integer"}));
+    let spec = serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "Deep", "version": "1"},
+        "servers": [{"url": "http://127.0.0.1:9"}],
+        "paths": {
+            "/things": {"get": {"responses": {"200": {"description": "ok",
+                "content": {"application/json": {"schema": {"type": "array",
+                    "items": {"$ref": "#/components/schemas/S0"}}}}}}}},
+            // A list envelope with `items` before `type`, as in Stripe's spec:
+            // the cut must not hide the array, or the stream is skipped.
+            "/wrapped": {"get": {"responses": {"200": {"description": "ok",
+                "content": {"application/json": {"schema": {"type": "object", "properties": {
+                    "data": {"items": {"$ref": "#/components/schemas/S0"}, "type": "array"},
+                    "has_more": {"type": "boolean"}}}}}}}}}
+        },
+        "components": {"schemas": schemas}
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let spec_path = dir.path().join("spec.json");
+    std::fs::write(&spec_path, spec.to_string()).unwrap();
+    let warning = "warning: the schema of stream things is too large to inline; fields past the limit are untyped";
+    let wrapped = "warning: the schema of stream wrapped is too large to inline";
+    apisip(dir.path())
+        .args(["init", spec_path.to_str().unwrap(), "--yes"])
+        .timeout(std::time::Duration::from_secs(30))
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(warning))
+        .stderr(predicate::str::contains(wrapped));
+    // Nothing listens on the server: fail the request without retrying.
+    let config_path = dir.path().join("apisip.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    let config = config.replacen("retry = { max_tries = 8,", "retry = { max_tries = 1,", 1);
+    assert!(config.contains("retry = { max_tries = 1,"), "{config}");
+    std::fs::write(&config_path, config).unwrap();
+    apisip(dir.path())
+        .arg("check")
+        .timeout(std::time::Duration::from_secs(30))
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(warning));
+}
+
+#[test]
+fn init_does_not_warn_about_inlining_for_a_normal_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    apisip(dir.path())
+        .args(["init", &fixture("openapi30.yaml"), "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("too large to inline").not());
+}
+
 fn bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin("apisip")
 }
@@ -402,4 +468,117 @@ fn init_prompt_default_keeps_control_characters() {
     p.exp_eof().unwrap();
     let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
     assert!(env.contains("TABS_USERNAME=\"a\tb\""), "{env:?}");
+}
+
+#[test]
+fn update_never_takes_an_environment_reference_from_the_spec() {
+    // `update` re-runs detection on the new spec: the same rule as `init`
+    // must keep `${VAR}` out of the fields it adds or changes.
+    let list = serde_json::json!({"200": {"description": "ok", "content": {"application/json": {
+        "schema": {"type": "array", "items": {"type": "object"}}}}}});
+    let with_q = |default: &str| {
+        serde_json::json!({"get": {
+            "parameters": [{"name": "q", "in": "query", "required": true,
+                "schema": {"type": "string", "default": default}}],
+            "responses": list}})
+    };
+    let v1 = serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "t", "version": "1"},
+        "servers": [{"url": "https://api.test/v1"}],
+        "paths": {"/items": {"get": {"responses": list}}, "/plain": with_q("all")}
+    });
+    let v2 = serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "t", "version": "2"},
+        "servers": [{"url": "https://api.test/{v}", "variables": {"v": {"default": "${AWS_SECRET_ACCESS_KEY}"}}}],
+        "paths": {
+            "/items": {"get": {"responses": list}},
+            "/plain": with_q("${AWS_SECRET_ACCESS_KEY}"),
+            "/added": with_q("${GITHUB_TOKEN}"),
+            "/clean": with_q("open")
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (v1_path, v2_path) = (dir.path().join("v1.json"), dir.path().join("v2.json"));
+    std::fs::write(&v1_path, v1.to_string()).unwrap();
+    std::fs::write(&v2_path, v2.to_string()).unwrap();
+    apisip(dir.path())
+        .args(["init", v1_path.to_str().unwrap(), "--yes"])
+        .assert()
+        .success();
+    let before = std::fs::read_to_string(dir.path().join("apisip.toml")).unwrap();
+    apisip(dir.path())
+        .args(["update", "--yes", v2_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let config = std::fs::read_to_string(dir.path().join("apisip.toml")).unwrap();
+    assert_ne!(config, before, "the update must have merged something");
+    let refs = |text: &str| -> Vec<String> {
+        text.match_indices("${")
+            .map(|(i, _)| text[i..].split('}').next().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(refs(&config), refs(&before), "{config}");
+    let doc: toml_edit::DocumentMut = config.parse().unwrap();
+    assert_eq!(
+        doc["source"]["base_url"].as_str(),
+        Some("https://api.test/v1")
+    );
+    let streams = doc["streams"].as_array_of_tables().unwrap();
+    let find = |name: &str| streams.iter().find(|s| s["name"].as_str() == Some(name));
+    assert!(find("added").is_none(), "{config}");
+    let plain = find("plain").unwrap();
+    assert_eq!(plain["params"]["q"].as_str(), Some("all"), "{config}");
+    // The refused endpoint is disabled with its old value: fail closed.
+    assert_eq!(plain["enabled"].as_bool(), Some(false), "{config}");
+    assert_eq!(
+        find("clean").unwrap()["params"]["q"].as_str(),
+        Some("open"),
+        "{config}"
+    );
+}
+
+#[test]
+fn update_refuses_a_token_url_that_references_the_environment() {
+    let spec = |token_url: &str| {
+        serde_json::json!({
+            "openapi": "3.0.0",
+            "info": {"title": "t", "version": "1"},
+            "servers": [{"url": "https://api.test/v1"}],
+            "components": {"securitySchemes": {"oauth": {"type": "oauth2", "flows": {"clientCredentials": {
+                "tokenUrl": token_url, "scopes": {}}}}}},
+            "security": [{"oauth": []}],
+            "paths": {"/items": {"get": {"responses": {"200": {"description": "ok", "content": {
+                "application/json": {"schema": {"type": "array", "items": {"type": "object"}}}}}}}}}
+        })
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (v1_path, v2_path) = (dir.path().join("v1.json"), dir.path().join("v2.json"));
+    std::fs::write(&v1_path, spec("https://auth.test/token").to_string()).unwrap();
+    std::fs::write(
+        &v2_path,
+        spec("https://auth.test/token?k=${GITHUB_TOKEN}").to_string(),
+    )
+    .unwrap();
+    apisip(dir.path())
+        .args(["init", v1_path.to_str().unwrap(), "--yes"])
+        .assert()
+        .success();
+    let before = std::fs::read_to_string(dir.path().join("apisip.toml")).unwrap();
+    assert!(
+        before.contains("token_url = \"https://auth.test/token\""),
+        "{before}"
+    );
+
+    apisip(dir.path())
+        .args(["update", "--yes", v2_path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("`oauth`"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("apisip.toml")).unwrap(),
+        before
+    );
 }
