@@ -1,7 +1,7 @@
 //! The HTTP side of a run: one shared client per API with auth, throttle
 //! and retry, plus pagination that turns each response into the next request.
 
-pub mod address;
+pub(crate) mod address;
 pub mod paginate;
 pub mod retry;
 pub mod throttle;
