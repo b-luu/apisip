@@ -99,7 +99,18 @@ fn authority(raw: &str) -> &str {
     rest.split(['/', '?', '#']).next().unwrap_or_default()
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Answers `lookup` gives on this thread instead of asking the system.
+    pub static FAKE_DNS: std::cell::RefCell<BTreeMap<String, Vec<SocketAddr>>> =
+        Default::default();
+}
+
 fn lookup(host: &str) -> Result<Vec<SocketAddr>> {
+    #[cfg(test)]
+    if let Some(addrs) = FAKE_DNS.with_borrow(|f| f.get(host).cloned()) {
+        return Ok(addrs);
+    }
     let addrs: Vec<SocketAddr> = (host, 0)
         .to_socket_addrs()
         .with_context(|| format!("resolving {host}"))?
