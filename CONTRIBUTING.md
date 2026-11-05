@@ -11,7 +11,7 @@ You need a Rust toolchain and, for the view tests, the `duckdb` CLI on your
 `PATH`. The crate builds on Rust 1.89 or later. CI pins the toolchain it runs
 the gates on in `rust-toolchain.toml`, and rustup picks that file up
 automatically. Nix users can run `nix develop` instead, which provides cargo,
-clippy, rustfmt, rust-analyzer and duckdb.
+clippy, rustfmt, rust-analyzer, duckdb and dist.
 
 ## Build and test
 
@@ -145,6 +145,10 @@ Maintainers only. Releases follow the conventional commits on `main`.
   SHAs updated too. Dependabot bumps these actions in `release.yml` but cannot
   edit `dist-workspace.toml`, so the `plan` job fails on its pull request until
   you copy the new SHA into `github-action-commits` on that branch.
+- To check `release.yml` before pushing, run `nix develop -c dist generate --check`.
+  `dist` refuses to run when its version differs from `cargo-dist-version`, so a
+  `nix flake update` that moves nixpkgs to another dist release needs a
+  `cargo-dist-version` bump and a `dist generate` in the same pull request.
 - The first release (0.1.0) was published by hand, because crates.io trusted
   publishing needs the crate to exist. Trusted publishing is now configured for
   this repository and the `release-plz.yml` workflow, so every later release
