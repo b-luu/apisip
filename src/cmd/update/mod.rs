@@ -28,7 +28,7 @@ use crate::workspace::Workspace;
 
 use super::init::{BASELINE_HEADER, current_value};
 use auth::{auth_names, confirm_auth};
-use config_merge::{Diff, Kind, Resolution, apply, changes_views, diff};
+use config_merge::{Diff, Kind, Resolution, apply, changes_views, diff, record_new_hosts};
 use report::{field_short, print_diff, print_drift, short};
 use schema_merge::{FieldMerge, StreamSchema, plan_schemas, recent_undeclared};
 
@@ -69,6 +69,17 @@ pub async fn run(ws: &Workspace, o: UpdateOptions) -> Result<bool> {
     let creds = prompt::ask_credentials(&p, &vars, |k| current_value(ws, k))?;
 
     let merged = apply(&plan.text, &plan.d, &plan.theirs, &r)?;
+    let (merged, new_hosts) = record_new_hosts(&merged, &plan.mine)?;
+    for (host, class) in new_hosts {
+        match class {
+            Some(class) => println!("Recorded the address class of {host}: {class}."),
+            None => eprintln!(
+                "warning: {host} does not resolve, or resolves to addresses of several \
+                 classes, so its address class is not recorded and `run` and `check` only \
+                 warn for it: add it to address_class under [source]"
+            ),
+        }
+    }
     let wrote = merged != plan.text;
     if wrote {
         std::fs::write(ws.config_path(), &merged)?;

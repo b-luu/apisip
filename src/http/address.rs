@@ -131,6 +131,24 @@ pub fn record(source: &Source) -> BTreeMap<String, AddressClass> {
     out
 }
 
+/// Each new host with its class, `None` when it could not be classified.
+pub type NewHosts = Vec<(String, Option<AddressClass>)>;
+
+/// The hosts `source` connects to that `before` did not, with no entry in
+/// `address_class` yet, each with its class as `record` finds it: `None` when
+/// the host does not resolve or resolves to addresses of several classes.
+pub fn new_hosts(source: &Source, before: &Source) -> Result<NewHosts> {
+    let old = host_names(before).unwrap_or_default();
+    Ok(host_names(source)?
+        .into_iter()
+        .filter(|h| !old.contains(h) && !source.address_class.contains_key(h))
+        .map(|h| {
+            let class = lookup(&h).ok().and_then(|a| class_of(&a));
+            (h, class)
+        })
+        .collect())
+}
+
 /// The checked addresses of each recorded host, for the client to connect to.
 /// Fails when a host now resolves to an address of another class.
 pub fn pinned(source: &Source) -> Result<Vec<(String, Vec<SocketAddr>)>> {

@@ -263,7 +263,8 @@ cast = "lossless"                 # default; "exact" or "none" for stricter typi
   data; raise it, or set it to 0 for no limit.
 - **Addresses:** `init` records whether each host in `base_url` and
   `token_url` resolves to a public, private, loopback or link-local address,
-  for example `address_class = { "api.example.com" = "public" }`. `run` and
+  for example `address_class = { "api.example.com" = "public" }`. `update`
+  records the class of a new host the same way. `run` and
   `check` refuse a host that now resolves to another class, and connect only
   to the addresses they checked. When the change is intended, edit the
   class or re-run `init`. IP literals and hosts written with `${VAR}` are not
