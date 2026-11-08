@@ -14,9 +14,13 @@ pub fn field<'a>(record: &'a Value, path: &str) -> Option<&'a Value> {
 }
 
 /// A comparable cursor value: a timestamp, a number, or a string.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Integers are kept exact: as `f64`, ids and nanosecond epochs above 2^53
+/// would round, and neighbours would compare equal.
+#[derive(Debug, Clone)]
 pub enum CursorValue {
     Time(DateTime<Utc>),
+    Int(i128),
     Number(f64),
     Text(String),
 }
@@ -24,7 +28,12 @@ pub enum CursorValue {
 impl CursorValue {
     pub fn from_json(v: &Value) -> Option<CursorValue> {
         match v {
-            Value::Number(n) => n.as_f64().map(CursorValue::Number),
+            Value::Number(n) => n
+                .as_i64()
+                .map(i128::from)
+                .or_else(|| n.as_u64().map(i128::from))
+                .map(CursorValue::Int)
+                .or_else(|| n.as_f64().map(CursorValue::Number)),
             Value::String(s) => Some(CursorValue::parse(s)),
             _ => None,
         }
@@ -36,6 +45,9 @@ impl CursorValue {
         if let Some(t) = crate::schema::parse_timestamp(s) {
             return CursorValue::Time(t);
         }
+        if let Ok(i) = s.parse::<i128>() {
+            return CursorValue::Int(i);
+        }
         if let Ok(n) = s.parse::<f64>() {
             return CursorValue::Number(n);
         }
@@ -45,6 +57,7 @@ impl CursorValue {
     fn text(&self) -> String {
         match self {
             CursorValue::Time(t) => t.to_rfc3339(),
+            CursorValue::Int(i) => i.to_string(),
             CursorValue::Number(n) => n.to_string(),
             CursorValue::Text(s) => s.clone(),
         }
@@ -55,9 +68,38 @@ impl PartialOrd for CursorValue {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
             (CursorValue::Time(a), CursorValue::Time(b)) => a.partial_cmp(b),
+            (CursorValue::Int(a), CursorValue::Int(b)) => Some(a.cmp(b)),
             (CursorValue::Number(a), CursorValue::Number(b)) => a.partial_cmp(b),
+            (CursorValue::Int(i), CursorValue::Number(f)) => int_cmp_float(*i, *f),
+            (CursorValue::Number(f), CursorValue::Int(i)) => {
+                int_cmp_float(*i, *f).map(Ordering::reverse)
+            }
             (a, b) => a.text().partial_cmp(&b.text()),
         }
+    }
+}
+
+/// `==` agrees with the ordering, so `5` and `5.0` are the same cursor.
+impl PartialEq for CursorValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.partial_cmp(other) == Some(Ordering::Equal)
+    }
+}
+
+/// Compares an integer with a float without rounding the integer first.
+fn int_cmp_float(i: i128, f: f64) -> Option<Ordering> {
+    const LIMIT: f64 = -(i128::MIN as f64);
+    if f.is_nan() {
+        None
+    } else if f >= LIMIT {
+        Some(Ordering::Less)
+    } else if f < -LIMIT {
+        Some(Ordering::Greater)
+    } else if f.fract() == 0.0 {
+        Some(i.cmp(&(f as i128)))
+    } else {
+        // A float with a fraction is below 2^53, where rounding `i` cannot cross it.
+        (i as f64).partial_cmp(&f)
     }
 }
 
@@ -100,7 +142,7 @@ impl CursorValue {
     fn kind(&self) -> Kind {
         match self {
             CursorValue::Time(_) => Kind::Time,
-            CursorValue::Number(_) => Kind::Number,
+            CursorValue::Int(_) | CursorValue::Number(_) => Kind::Number,
             CursorValue::Text(_) => Kind::Text,
         }
     }
@@ -536,5 +578,87 @@ mod tests {
         t.observe(&r, &r["updated_at"]);
         assert!(!t.overflow);
         assert_eq!(t.finish("2026-01-02").len(), 1);
+    }
+
+    // 2^53 + 1: the first integer an f64 cannot hold.
+    const W: u64 = 9_007_199_254_740_993;
+
+    fn ids(v: &[u64]) -> Vec<Value> {
+        v.iter().map(|i| json!({"id": i})).collect()
+    }
+
+    #[test]
+    fn integer_cursors_above_2_53_compare_exactly() {
+        let at = |i: u64| CursorValue::from_json(&json!(i)).unwrap();
+        assert!(at(W) > at(W - 1));
+        assert_eq!(CursorValue::parse(&W.to_string()), at(W));
+        assert!(
+            CursorValue::parse("1761700000000000001") > CursorValue::parse("1761700000000000000")
+        );
+        assert!(
+            CursorValue::from_json(&json!(i64::MIN)) < CursorValue::from_json(&json!(u64::MAX))
+        );
+
+        let mut r = Range::new(None, None);
+        r.observe(&json!(W - 1));
+        r.observe(&json!(W));
+        assert_eq!(r.max_raw(), Some(W.to_string()));
+        assert_eq!(r.min_raw(), Some((W - 1).to_string()));
+    }
+
+    #[test]
+    fn integers_and_floats_compare_by_value() {
+        let int = CursorValue::Int;
+        let num = CursorValue::Number;
+        assert_eq!(int(5), num(5.0));
+        assert!(int(i128::from(W)) > num(9_007_199_254_740_992.0));
+        assert!(num(9_007_199_254_740_992.0) < int(i128::from(W)));
+        assert!(int(3) < num(3.5) && int(4) > num(3.5));
+        assert!(int(-3) > num(-3.5));
+        assert!(int(i128::MAX) < num(f64::INFINITY));
+        assert!(int(i128::MIN) > num(f64::NEG_INFINITY));
+        assert_eq!(int(1).partial_cmp(&num(f64::NAN)), None);
+    }
+
+    #[test]
+    fn a_record_one_above_an_integer_watermark_is_newer() {
+        let at = json!({"id": W});
+        let b = Boundary::new(&W.to_string(), &[fingerprint(&at)]).unwrap();
+        assert!(b.unchanged(&at, "id"));
+        // As an f64, W rounds to W - 1. The fingerprint matches on purpose:
+        // only the cursor can tell the record from the boundary.
+        let next = json!({"id": W});
+        let b = Boundary::new(&(W - 1).to_string(), &[fingerprint(&next)]).unwrap();
+        assert!(!b.unchanged(&next, "id"));
+    }
+
+    #[test]
+    fn early_stop_cuts_exactly_at_an_integer_watermark() {
+        let mut g = EarlyStop::new("id", Some(&W.to_string()));
+        let (kept, stop) = g.page(ids(&[W + 2, W + 1, W, W - 1]));
+        assert_eq!((kept, stop), (ids(&[W + 2, W + 1, W]), false));
+        assert!(!g.unreliable);
+    }
+
+    #[test]
+    fn the_sort_guard_sees_an_increase_of_one_above_2_53() {
+        let mut g = EarlyStop::new("id", Some(&(W - 10).to_string()));
+        g.page(ids(&[W - 1, W]));
+        assert!(
+            g.unreliable,
+            "an increase of 1 above 2^53 is a sort violation"
+        );
+    }
+
+    #[test]
+    fn the_tracker_keeps_only_the_exact_integer_max() {
+        let mut t = BoundaryTracker::default();
+        for r in ids(&[W, W - 1]) {
+            t.observe(&r, &r["id"]);
+        }
+        assert_eq!(
+            t.finish(&W.to_string()),
+            vec![fingerprint(&json!({"id": W}))]
+        );
     }
 }
