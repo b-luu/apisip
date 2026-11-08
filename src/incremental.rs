@@ -617,6 +617,9 @@ mod tests {
         assert!(int(-3) > num(-3.5));
         assert!(int(i128::MAX) < num(f64::INFINITY));
         assert!(int(i128::MIN) > num(f64::NEG_INFINITY));
+        // -2^127 is i128::MIN exactly; anything lower is below every i128.
+        assert_eq!(int(i128::MIN), num(-(2f64.powi(127))));
+        assert!(int(i128::MIN) > num(-1e39) && int(i128::MAX) < num(1e39));
         assert_eq!(int(1).partial_cmp(&num(f64::NAN)), None);
     }
 
