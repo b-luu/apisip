@@ -684,6 +684,51 @@ fn an_uncommitted_snapshot_is_not_current_in_any_view() {
     );
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn an_uncommitted_snapshot_after_an_empty_one_is_not_in_the_history() {
+    for format in ["jsonl", "parquet"] {
+        let mock = Mock::start();
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        init(&mock, d, &["--streams", "plans", "--format", format]);
+        apisip(d).arg("run").assert().success();
+        mock.post("/_admin/clear/plans");
+        apisip(d).arg("run").assert().success();
+        // The mock cannot refill a cleared list: point the config at a fresh one.
+        let refilled = Mock::start();
+        refilled.post("/_admin/touch/plans/2");
+        let config = d.join("apisip.toml");
+        let text = std::fs::read_to_string(&config).unwrap();
+        let moved = text.replace(&mock.base, &refilled.base);
+        assert_ne!(moved, text);
+        std::fs::write(&config, moved).unwrap();
+        apisip(d)
+            .arg("run")
+            .env("APISIP_FAIL_POINT", "after_move")
+            .assert()
+            .failure();
+        let q = |view: &str| {
+            duckdb(
+                d,
+                &format!("select string_agg(name, ',' order by name) from {view} id = 2"),
+            )
+        };
+        let Some(history) = q("plans_history where") else {
+            return;
+        };
+        assert_eq!(history, "plan 2", "{format}");
+        assert_eq!(q("plans_current where").unwrap(), "NULL", "{format}");
+
+        apisip(d).arg("run").assert().success();
+        assert_eq!(
+            q("plans_history where is_current and").unwrap(),
+            "plan 2 (edited)",
+            "{format}"
+        );
+    }
+}
+
 #[test]
 fn a_stray_cursor_value_never_moves_the_watermark() {
     for format in ["jsonl", "parquet"] {

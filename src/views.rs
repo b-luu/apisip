@@ -8,6 +8,7 @@
 //!   `duckdb -c ".read _apisip/views/all.sql"`.
 
 use anyhow::Result;
+use chrono::{DateTime, SecondsFormat, Utc};
 
 use crate::config::{Config, Format, Mode, StreamConfig};
 use crate::schema::{EXTRACTED_AT, RUN_ID};
@@ -37,7 +38,10 @@ pub async fn write_all(store: &Store, config: &Config, state: &State) -> Result<
         let source = read_files(&base, &s.name, format);
         let views = [
             ("current", current_sql(s, &source, last_run)),
-            ("history", history_sql(s, &source, last_run)),
+            (
+                "history",
+                history_sql(s, &source, last_run, st.last_committed_at),
+            ),
         ];
         for (kind, sql) in views {
             let Some(sql) = sql else { continue };
@@ -108,7 +112,12 @@ fn current_sql(s: &StreamConfig, source: &str, last_run: &str) -> Option<String>
     ))
 }
 
-fn history_sql(s: &StreamConfig, source: &str, last_run: &str) -> Option<String> {
+fn history_sql(
+    s: &StreamConfig,
+    source: &str,
+    last_run: &str,
+    committed_at: Option<DateTime<Utc>>,
+) -> Option<String> {
     let key = key_list(s)?;
     if s.mode() == Mode::FullRefresh {
         // Compare consecutive snapshots: a row is a new version when its
@@ -116,8 +125,15 @@ fn history_sql(s: &StreamConfig, source: &str, last_run: &str) -> Option<String>
         // are ordered by extraction time: run ids only sort to the second.
         // The current snapshot is the last committed run, as in the current
         // view. A later snapshot, moved in place by a run that crashed before
-        // its commit finished, is left out until another run commits.
+        // its commit finished, is left out until another run commits. An
+        // empty last snapshot has no rows, so its commit time bounds instead.
+        // A bare literal, not a cast: a cast shifts naive JSONL timestamps by
+        // the session time zone.
         let last_run = literal(last_run);
+        let fallback = match committed_at {
+            Some(t) => literal(&t.to_rfc3339_opts(SecondsFormat::Micros, true)),
+            None => format!("(select max({EXTRACTED_AT}) from {source})"),
+        };
         return Some(format!(
             "with snapshots as (\n  \
                select *,\n    \
@@ -126,7 +142,7 @@ fn history_sql(s: &StreamConfig, source: &str, last_run: &str) -> Option<String>
                from {source}\n  \
                where {EXTRACTED_AT} <= coalesce(\n    \
                  (select max({EXTRACTED_AT}) from {source} where {RUN_ID} = {last_run}),\n    \
-                 (select max({EXTRACTED_AT}) from {source}))\n\
+                 {fallback})\n\
              ), changes as (\n  \
                select *, lag(_apisip_hash) over (partition by {key} order by {EXTRACTED_AT}) as _apisip_prev\n  \
                from snapshots\n\
@@ -208,7 +224,7 @@ incremental = { cursor = "meta.updated_at", param = "since" }"#,
         assert!(current.contains(
             r#"partition by "id" order by "meta"."updated_at" desc nulls last, _apisip_extracted_at desc"#
         ));
-        let history = history_sql(&s, &src, "r1").unwrap();
+        let history = history_sql(&s, &src, "r1", None).unwrap();
         assert!(history.contains(r#"lead("meta"."updated_at") over (partition by "id""#));
     }
 
@@ -222,9 +238,29 @@ incremental = { cursor = "meta.updated_at", param = "since" }"#,
                 .ends_with("= 'it''s'")
         );
         assert!(
-            history_sql(&s, &src, "r1")
+            history_sql(&s, &src, "r1", None)
                 .unwrap()
                 .contains("lag(_apisip_hash)")
+        );
+    }
+
+    #[test]
+    fn an_empty_last_snapshot_bounds_the_history_by_its_commit_time() {
+        let s = stream("name = \"plans\"\npath = \"/plans\"\nprimary_key = \"id\"");
+        let src = read_files("/data", "plans", Format::Jsonl);
+        let unbounded = format!("(select max(_apisip_extracted_at) from {src}))");
+        let at = "2026-11-08T21:30:00.123456Z".parse().unwrap();
+        let bounded = history_sql(&s, &src, "r1", Some(at)).unwrap();
+        assert!(
+            bounded.contains("'2026-11-08T21:30:00.123456Z')"),
+            "{bounded}"
+        );
+        assert!(!bounded.contains(&unbounded), "{bounded}");
+        // A state without a commit time keeps the old bound.
+        assert!(
+            history_sql(&s, &src, "r1", None)
+                .unwrap()
+                .contains(&unbounded)
         );
     }
 
@@ -234,6 +270,6 @@ incremental = { cursor = "meta.updated_at", param = "since" }"#,
             "name = \"events\"\npath = \"/events\"\nincremental = { cursor = \"at\", param = \"since\" }",
         );
         assert!(current_sql(&s, "x", "r").is_none());
-        assert!(history_sql(&s, "x", "r1").is_none());
+        assert!(history_sql(&s, "x", "r1", None).is_none());
     }
 }

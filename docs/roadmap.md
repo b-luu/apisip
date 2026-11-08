@@ -16,9 +16,6 @@ Not in 0.1.0. Each item becomes a GitHub issue labelled `roadmap`.
 - **Renamed streams in `update`:** a stream the user renamed in `apisip.toml`
   is offered again as a new endpoint, because streams are matched by name. Match
   them by path as well.
-- **History view after an empty snapshot:** when the last committed
-  full-refresh snapshot is empty, the history view has no upper time bound, so
-  rows of a later crashed snapshot show up as non-current versions.
 - **Hosts allowed to receive credentials:** an allowlist for APIs whose
   next-page links legitimately move to another host, which today fails the
   stream. On an http-to-https redirect, the HTTP client also drops the
