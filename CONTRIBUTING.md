@@ -150,10 +150,13 @@ Maintainers only. Releases follow the conventional commits on `main`.
 - Every action in `release.yml` is pinned by commit SHA through
   `github-action-commits`. Dependabot bumps these actions in `release.yml`;
   copy the new SHA into `github-action-commits` on that branch, so the next
-  regeneration keeps it.
+  regeneration keeps it. CI no longer catches a missed copy: it shows up only
+  as a SHA going back in the regeneration diff.
 - After a change to `dist-workspace.toml` or a dist upgrade: remove the
   `allow-dirty` line, run `nix develop -c dist generate`, put the line back,
-  re-apply the edits above and review the diff of `release.yml`. For an
+  re-apply the edits above (and the header comment that lists them) and
+  review the diff of `release.yml`. A target that needs a container would
+  need the rustup step back, since the container has no cargo. For an
   upgrade, also set `DIST_VERSION` and the four SHA-256 values in
   `.github/actions/install-dist` from the new release's `.sha256` files.
   `dist` refuses to run when its version differs from `cargo-dist-version`, so a
