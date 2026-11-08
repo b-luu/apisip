@@ -529,6 +529,21 @@ path = "/legacy"
 
         // An unset variable in token_url warns, and does not fail the update.
         let unset = text.replace("/token", "/token?k=${APISIP_UPDATE_TEST_UNSET}");
-        assert_eq!(record_new_hosts(&unset, &mine).unwrap(), (unset, vec![]));
+        assert_eq!(
+            record_new_hosts(&unset, &mine).unwrap(),
+            (unset.clone(), vec![])
+        );
+
+        // A host the old config used behind an unset variable is not new.
+        let fixed = cfg(&unset);
+        assert_eq!(
+            record_new_hosts(&text, &fixed).unwrap(),
+            (text.clone(), vec![])
+        );
+
+        // When the old config's hosts cannot be read, nothing is recorded.
+        let old = cfg(&at("http://${APISIP_UPDATE_TEST_UNSET}/v1"));
+        let text = at("http://localhost:1/v1");
+        assert_eq!(record_new_hosts(&text, &old).unwrap(), (text, vec![]));
     }
 }
