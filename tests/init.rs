@@ -582,3 +582,85 @@ fn update_refuses_a_token_url_that_references_the_environment() {
         before
     );
 }
+
+#[test]
+fn update_refuses_a_spec_host_whose_address_class_changed() {
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let spec = serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "t", "version": "1"},
+        "servers": [{"url": "http://127.0.0.1:9/v1"}],
+        "paths": {"/items": {"get": {"responses": {"200": {"description": "ok",
+            "content": {"application/json": {"schema": {"type": "array",
+                "items": {"type": "object"}}}}}}}}}
+    })
+    .to_string();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let served = std::sync::Arc::new(AtomicUsize::new(0));
+    let count = served.clone();
+    std::thread::spawn(move || {
+        for mut conn in listener.incoming().flatten() {
+            let mut buf = [0u8; 4096];
+            let _ = conn.read(&mut buf);
+            count.fetch_add(1, Ordering::SeqCst);
+            let _ = write!(
+                conn,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{spec}",
+                spec.len()
+            );
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("http://localhost:{port}/openapi.json");
+    apisip(dir.path())
+        .args(["init", &url, "--yes"])
+        .assert()
+        .success();
+    let path = dir.path().join("apisip.toml");
+    let config = std::fs::read_to_string(&path).unwrap();
+    let doc: toml_edit::DocumentMut = config.parse().unwrap();
+    // The base_url host is an IP literal, so this entry is the spec host's.
+    assert_eq!(
+        doc["source"]["address_class"]["localhost"].as_str(),
+        Some("loopback"),
+        "{config}"
+    );
+    assert_eq!(served.load(Ordering::SeqCst), 1);
+
+    std::fs::write(&path, config.replace("\"loopback\"", "\"public\"")).unwrap();
+    apisip(dir.path())
+        .args(["update", "--yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("records it as public"));
+    assert_eq!(
+        served.load(Ordering::SeqCst),
+        1,
+        "no request after a refusal"
+    );
+
+    std::fs::write(&path, &config).unwrap();
+    apisip(dir.path())
+        .args(["update", "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("records no address class").not());
+    assert_eq!(served.load(Ordering::SeqCst), 2);
+
+    let unrecorded: String = config
+        .lines()
+        .filter(|l| !l.starts_with("address_class"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_ne!(unrecorded, config);
+    std::fs::write(&path, unrecorded).unwrap();
+    apisip(dir.path())
+        .args(["update", "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "records no address class for localhost",
+        ));
+}

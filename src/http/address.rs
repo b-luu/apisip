@@ -1,7 +1,8 @@
 //! The address class of the configured hosts. `init` records whether each
 //! host name resolves to a public, private, loopback or link-local address.
 //! `run` and `check` resolve it once, refuse a class that changed, and
-//! connect only to the addresses they checked.
+//! connect only to the addresses they checked. `update` does the same for
+//! the host it downloads the spec from.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -93,6 +94,29 @@ fn host_names(source: &Source) -> Result<Vec<String>> {
     Ok(hosts)
 }
 
+/// The host name the spec is downloaded from, when `spec` is a URL with one.
+fn spec_host(spec: &str) -> Option<String> {
+    if !spec.starts_with("http://") && !spec.starts_with("https://") {
+        return None;
+    }
+    match url::Url::parse(spec).ok()?.host()? {
+        Host::Domain(d) => Some(d.to_string()),
+        _ => None,
+    }
+}
+
+/// `host_names` plus the spec URL host: every host name whose class
+/// `address_class` records.
+fn recorded_hosts(source: &Source) -> Result<Vec<String>> {
+    let mut hosts = host_names(source)?;
+    if let Some(h) = spec_host(&source.spec)
+        && !hosts.contains(&h)
+    {
+        hosts.push(h);
+    }
+    Ok(hosts)
+}
+
 /// The `host:port` part of a URL as written, before any `${VAR}` is filled.
 fn authority(raw: &str) -> &str {
     let rest = raw.split_once("://").map_or(raw, |(_, r)| r);
@@ -134,7 +158,7 @@ fn class_of(addrs: &[SocketAddr]) -> Option<AddressClass> {
 /// resolves to addresses of several classes, is left out.
 pub fn record(source: &Source) -> BTreeMap<String, AddressClass> {
     let mut out = BTreeMap::new();
-    for host in host_names(source).unwrap_or_default() {
+    for host in recorded_hosts(source).unwrap_or_default() {
         if let Some(class) = lookup(&host).ok().and_then(|a| class_of(&a)) {
             out.insert(host, class);
         }
@@ -161,7 +185,7 @@ pub type NewHosts = Vec<(String, Option<AddressClass>)>;
 /// Fails when the hosts of `before` cannot be read, as every host would then
 /// count as new.
 pub fn new_hosts(source: &Source, before: &Source) -> Result<NewHosts> {
-    let mut old = host_names(before).context("reading the old config's hosts")?;
+    let mut old = recorded_hosts(before).context("reading the old config's hosts")?;
     // The hosts as written too: `host_names` skips a `token_url` it cannot
     // fill, though its host is not new.
     let mut written = vec![before.base_url.as_str()];
@@ -176,7 +200,7 @@ pub fn new_hosts(source: &Source, before: &Source) -> Result<NewHosts> {
             old.push(d.to_string());
         }
     }
-    Ok(host_names(source)?
+    Ok(recorded_hosts(source)?
         .into_iter()
         .filter(|h| !old.contains(h) && recorded(source, h).is_none())
         .map(|h| {
@@ -192,11 +216,7 @@ pub fn pinned(source: &Source) -> Result<Vec<(String, Vec<SocketAddr>)>> {
     let mut out = Vec::new();
     for host in host_names(source)? {
         let Some(want) = recorded(source, &host) else {
-            eprintln!(
-                "warning: apisip.toml records no address class for {host}, so a DNS change \
-                 to an internal address goes unnoticed: add it to address_class under \
-                 [source], or re-run `apisip init`"
-            );
+            warn_unrecorded(&host);
             continue;
         };
         let addrs = lookup(&host)?;
@@ -204,6 +224,33 @@ pub fn pinned(source: &Source) -> Result<Vec<(String, Vec<SocketAddr>)>> {
         out.push((host, addrs));
     }
     Ok(out)
+}
+
+/// The checked addresses of the host `spec` is downloaded from, when
+/// `address_class` records it. Fails when it now resolves to another class.
+/// A spec other than the configured one (`update --spec`) gets no warning
+/// when unrecorded: `update` records it, as `init` does.
+pub fn spec_pins(spec: &str, source: &Source) -> Result<Vec<(String, Vec<SocketAddr>)>> {
+    let Some(host) = spec_host(spec) else {
+        return Ok(vec![]);
+    };
+    let Some(want) = recorded(source, &host) else {
+        if spec == source.spec {
+            warn_unrecorded(&host);
+        }
+        return Ok(vec![]);
+    };
+    let addrs = lookup(&host)?;
+    check(&host, want, &addrs)?;
+    Ok(vec![(host, addrs)])
+}
+
+fn warn_unrecorded(host: &str) {
+    eprintln!(
+        "warning: apisip.toml records no address class for {host}, so a DNS change \
+         to an internal address goes unnoticed: add it to address_class under \
+         [source], or re-run `apisip init`"
+    );
 }
 
 fn check(host: &str, want: AddressClass, addrs: &[SocketAddr]) -> Result<()> {
@@ -363,5 +410,44 @@ mod tests {
             BTreeMap::from([("localhost".to_string(), AddressClass::Loopback)])
         );
         assert_eq!(host_names(&s).unwrap(), ["localhost"]);
+    }
+
+    #[test]
+    fn the_spec_host_is_recorded_and_checked_apart_from_run() {
+        let mut s = source("http://127.0.0.1:1/v1", None);
+        s.spec = "http://localhost:1/openapi.json".into();
+        let classes = record(&s);
+        assert_eq!(
+            classes,
+            BTreeMap::from([("localhost".to_string(), AddressClass::Loopback)])
+        );
+        // `run` and `check` do not download the spec, so they do not check its host.
+        s.address_class = BTreeMap::from([("localhost".to_string(), AddressClass::Public)]);
+        assert!(pinned(&s).unwrap().is_empty());
+        let err = spec_pins(&s.spec, &s).unwrap_err().to_string();
+        assert!(err.contains("records it as public"), "{err}");
+        s.address_class = classes;
+        assert_eq!(spec_pins(&s.spec, &s).unwrap()[0].0, "localhost");
+        assert!(spec_pins("openapi.json", &s).unwrap().is_empty());
+        assert!(
+            spec_pins("http://10.0.0.1/openapi.json", &s)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            spec_host("https://API.example.test/openapi.json").as_deref(),
+            Some("api.example.test")
+        );
+        assert_eq!(spec_host("ftp://api.example.test/openapi.json"), None);
+
+        // `update --spec` with a new host records it, as `init` would.
+        let before = source("http://127.0.0.1:1/v1", None);
+        let mut after = before.clone();
+        after.spec = "http://localhost:1/openapi.json".into();
+        assert_eq!(
+            new_hosts(&after, &before).unwrap(),
+            [("localhost".to_string(), Some(AddressClass::Loopback))]
+        );
+        assert!(new_hosts(&after, &after).unwrap().is_empty());
     }
 }
