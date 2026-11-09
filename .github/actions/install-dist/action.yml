@@ -1,7 +1,7 @@
 name: Install dist
 description: Download the pinned dist release for this runner, verify its SHA-256 and put it in ~/.cargo/bin.
 # Replaces the `curl | sh` installer that dist writes into release.yml.
-# Keep DIST_VERSION equal to cargo-dist-version in dist-workspace.toml.
+# DIST_VERSION is the release tag: "v" followed by cargo-dist-version in dist-workspace.toml.
 runs:
   using: composite
   steps:
