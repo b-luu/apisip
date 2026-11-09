@@ -36,9 +36,10 @@ CI runs these jobs on every pull request:
 - `coverage`: `cargo llvm-cov` reports line coverage in the job summary. It has
   no threshold.
 
-Two more run outside the pull request flow. `Nix` runs `nix flake check` on
-pushes to main, weekly, and on pull requests that touch the flake or the
-dependencies. `Toolchain canary` runs clippy and the tests on the latest stable
+Two more run outside the pull request flow. `Nix` runs `nix flake check` and
+the `release.yml` check described under Releases on pushes to main, weekly,
+and on pull requests that touch the flake, the dependencies or the dist
+release config. `Toolchain canary` runs clippy and the tests on the latest stable
 Rust every week and opens an issue when they fail.
 
 The default suite runs offline. It contains:
@@ -144,20 +145,42 @@ Maintainers only. Releases follow the conventional commits on `main`.
   dependency. The edits replace both `Install dist` steps with
   `.github/actions/install-dist`, which downloads the pinned dist release and
   checks its SHA-256, and delete the rustup `curl | sh` step that runs only
-  for container builds (no target uses one). `allow-dirty = ["ci"]` in
-  `dist-workspace.toml` stops `dist generate` from overwriting them, and stops
-  dist from checking that the workflow matches its config.
+  for container builds (no target uses one). `.github/release-edits.patch`
+  holds these edits and the header comment that lists them.
+  `allow-dirty = ["ci"]` in `dist-workspace.toml` stops `dist generate` from
+  overwriting them, and stops dist from checking that the workflow matches
+  its config.
+- The `Nix` workflow does that check instead: it removes the `allow-dirty`
+  line, runs `dist generate`, applies the patch and fails if the result
+  differs from `release.yml`. Run the same check locally:
+
+  ```sh
+  sed -i '/^allow-dirty/d' dist-workspace.toml
+  nix develop -c dist generate --mode ci
+  git apply .github/release-edits.patch
+  git checkout dist-workspace.toml
+  git diff --exit-code
+  ```
+
 - Every action in `release.yml` is pinned by commit SHA through
   `github-action-commits`. Dependabot bumps these actions in `release.yml`;
-  copy the new SHA into `github-action-commits` on that branch, so the next
-  regeneration keeps it. CI no longer catches a missed copy: it shows up only
-  as a SHA going back in the regeneration diff.
-- After a change to `dist-workspace.toml` or a dist upgrade: remove the
-  `allow-dirty` line, run `nix develop -c dist generate`, put the line back,
-  re-apply the edits above (and the header comment that lists them) and
-  review the diff of `release.yml`. A target that needs a container would
-  need the rustup step back, since the container has no cargo. For an
-  upgrade, also set `DIST_VERSION` and the four SHA-256 values in
+  copy the new SHA into `github-action-commits` on that branch, or the check
+  fails.
+- After a change to `dist-workspace.toml` or a dist upgrade, run the commands
+  above without the last one, and review the diff of `release.yml`. When the
+  patch no longer applies, re-apply the edits by hand. After any change to the
+  hand edits, commit `release.yml`, then refresh the patch from the
+  generated file:
+
+  ```sh
+  sed -i '/^allow-dirty/d' dist-workspace.toml
+  nix develop -c dist generate --mode ci
+  git diff -R -U1 .github/workflows/release.yml > .github/release-edits.patch
+  git checkout dist-workspace.toml .github/workflows/release.yml
+  ```
+
+  A target that needs a container would need the rustup step back, since the
+  container has no cargo. For an upgrade, also set `DIST_VERSION` and the four SHA-256 values in
   `.github/actions/install-dist` from the new release's `.sha256` files.
   `dist` refuses to run when its version differs from `cargo-dist-version`, so a
   `nix flake update` that moves nixpkgs to another dist release needs a
