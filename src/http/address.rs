@@ -228,14 +228,15 @@ pub fn pinned(source: &Source) -> Result<Vec<(String, Vec<SocketAddr>)>> {
 
 /// The checked addresses of the host `spec` is downloaded from, when
 /// `address_class` records it. Fails when it now resolves to another class.
-/// A spec other than the configured one (`update --spec`) gets no warning
-/// when unrecorded: `update` records it, as `init` does.
+/// An unrecorded host gets a warning, unless `source` does not name it:
+/// `update --spec` then records it, as `init` does.
 pub fn spec_pins(spec: &str, source: &Source) -> Result<Vec<(String, Vec<SocketAddr>)>> {
     let Some(host) = spec_host(spec) else {
         return Ok(vec![]);
     };
     let Some(want) = recorded(source, &host) else {
-        if spec == source.spec {
+        // A host `source` does not name yet is recorded by `update`.
+        if recorded_hosts(source).unwrap_or_default().contains(&host) {
             warn_unrecorded(&host);
         }
         return Ok(vec![]);

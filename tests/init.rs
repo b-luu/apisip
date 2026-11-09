@@ -587,24 +587,27 @@ fn update_refuses_a_token_url_that_references_the_environment() {
 fn update_refuses_a_spec_host_whose_address_class_changed() {
     use std::io::{Read, Write};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
     let spec = serde_json::json!({
         "openapi": "3.0.0",
         "info": {"title": "t", "version": "1"},
-        "servers": [{"url": "http://127.0.0.1:9/v1"}],
+        "servers": [{"url": format!("http://127.0.0.1:{port}/v1")}],
         "paths": {"/items": {"get": {"responses": {"200": {"description": "ok",
             "content": {"application/json": {"schema": {"type": "array",
                 "items": {"type": "object"}}}}}}}}}
     })
     .to_string();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
     let served = std::sync::Arc::new(AtomicUsize::new(0));
     let count = served.clone();
     std::thread::spawn(move || {
         for mut conn in listener.incoming().flatten() {
             let mut buf = [0u8; 4096];
             let _ = conn.read(&mut buf);
-            count.fetch_add(1, Ordering::SeqCst);
+            // Only spec downloads count: `check` also calls the API here.
+            if buf.starts_with(b"GET /openapi.json") {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
             let _ = write!(
                 conn,
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{spec}",
@@ -663,4 +666,16 @@ fn update_refuses_a_spec_host_whose_address_class_changed() {
         .stderr(predicate::str::contains(
             "records no address class for localhost",
         ));
+
+    // Without a snapshot, other commands download the spec: checked too.
+    std::fs::write(&path, config.replace("\"loopback\"", "\"public\"")).unwrap();
+    std::fs::remove_file(dir.path().join(".apisip/spec.json")).unwrap();
+    let out = apisip(dir.path()).arg("check").output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    assert!(text.contains("records it as public"), "{text}");
+    assert_eq!(
+        served.load(Ordering::SeqCst),
+        3,
+        "no request after a refusal"
+    );
 }
