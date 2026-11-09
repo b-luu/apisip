@@ -1,0 +1,33 @@
+diff --git b/.github/workflows/release.yml a/.github/workflows/release.yml
+index 14cc37e..94bad14 100644
+--- b/.github/workflows/release.yml
++++ a/.github/workflows/release.yml
+@@ -2,2 +2,7 @@
+ #
++# It is now edited by hand (allow-dirty = ["ci"] in dist-workspace.toml): dist is
++# installed by the pinned, checksum-verified .github/actions/install-dist
++# instead of `curl | sh`, and the rustup step for container builds is removed,
++# as no target uses a container. CONTRIBUTING.md has the upgrade steps.
++#
+ # Copyright 2022-2024, axodotdev
+@@ -67,6 +72,3 @@ jobs:
+       - name: Install dist
+-        # we specify bash to get pipefail; it guards against the `curl` command
+-        # failing. otherwise `sh` won't catch that `curl` returned non-0
+-        shell: bash
+-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-installer.sh | sh"
++        uses: $/.github/actions/install-dist
+       - name: Cache dist
+@@ -126,11 +128,4 @@ jobs:
+           submodules: recursive
+-      - name: Install Rust non-interactively if not already installed
+-        if: ${{ matrix.container }}
+-        run: |
+-          if ! command -v cargo > /dev/null 2>&1; then
+-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+-            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+-          fi
+       - name: Install dist
+-        run: ${{ matrix.install_dist.run }}
++        uses: $/.github/actions/install-dist
+       # Get the dist-manifest
