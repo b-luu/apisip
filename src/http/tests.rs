@@ -488,7 +488,99 @@ async fn max_pages_fails_a_stream_that_keeps_paginating() {
         err.contains("still has a next page after max_pages = 3 pages"),
         "{err}"
     );
-    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    // The page past the limit is fetched to see whether the stream ends there.
+    assert_eq!(server.received_requests().await.unwrap().len(), 4);
+}
+
+/// Answers each `page` query parameter with the response the function gives.
+struct ByPage(fn(u64) -> ResponseTemplate);
+
+impl wiremock::Respond for ByPage {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let page = request
+            .url
+            .query_pairs()
+            .find(|(k, _)| k == "page")
+            .and_then(|(_, v)| v.parse().ok())
+            .unwrap();
+        (self.0)(page)
+    }
+}
+
+/// Pages a stream of two records per page with `max_pages = 3`: the records
+/// and the number of requests.
+async fn three_pages_at_most(respond: fn(u64) -> ResponseTemplate) -> (Result<Vec<Value>>, usize) {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ByPage(respond))
+        .mount(&server)
+        .await;
+    let c = ApiClient::new(&Source {
+        max_pages: 3,
+        ..source(&server)
+    })
+    .unwrap();
+    let pagination = Some(Pagination::PageNumber {
+        param: "page".into(),
+        size_param: None,
+        size: Some(2),
+        start: 1,
+    });
+    let first = c.endpoint("/events").unwrap();
+    let all: Result<Vec<Vec<Value>>> = pages(c, first, pagination, String::new())
+        .take(10)
+        .try_collect()
+        .await;
+    let requests = server.received_requests().await.unwrap().len();
+    (all.map(|p| p.concat()), requests)
+}
+
+fn two_records(page: u64) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!([{ "page": page }, { "page": page }]))
+}
+
+#[tokio::test]
+async fn max_pages_allows_the_empty_page_that_ends_the_stream() {
+    let (all, requests) = three_pages_at_most(|page| match page {
+        1..=3 => two_records(page),
+        _ => ResponseTemplate::new(200).set_body_json(json!([])),
+    })
+    .await;
+    assert_eq!(all.unwrap().len(), 6);
+    assert_eq!(requests, 4);
+}
+
+#[tokio::test]
+async fn max_pages_fails_when_the_page_past_it_holds_records() {
+    // Page 4 is short, so it ends the stream, but its record is past the limit.
+    let (all, requests) = three_pages_at_most(|page| match page {
+        1..=3 => two_records(page),
+        _ => ResponseTemplate::new(200).set_body_json(json!([{ "page": page }])),
+    })
+    .await;
+    let err = format!("{:#}", all.unwrap_err());
+    assert!(
+        err.contains("still has a next page after max_pages = 3 pages"),
+        "{err}"
+    );
+    assert_eq!(requests, 4);
+}
+
+#[tokio::test]
+async fn max_pages_fails_when_the_empty_page_past_it_links_to_more() {
+    let (all, requests) = three_pages_at_most(|page| match page {
+        1..=3 => two_records(page),
+        _ => ResponseTemplate::new(200)
+            .set_body_json(json!([]))
+            .insert_header("link", "</v1/events?page=5>; rel=\"next\""),
+    })
+    .await;
+    let err = format!("{:#}", all.unwrap_err());
+    assert!(
+        err.contains("still has a next page after max_pages = 3 pages"),
+        "{err}"
+    );
+    assert_eq!(requests, 4);
 }
 
 #[tokio::test]
