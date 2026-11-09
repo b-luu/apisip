@@ -1,0 +1,29 @@
+name: Install dist
+description: Download the pinned dist release for this runner, verify its SHA-256 and put it in ~/.cargo/bin.
+# Replaces the `curl | sh` installer that dist writes into release.yml.
+# DIST_VERSION is the release tag: "v" followed by cargo-dist-version in dist-workspace.toml.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        DIST_VERSION: v0.33.0
+      run: |
+        set -euo pipefail
+        case "$(uname -sm)" in
+          "Linux x86_64") target=x86_64-unknown-linux-musl sha=b8e95bc76c63375958173ef5ae2dbd8e9211cc1ed03cdee0899702766b4c2a2e ;;
+          "Linux aarch64") target=aarch64-unknown-linux-musl sha=4761cff5fc547ad66d1449abbf321380b0e6bd8093b1fe6593852a3314fd0c19 ;;
+          "Darwin x86_64") target=x86_64-apple-darwin sha=6a49bfb61bd86770d79c27f3d2b40c6b2e71cde940d3d31a6ccaaffc124d7a29 ;;
+          "Darwin arm64") target=aarch64-apple-darwin sha=7b3cbe25511de01d74c0f5fcb7909edabd379bea9cfa284d93af5a3cdfa3247c ;;
+          *) echo "no pinned dist build for $(uname -sm)" >&2; exit 1 ;;
+        esac
+        dir="$RUNNER_TEMP/dist"
+        mkdir -p "$dir" "$HOME/.cargo/bin"
+        curl --proto '=https' --tlsv1.2 -fsSL -o "$dir/dist.tar.xz" \
+          "https://github.com/axodotdev/cargo-dist/releases/download/${DIST_VERSION}/cargo-dist-${target}.tar.xz"
+        # Linux runners have sha256sum, macOS runners shasum
+        actual=$( (sha256sum 2>/dev/null || shasum -a 256) < "$dir/dist.tar.xz" | cut -d' ' -f1)
+        [ "$actual" = "$sha" ] || { echo "dist archive SHA-256 is $actual, expected $sha" >&2; exit 1; }
+        tar -xJf "$dir/dist.tar.xz" -C "$dir"
+        # ~/.cargo/bin is already on PATH on GitHub-hosted runners, as the jobs that run the cached dist rely on
+        install -m 0755 "$dir/cargo-dist-${target}/dist" "$HOME/.cargo/bin/dist"
