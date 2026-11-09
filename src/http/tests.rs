@@ -701,3 +701,44 @@ async fn a_host_whose_class_changed_is_refused() {
         .to_string();
     assert!(err.contains("records it as public"), "{err}");
 }
+
+#[tokio::test]
+async fn the_token_client_connects_to_the_checked_address() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token": "at-1"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(wiremock::matchers::header("authorization", "Bearer at-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    // `.invalid` never resolves through the system, so the token request
+    // reaches the server only if the token client gets the checked address.
+    address::FAKE_DNS.with_borrow_mut(|f| {
+        f.insert("token.invalid".into(), vec![*server.address()]);
+    });
+    let c = ApiClient::new(&Source {
+        auth: Some(AuthConfig::Oauth2ClientCredentials {
+            scheme: None,
+            token_url: format!(
+                "http://token.invalid:{}/oauth/token",
+                server.address().port()
+            ),
+            client_id: "client-1".into(),
+            client_secret: "cs-1".into(),
+            scopes: vec![],
+        }),
+        address_class: [(
+            "token.invalid".to_string(),
+            crate::config::AddressClass::Loopback,
+        )]
+        .into(),
+        ..source(&server)
+    })
+    .unwrap();
+    c.get(&c.endpoint("/users").unwrap()).await.unwrap();
+}

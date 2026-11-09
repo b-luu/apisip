@@ -299,7 +299,8 @@ boundary records again on every run, the state keeps a fingerprint of each
 record written at the watermark (up to 10,000). A record with the same cursor
 and the same content is skipped and counted as `unchanged`; a changed or new
 record at that cursor is kept. A run against an API where nothing changed
-writes nothing.
+writes nothing. Integer cursors, such as snowflake ids or nanosecond epochs,
+compare exactly up to the `i64` and `u64` limits.
 
 One limit remains in filter mode: the API applies the filter itself. If it
 treats `since` as strictly after, a record written in the same second as the
