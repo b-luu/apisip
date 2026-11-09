@@ -255,3 +255,40 @@ async fn full_refresh_lowers_a_far_future_watermark() {
     assert!(run(&ws, full).await.unwrap());
     assert_eq!(watermark(dir).as_deref(), Some("2026-01-01T00:00:00Z"));
 }
+
+#[tokio::test]
+async fn integer_cursors_above_2_53_advance_exactly() {
+    // 2^53 + 1: as an f64 it rounds to its neighbour below.
+    const W: u64 = 9_007_199_254_740_993;
+    let server = MockServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let ws = setup(
+        dir,
+        &server,
+        r#"{ cursor = "id", param = "updated_since" }"#,
+        "",
+    );
+    let ids = |v: &[u64]| Value::Array(v.iter().map(|i| json!({"id": i})).collect());
+
+    Mock::given(method("GET"))
+        .and(path("/users"))
+        .and(query_param_is_missing("updated_since"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ids(&[W - 1, W])))
+        .mount(&server)
+        .await;
+    assert!(run(&ws, RunOptions::default()).await.unwrap());
+    assert_eq!(watermark(dir), Some(W.to_string()));
+
+    // The record at the watermark is skipped; the one just above it is new.
+    Mock::given(method("GET"))
+        .and(path("/users"))
+        .and(query_param("updated_since", W.to_string()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ids(&[W, W + 1])))
+        .mount(&server)
+        .await;
+    assert!(run(&ws, RunOptions::default()).await.unwrap());
+    assert_eq!(watermark(dir), Some((W + 1).to_string()));
+    let r = last_report(dir);
+    assert_eq!((r.records, r.unchanged), (1, 1));
+}
