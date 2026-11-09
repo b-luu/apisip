@@ -158,8 +158,24 @@ pub type NewHosts = Vec<(String, Option<AddressClass>)>;
 /// The hosts `source` connects to that `before` did not, with no entry in
 /// `address_class` yet, each with its class as `record` finds it: `None` when
 /// the host does not resolve or resolves to addresses of several classes.
+/// Fails when the hosts of `before` cannot be read, as every host would then
+/// count as new.
 pub fn new_hosts(source: &Source, before: &Source) -> Result<NewHosts> {
-    let old = host_names(before).unwrap_or_default();
+    let mut old = host_names(before).context("reading the old config's hosts")?;
+    // The hosts as written too: `host_names` skips a `token_url` it cannot
+    // fill, though its host is not new.
+    let mut written = vec![before.base_url.as_str()];
+    if let Some(AuthConfig::Oauth2ClientCredentials { token_url, .. }) = &before.auth {
+        written.push(token_url);
+    }
+    for raw in written {
+        if let Ok(url) = url::Url::parse(raw)
+            && let Some(Host::Domain(d)) = url.host()
+            && !authority(raw).contains("${")
+        {
+            old.push(d.to_string());
+        }
+    }
     Ok(host_names(source)?
         .into_iter()
         .filter(|h| !old.contains(h) && recorded(source, h).is_none())
