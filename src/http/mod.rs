@@ -404,7 +404,7 @@ pub fn pages(
                 && (!recs.is_empty() || next.is_some())
             {
                 Err(anyhow::anyhow!(
-                    "{} still has a next page after max_pages = {} pages in this run: raise \
+                    "{} has more than max_pages = {} pages in this run: raise \
                      max_pages under [source], or set it to 0 for no limit",
                     client.shown(&origin),
                     client.max_pages

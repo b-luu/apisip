@@ -484,10 +484,7 @@ async fn max_pages_fails_a_stream_that_keeps_paginating() {
         .try_collect()
         .await;
     let err = format!("{:#}", all.unwrap_err());
-    assert!(
-        err.contains("still has a next page after max_pages = 3 pages"),
-        "{err}"
-    );
+    assert!(err.contains("has more than max_pages = 3 pages"), "{err}");
     // The page past the limit is fetched to see whether the stream ends there.
     assert_eq!(server.received_requests().await.unwrap().len(), 4);
 }
@@ -559,10 +556,7 @@ async fn max_pages_fails_when_the_page_past_it_holds_records() {
     })
     .await;
     let err = format!("{:#}", all.unwrap_err());
-    assert!(
-        err.contains("still has a next page after max_pages = 3 pages"),
-        "{err}"
-    );
+    assert!(err.contains("has more than max_pages = 3 pages"), "{err}");
     assert_eq!(requests, 4);
 }
 
@@ -576,10 +570,7 @@ async fn max_pages_fails_when_the_empty_page_past_it_links_to_more() {
     })
     .await;
     let err = format!("{:#}", all.unwrap_err());
-    assert!(
-        err.contains("still has a next page after max_pages = 3 pages"),
-        "{err}"
-    );
+    assert!(err.contains("has more than max_pages = 3 pages"), "{err}");
     assert_eq!(requests, 4);
 }
 
