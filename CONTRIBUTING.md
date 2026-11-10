@@ -155,7 +155,7 @@ Maintainers only. Releases follow the conventional commits on `main`.
   differs from `release.yml`. Run the same check locally:
 
   ```sh
-  sed -i '/^allow-dirty/d' dist-workspace.toml
+  sed -i.bak '/^allow-dirty/d' dist-workspace.toml && rm dist-workspace.toml.bak
   nix develop -c dist generate --mode ci
   git apply .github/release-edits.patch
   git checkout dist-workspace.toml
@@ -173,7 +173,7 @@ Maintainers only. Releases follow the conventional commits on `main`.
   generated file:
 
   ```sh
-  sed -i '/^allow-dirty/d' dist-workspace.toml
+  sed -i.bak '/^allow-dirty/d' dist-workspace.toml && rm dist-workspace.toml.bak
   nix develop -c dist generate --mode ci
   git diff -R -U1 .github/workflows/release.yml > .github/release-edits.patch
   git checkout dist-workspace.toml .github/workflows/release.yml
