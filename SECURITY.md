@@ -107,9 +107,12 @@ holds every stream's schema in memory at once.
   so that the value never lands in `apisip.toml`; hosts with no recorded
   class, for which `run` and `check` print a warning; and requests sent
   through an HTTP proxy, which resolves the name itself.
-- Known gap: the spec URL that `init` and `update` download is never
-  checked against loopback, private or cloud metadata addresses. Download an
-  untrusted spec only on a machine with no internal services to reach.
+- The spec URL host gets the same check when the spec is downloaded again:
+  `init` records its class with the others, and `update` (or a command that
+  finds no spec snapshot in `.apisip/`) refuses to download the spec when
+  the host now resolves to another class. `init` itself trusts the URL you
+  give it, as `update --spec` does for a new host, which it then records.
+  Not checked: a redirect from the spec URL, which is followed to any host.
 - The parts of API response bodies shown in error messages, and the spec
   text that `init` prints, have their control characters replaced by spaces,
   so they cannot send terminal escape sequences.

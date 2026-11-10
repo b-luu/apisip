@@ -3,6 +3,7 @@
 //! The spec is kept as a plain `serde_json::Value`: one walker covers every
 //! version, and unknown vendor extensions survive untouched.
 
+use std::net::SocketAddr;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -54,10 +55,19 @@ impl<'a> Operation<'a> {
     }
 }
 
-/// Fetches a spec from a URL, or reads it from a file relative to `base_dir`.
-pub async fn fetch_text(src: &str, base_dir: &Path) -> Result<String> {
+/// Fetches a spec from a URL, connecting to the addresses in `pins` for their
+/// hosts, or reads it from a file relative to `base_dir`.
+pub async fn fetch_text(
+    src: &str,
+    base_dir: &Path,
+    pins: &[(String, Vec<SocketAddr>)],
+) -> Result<String> {
     if src.starts_with("http://") || src.starts_with("https://") {
-        let resp = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder();
+        for (host, addrs) in pins {
+            builder = builder.resolve_to_addrs(host, addrs);
+        }
+        let resp = builder
             .user_agent(concat!("apisip/", env!("CARGO_PKG_VERSION")))
             .build()?
             .get(src)
@@ -107,8 +117,12 @@ fn yaml_options() -> serde_saphyr::Options {
 }
 
 impl Spec {
-    pub async fn load(src: &str, base_dir: &Path) -> Result<Spec> {
-        let text = fetch_text(src, base_dir).await?;
+    pub async fn load(
+        src: &str,
+        base_dir: &Path,
+        pins: &[(String, Vec<SocketAddr>)],
+    ) -> Result<Spec> {
+        let text = fetch_text(src, base_dir, pins).await?;
         Spec::parse(&text, src)
     }
 
@@ -983,5 +997,25 @@ mod tests {
     fn rejects_non_specs() {
         assert!(Spec::parse("{\"hello\": 1}", "x").is_err());
         assert!(Spec::parse("<html>", "x").is_err());
+    }
+
+    #[tokio::test]
+    async fn a_spec_url_is_fetched_from_the_pinned_address() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"openapi": "3.0.0", "info": {"title": "t", "version": "1"}, "paths": {}}"#,
+            ))
+            .mount(&server)
+            .await;
+        // `.invalid` never resolves through the system, so the request reaches
+        // the server only through the pinned address.
+        let url = format!(
+            "http://spec.invalid:{}/openapi.json",
+            server.address().port()
+        );
+        let pins = [("spec.invalid".to_string(), vec![*server.address()])];
+        Spec::load(&url, Path::new("."), &pins).await.unwrap();
     }
 }

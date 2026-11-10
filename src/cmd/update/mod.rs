@@ -142,10 +142,12 @@ impl Plan {
         let base = Config::parse(&base_text).context("invalid .apisip/baseline.toml")?;
         let old_spec = ws.load_spec(&mine).await.ok();
 
-        let new_spec = match &o.spec {
-            Some(s) => Spec::load(s, &std::env::current_dir()?).await?,
-            None => Spec::load(&mine.source.spec, &ws.dir).await?,
+        let (src, dir) = match &o.spec {
+            Some(s) => (s, std::env::current_dir()?),
+            None => (&mine.source.spec, ws.dir.clone()),
         };
+        let pins = crate::http::address::spec_pins(src, &mine.source)?;
+        let new_spec = Spec::load(src, &dir, &pins).await?;
         let det = detect::detect(&new_spec);
         let theirs = det.baseline(&mine.source);
         let d = diff(&base, &theirs, &mine);
