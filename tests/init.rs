@@ -687,4 +687,9 @@ fn check_warns_when_the_environment_overrides_env() {
     let out = check("from-env-file");
     assert!(out.contains("Config:"), "{out}");
     assert!(!out.contains("already set in the environment"), "{out}");
+    // An empty placeholder in .env holds no other credential to confuse.
+    std::fs::write(dir.path().join(".env"), "ACME_STORE_TOKEN=\n").unwrap();
+    let out = check("from-shell");
+    assert!(out.contains("Config:"), "{out}");
+    assert!(!out.contains("already set in the environment"), "{out}");
 }
