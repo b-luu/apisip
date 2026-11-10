@@ -182,7 +182,7 @@ All subcommands are verbs.
 | `apisip list` | The configured streams, their mode, pagination, schema source and key. Reads only the folder. |
 | `apisip check` | A dry run: validates the config, the credentials and the destination with one request per stream, and checks the first page against the schema. Writes nothing. |
 | `apisip run` | Downloads every enabled stream. `--stream a,b`, `--full-refresh`, `--strict`. |
-| `apisip inspect [<stream>]` | What the destination holds: watermarks, last runs, drift, quarantined records, views. No API calls. |
+| `apisip inspect [<stream>]` | What the destination holds: watermarks, last runs with their page and record counts, drift, quarantined records, views. No API calls. |
 | `apisip replay` | Checks quarantined records again against the current schema and moves those that now pass into the data. `--stream a,b`. |
 | `apisip update [<spec>]` | Diffs a new version of the spec against the config and the schema files, and merges it. `--check` only prints the diff. |
 

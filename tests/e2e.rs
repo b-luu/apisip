@@ -449,7 +449,8 @@ fn inspect_reads_the_destination_without_the_api() {
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(
         &config,
-        text.replace("name = \"users\"\n", "name = \"users\"\ncast = \"none\"\n"),
+        text.replace("name = \"users\"\n", "name = \"users\"\ncast = \"none\"\n")
+            .replace("max_pages = 1000\n", "max_pages = 50\n"),
     )
     .unwrap();
     apisip(d).arg("run").assert().success();
@@ -476,19 +477,23 @@ fn inspect_reads_the_destination_without_the_api() {
         "{users}"
     );
     assert!(
-        users.ends_with(" ok 0 1 0"),
-        "records, quarantined, drift: {users}"
+        users.ends_with(" ok 1 0 1 0"),
+        "pages, records, quarantined, drift: {users}"
     );
-    assert!(row("plans").ends_with(" ok 6 0 0"), "{out}");
-    assert_eq!(row("orders"), "orders early stop (disabled) - never - 0 -");
+    assert!(row("plans").ends_with(" ok 2 6 0 0"), "{out}");
+    assert_eq!(
+        row("orders"),
+        "orders early stop (disabled) - never - - 0 -"
+    );
+    assert!(out.contains("max_pages = 50 pages in one run"), "{out}");
 
     let out = stdout(&apisip(d).args(["inspect", "users"]).assert().success());
     for expected in [
         "Cursor:     updated_at".to_string(),
         format!("Watermark:  {watermark}"),
         "Schema:     schemas/users.json (spec)".into(),
-        "24 records, 1 quarantined".into(),
-        "0 records, 0 quarantined, 1 unchanged".into(),
+        "3 pages, 24 records, 1 quarantined".into(),
+        "1 pages, 0 records, 0 quarantined, 1 unchanged".into(),
         "data/users/_quarantine/".into(),
         "(1 records)".into(),
         "data/_apisip/views/users_current.sql".into(),
@@ -502,11 +507,21 @@ fn inspect_reads_the_destination_without_the_api() {
     let out = stdout(&apisip(d).arg("inspect").assert().success());
     let users = out.lines().find(|l| l.starts_with("users ")).unwrap();
     let users = users.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(users.ends_with(" ok 0 0 0"), "{users}");
+    assert!(users.ends_with(" ok 1 0 0 0"), "{users}");
     let out = stdout(&apisip(d).args(["inspect", "users"]).assert().success());
-    assert!(out.contains("ok (replay)"), "{out}");
-    assert!(out.contains("1 records, 0 quarantined"), "{out}");
+    assert!(
+        out.contains("ok (replay) 1 records, 0 quarantined"),
+        "{out}"
+    );
     assert!(out.contains("Quarantine:\n  empty"), "{out}");
+    // max_pages = 0 means no limit: no cap to show.
+    std::fs::write(
+        &config,
+        text.replace("max_pages = 1000\n", "max_pages = 0\n"),
+    )
+    .unwrap();
+    let out = stdout(&apisip(d).arg("inspect").assert().success());
+    assert!(!out.contains("max_pages"), "{out}");
     apisip(d)
         .args(["inspect", "nope"])
         .assert()
