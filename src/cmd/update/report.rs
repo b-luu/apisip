@@ -8,6 +8,7 @@ use serde_json::Value;
 use super::auth::auth_names;
 use super::config_merge::{Diff, Kind, changes_views};
 use super::schema_merge::{self, StreamSchema};
+use crate::cmd::printable;
 use crate::config::Config;
 use crate::detect::{self, AuthOption};
 use crate::schema::RecordSchema;
@@ -84,12 +85,15 @@ pub(super) fn print_diff(
     if let Some((Some(old), new)) = auth {
         let (o, n) = (auth_names(old), auth_names(new));
         for s in n.difference(&o) {
-            println!("Auth scheme added: {s}");
+            println!("Auth scheme added: {}", printable(s));
         }
         for s in o.difference(&n) {
             match super::auth::refusal(new, s) {
-                Some(why) => println!("Auth scheme refused, still in the spec: {s}: {why}"),
-                None => println!("Auth scheme removed: {s}"),
+                Some(why) => println!(
+                    "Auth scheme refused, still in the spec: {}: {why}",
+                    printable(s)
+                ),
+                None => println!("Auth scheme removed: {}", printable(s)),
             }
         }
     }

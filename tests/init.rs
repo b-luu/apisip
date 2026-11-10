@@ -610,3 +610,61 @@ fn update_refuses_a_token_url_that_references_the_environment() {
         before
     );
 }
+
+#[test]
+fn update_strips_control_characters_from_refusal_reasons() {
+    // A refusal reason quotes the spec: an escape sequence in it must not
+    // reach the terminal.
+    let list = serde_json::json!({"200": {"description": "ok", "content": {"application/json": {
+        "schema": {"type": "array", "items": {"type": "object"}}}}}});
+    let spec = |param: serde_json::Value, auth_type: &str| {
+        serde_json::json!({
+            "openapi": "3.0.0",
+            "info": {"title": "t", "version": "1"},
+            "servers": [{"url": "https://api.test/v1"}],
+            "components": {"securitySchemes": {"key": {"type": auth_type, "name": "X-Key", "in": "header"}}},
+            "security": [{"key": []}],
+            "paths": {"/items": {"get": {"parameters": param, "responses": list}}}
+        })
+    };
+    let hostile = "q\u{1b}[31m\u{1b}]52;c;aGk=\u{7}";
+    let dir = tempfile::tempdir().unwrap();
+    let (v1_path, v2_path, v3_path) = (
+        dir.path().join("v1.json"),
+        dir.path().join("v2.json"),
+        dir.path().join("v3.json"),
+    );
+    std::fs::write(&v1_path, spec(serde_json::json!([]), "apiKey").to_string()).unwrap();
+    let param = serde_json::json!([{"name": hostile, "in": "query", "required": true}]);
+    std::fs::write(&v2_path, spec(param, "apiKey").to_string()).unwrap();
+    std::fs::write(&v3_path, spec(serde_json::json!([]), hostile).to_string()).unwrap();
+    apisip(dir.path())
+        .args(["init", v1_path.to_str().unwrap(), "--yes"])
+        .assert()
+        .success();
+
+    let out = apisip(dir.path())
+        .args(["update", "--yes", v3_path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let (stdout, stderr) = (
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    );
+    assert!(stderr.contains("scheme type `q"), "{stderr}");
+    assert!(!stdout.contains(['\u{1b}', '\u{7}']), "{stdout:?}");
+    assert!(!stderr.contains(['\u{1b}', '\u{7}']), "{stderr:?}");
+
+    let out = apisip(dir.path())
+        .args(["update", "--yes", v2_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.contains("items: requires query parameter `q"), "{out}");
+    assert!(!out.contains(['\u{1b}', '\u{7}']), "{out:?}");
+}

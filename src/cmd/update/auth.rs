@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 
 use anyhow::{Result, bail};
 
+use crate::cmd::printable;
 use crate::config::{AuthConfig, Config, referenced_vars};
 use crate::detect::{AuthOption, Detection, EnvVar};
 use crate::prompt::{self, Prompter};
@@ -17,12 +18,13 @@ pub(super) fn auth_names(options: &[AuthOption]) -> BTreeSet<String> {
         .collect()
 }
 
-/// Why detection refused `scheme` when the spec still declares it.
-pub(super) fn refusal<'a>(options: &'a [AuthOption], scheme: &str) -> Option<&'a str> {
+/// Why detection refused `scheme` when the spec still declares it, safe to print.
+pub(super) fn refusal(options: &[AuthOption], scheme: &str) -> Option<String> {
     options
         .iter()
         .find(|o| o.scheme == scheme)
         .and_then(|o| o.unsupported.as_deref())
+        .map(printable)
 }
 
 /// Auth is always re-confirmed: the current scheme is preselected and each
@@ -65,9 +67,9 @@ pub(super) fn confirm_auth(
             .position(|i| i.option.as_ref().is_some_and(matches)),
     };
     if let (Some(c), None) = (current, default) {
-        let name = c.scheme().unwrap_or(c.kind());
+        let name = printable(c.scheme().unwrap_or(c.kind()));
         let why = c.scheme().and_then(|s| refusal(&det.auth, s));
-        match why {
+        match &why {
             Some(why) => eprintln!(
                 "The auth scheme in use, `{name}`, is still in the spec but apisip refuses it: {why}."
             ),
@@ -76,7 +78,7 @@ pub(super) fn confirm_auth(
             }
         }
         if !p.interactive {
-            match why {
+            match &why {
                 Some(why) => bail!(
                     "the auth scheme `{name}` is refused: {why}. Run `apisip update` in a terminal to pick another"
                 ),

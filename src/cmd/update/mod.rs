@@ -161,7 +161,7 @@ impl Plan {
             .filter_map(|name| {
                 let path = &base.streams.iter().find(|s| &s.name == name)?.path;
                 let skip = det.skipped.iter().find(|s| &s.path == path)?;
-                Some((name.clone(), skip.reason.clone()))
+                Some((name.clone(), super::printable(&skip.reason)))
             })
             .collect();
 
