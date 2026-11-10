@@ -255,6 +255,9 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
         &auth_vars,
     )?;
     print_summary(ws, &spec, &det, &config, &auth_vars, &env_updates);
+    for w in super::shadow_warnings(ws) {
+        eprintln!("{w}");
+    }
     Ok(())
 }
 

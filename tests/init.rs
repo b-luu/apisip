@@ -582,3 +582,119 @@ fn update_refuses_a_token_url_that_references_the_environment() {
         before
     );
 }
+
+const SHADOW_WARNING: &str =
+    "warning: ACME_STORE_TOKEN is already set in the environment to a value that differs from .env";
+
+/// Answers the interactive prompts of `init`, typing `typed` as the token.
+#[cfg(unix)]
+fn init_typing_token(dir: &Path, shell: Option<&str>, typed: &str) -> String {
+    use rexpect::reader::Options;
+    let mut cmd = std::process::Command::new(bin());
+    cmd.arg("-C")
+        .arg(dir)
+        .args(["init", &fixture("openapi30.yaml")])
+        .env("TERM", "xterm")
+        .env_remove("ACME_STORE_TOKEN");
+    if let Some(v) = shell {
+        cmd.env("ACME_STORE_TOKEN", v);
+    }
+    let mut p = rexpect::session::spawn_with_options(
+        cmd,
+        Options::new()
+            .timeout_ms(Some(15_000))
+            .strip_ansi_escape_codes(true),
+    )
+    .unwrap();
+    for (prompt, answer) in [
+        ("API base URL", ""),
+        ("Where should apisip write data?", ""),
+        ("Output format", ""),
+        ("Authentication", ""),
+        ("Bearer token", typed),
+        ("Streams to download", ""),
+        ("Primary key of `orders`", ""),
+        ("Which plan are you on?", ""),
+    ] {
+        p.exp_string(prompt).unwrap();
+        p.send_line(answer).unwrap();
+    }
+    let out = p.exp_eof().unwrap();
+    assert!(out.contains("Wrote apisip.toml"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join(".env")).unwrap(),
+        format!("ACME_STORE_TOKEN={typed}\n")
+    );
+    out
+}
+
+/// A token typed at the prompt goes to .env, but a run would use the shell's.
+#[cfg(unix)]
+#[test]
+fn init_warns_when_the_environment_overrides_the_typed_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = init_typing_token(dir.path(), Some("from_shell_5678"), "tok_typed_1234");
+    assert!(out.contains(SHADOW_WARNING), "{out}");
+    assert!(
+        !out.contains("from_shell_5678") && !out.contains("tok_typed_1234"),
+        "{out}"
+    );
+}
+
+/// Replacing the token of an existing .env is not a conflict: the old value
+/// came from the file, not from the shell.
+#[cfg(unix)]
+#[test]
+fn init_does_not_warn_when_the_typed_token_replaces_env() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".env"), "ACME_STORE_TOKEN=tok_old_1234\n").unwrap();
+    let out = init_typing_token(dir.path(), None, "tok_new_5678");
+    assert!(!out.contains("already set in the environment"), "{out}");
+}
+
+#[test]
+fn check_warns_when_the_environment_overrides_env() {
+    let dir = tempfile::tempdir().unwrap();
+    apisip(dir.path())
+        .args(["init", &fixture("openapi30.yaml"), "--yes"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already set in the environment").not());
+    std::fs::write(dir.path().join(".env"), "ACME_STORE_TOKEN=from-env-file\n").unwrap();
+    // Nothing listens on the server: fail the request without retrying.
+    let config_path = dir.path().join("apisip.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    let config = config
+        .replacen("retry = { max_tries = 8,", "retry = { max_tries = 1,", 1)
+        .replace("https://api.acme.test/v1", "http://127.0.0.1:9");
+    std::fs::write(&config_path, config).unwrap();
+    let check = |token: &str| {
+        let a = apisip(dir.path())
+            .arg("check")
+            .env("ACME_STORE_TOKEN", token)
+            .timeout(std::time::Duration::from_secs(30))
+            .assert();
+        let out = a.get_output();
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr)
+    };
+    let out = check("from-shell");
+    assert!(out.contains(SHADOW_WARNING), "{out}");
+    assert!(
+        !out.contains("from-shell") && !out.contains("from-env-file"),
+        "{out}"
+    );
+    // The same value in both places is not a conflict.
+    let out = check("from-env-file");
+    assert!(out.contains("Config:"), "{out}");
+    assert!(!out.contains("already set in the environment"), "{out}");
+    // A .env that loads but cannot be read again must not fail check.
+    std::fs::write(dir.path().join(".env"), "\u{feff}ACME_STORE_TOKEN=abc\n").unwrap();
+    let out = check("from-shell");
+    assert!(!out.contains("parsing"), "{out}");
+    assert!(out.contains("FAIL  users"), "{out}");
+    // An empty placeholder in .env holds no other credential to confuse.
+    std::fs::write(dir.path().join(".env"), "ACME_STORE_TOKEN=\n").unwrap();
+    let out = check("from-shell");
+    assert!(out.contains("Config:"), "{out}");
+    assert!(!out.contains("already set in the environment"), "{out}");
+}

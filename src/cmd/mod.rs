@@ -112,6 +112,21 @@ pub fn load_schema(
     Ok(schema)
 }
 
+/// One warning per `.env` variable that the process environment overrides.
+/// A `.env` this cannot read gives no warning: a warning never fails a command.
+pub fn shadow_warnings(ws: &Workspace) -> Vec<String> {
+    crate::envfile::shadowed(&ws.env_path())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|k| {
+            format!(
+                "warning: {k} is already set in the environment to a value that differs from .env; \
+                 apisip uses the environment value. Unset it, or make both agree."
+            )
+        })
+        .collect()
+}
+
 /// The warning for a stream whose spec schema is too large to inline in full.
 pub fn truncation_warning(spec: &Spec, s: &StreamConfig) -> Option<String> {
     schema_truncated(spec, s).then(|| {
