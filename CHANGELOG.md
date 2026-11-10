@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/b-luu/apisip/compare/v0.3.0...v0.4.0) - 2026-11-10
+
+### Fixed
+
+- *(views)* bound the history by the commit time after an empty snapshot
+- compare integer cursors exactly above 2^53
+- *(update)* do not record address classes for old hosts the old config hides
+
+### Other
+
+- pin integer and float comparison at the i128 limits
+- *(release)* compare the dist checksum the same way on every runner
+- *(release)* install dist from a checksum-pinned archive
+- *(http)* check that the OAuth2 token client connects to the checked addresses
+
 ## [0.3.0](https://github.com/b-luu/apisip/compare/v0.2.0...v0.3.0) - 2026-11-05
 
 ### Fixed
