@@ -2,11 +2,21 @@ name: Nix
 
 # The flake builds the crate from source and runs the test suite again, which
 # takes minutes. Only a change to the flake or the dependencies can break it.
+# The job also checks that release.yml is still dist's output plus the hand
+# edits, with the dist the flake provides, so the release config is on the list.
 on:
   push:
     branches: [main]
   pull_request:
-    paths: [flake.nix, flake.lock, Cargo.toml, Cargo.lock, .github/workflows/nix.yml]
+    paths:
+      - flake.nix
+      - flake.lock
+      - Cargo.toml
+      - Cargo.lock
+      - dist-workspace.toml
+      - .github/release-edits.patch
+      - .github/workflows/release.yml
+      - .github/workflows/nix.yml
   schedule:
     - cron: "17 5 * * 1"
   workflow_dispatch:
@@ -32,5 +42,14 @@ jobs:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
           gc-max-store-size-linux: 5G
+      # allow-dirty also turns off dist's own check, so regenerate without it,
+      # re-apply the hand edits and require no difference (CONTRIBUTING.md)
+      - name: Check release.yml against dist
+        run: |
+          sed -i '/^allow-dirty/d' dist-workspace.toml
+          nix develop -c dist generate --mode ci
+          git apply .github/release-edits.patch
+          git checkout dist-workspace.toml
+          git diff --exit-code
       - run: nix flake check
       - run: nix run . -- --help
