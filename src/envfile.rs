@@ -28,6 +28,7 @@ pub fn load(path: &Path) -> Result<()> {
 
 /// Keys with a value in `.env` that a variable set before `load` overrides
 /// with another value. Names only: the values are secrets.
+/// Empty unless `load` ran in this process.
 pub fn shadowed(path: &Path) -> Result<Vec<String>> {
     let Some(preset) = PRESET.get() else {
         return Ok(Vec::new());
@@ -38,7 +39,9 @@ pub fn shadowed(path: &Path) -> Result<Vec<String>> {
         // The first line of a key is the one loading uses.
         .filter(|(k, _)| seen.insert(k.clone()))
         .filter(|(k, v)| {
-            !v.is_empty() && preset.contains(k) && std::env::var(k).is_ok_and(|p| p != *v)
+            !v.is_empty()
+                && preset.contains(k)
+                && std::env::var_os(k).is_some_and(|p| p != v.as_str())
         })
         .map(|(k, _)| k)
         .collect())

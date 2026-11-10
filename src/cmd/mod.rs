@@ -113,8 +113,10 @@ pub fn load_schema(
 }
 
 /// One warning per `.env` variable that the process environment overrides.
-pub fn shadow_warnings(ws: &Workspace) -> Result<Vec<String>> {
-    Ok(crate::envfile::shadowed(&ws.env_path())?
+/// A `.env` this cannot read gives no warning: a warning never fails a command.
+pub fn shadow_warnings(ws: &Workspace) -> Vec<String> {
+    crate::envfile::shadowed(&ws.env_path())
+        .unwrap_or_default()
         .into_iter()
         .map(|k| {
             format!(
@@ -122,7 +124,7 @@ pub fn shadow_warnings(ws: &Workspace) -> Result<Vec<String>> {
                  apisip uses the environment value. Unset it, or make both agree."
             )
         })
-        .collect())
+        .collect()
 }
 
 /// The warning for a stream whose spec schema is too large to inline in full.

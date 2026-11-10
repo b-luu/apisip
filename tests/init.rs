@@ -687,6 +687,11 @@ fn check_warns_when_the_environment_overrides_env() {
     let out = check("from-env-file");
     assert!(out.contains("Config:"), "{out}");
     assert!(!out.contains("already set in the environment"), "{out}");
+    // A .env that loads but cannot be read again must not fail check.
+    std::fs::write(dir.path().join(".env"), "\u{feff}ACME_STORE_TOKEN=abc\n").unwrap();
+    let out = check("from-shell");
+    assert!(!out.contains("parsing"), "{out}");
+    assert!(out.contains("FAIL  users"), "{out}");
     // An empty placeholder in .env holds no other credential to confuse.
     std::fs::write(dir.path().join(".env"), "ACME_STORE_TOKEN=\n").unwrap();
     let out = check("from-shell");
