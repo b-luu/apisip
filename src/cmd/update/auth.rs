@@ -17,6 +17,14 @@ pub(super) fn auth_names(options: &[AuthOption]) -> BTreeSet<String> {
         .collect()
 }
 
+/// Why detection refused `scheme` when the spec still declares it.
+pub(super) fn refusal<'a>(options: &'a [AuthOption], scheme: &str) -> Option<&'a str> {
+    options
+        .iter()
+        .find(|o| o.scheme == scheme)
+        .and_then(|o| o.unsupported.as_deref())
+}
+
 /// Auth is always re-confirmed: the current scheme is preselected and each
 /// credential shows its masked value, so Enter keeps everything.
 pub(super) fn confirm_auth(
@@ -58,11 +66,24 @@ pub(super) fn confirm_auth(
     };
     if let (Some(c), None) = (current, default) {
         let name = c.scheme().unwrap_or(c.kind());
-        eprintln!("The auth scheme in use, `{name}`, is no longer in the spec [removed].");
+        let why = c.scheme().and_then(|s| refusal(&det.auth, s));
+        match why {
+            Some(why) => eprintln!(
+                "The auth scheme in use, `{name}`, is still in the spec but apisip refuses it: {why}."
+            ),
+            None => {
+                eprintln!("The auth scheme in use, `{name}`, is no longer in the spec [removed].")
+            }
+        }
         if !p.interactive {
-            bail!(
-                "the auth scheme `{name}` was removed from the spec: run `apisip update` in a terminal to pick another"
-            );
+            match why {
+                Some(why) => bail!(
+                    "the auth scheme `{name}` is refused: {why}. Run `apisip update` in a terminal to pick another"
+                ),
+                None => bail!(
+                    "the auth scheme `{name}` was removed from the spec: run `apisip update` in a terminal to pick another"
+                ),
+            }
         }
     }
     let i = p.select(

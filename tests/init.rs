@@ -476,9 +476,9 @@ fn update_never_takes_an_environment_reference_from_the_spec() {
     // must keep `${VAR}` out of the fields it adds or changes.
     let list = serde_json::json!({"200": {"description": "ok", "content": {"application/json": {
         "schema": {"type": "array", "items": {"type": "object"}}}}}});
-    let with_q = |default: &str| {
+    let with_q = |name: &str, default: &str| {
         serde_json::json!({"get": {
-            "parameters": [{"name": "q", "in": "query", "required": true,
+            "parameters": [{"name": name, "in": "query", "required": true,
                 "schema": {"type": "string", "default": default}}],
             "responses": list}})
     };
@@ -486,7 +486,7 @@ fn update_never_takes_an_environment_reference_from_the_spec() {
         "openapi": "3.0.0",
         "info": {"title": "t", "version": "1"},
         "servers": [{"url": "https://api.test/v1"}],
-        "paths": {"/items": {"get": {"responses": list}}, "/plain": with_q("all")}
+        "paths": {"/items": {"get": {"responses": list}}, "/plain": with_q("q", "all")}
     });
     let v2 = serde_json::json!({
         "openapi": "3.0.0",
@@ -494,9 +494,9 @@ fn update_never_takes_an_environment_reference_from_the_spec() {
         "servers": [{"url": "https://api.test/{v}", "variables": {"v": {"default": "${AWS_SECRET_ACCESS_KEY}"}}}],
         "paths": {
             "/items": {"get": {"responses": list}},
-            "/plain": with_q("${AWS_SECRET_ACCESS_KEY}"),
-            "/added": with_q("${GITHUB_TOKEN}"),
-            "/clean": with_q("open")
+            "/plain": with_q("q", "${AWS_SECRET_ACCESS_KEY}"),
+            "/added": with_q("token", "${GITHUB_TOKEN}"),
+            "/clean": with_q("q", "open")
         }
     });
     let dir = tempfile::tempdir().unwrap();
@@ -508,10 +508,31 @@ fn update_never_takes_an_environment_reference_from_the_spec() {
         .assert()
         .success();
     let before = std::fs::read_to_string(dir.path().join("apisip.toml")).unwrap();
-    apisip(dir.path())
+    let out = apisip(dir.path())
         .args(["update", "--yes", v2_path.to_str().unwrap()])
         .assert()
-        .success();
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    // `/plain` is still in the spec: the report names the refusal, not a removal.
+    let out = String::from_utf8(out).unwrap();
+    let why = "plain: query parameter `q` has a default with `${`";
+    assert!(
+        out.contains(&format!(
+            "Refused, still in the spec (will be disabled): {why}"
+        )),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "Disabled {}",
+            why.replacen(':', " (data and watermarks kept):", 1)
+        )),
+        "{out}"
+    );
+    assert!(!out.contains("Removed from the spec"), "{out}");
+    assert!(!out.contains("gone from the spec"), "{out}");
 
     let config = std::fs::read_to_string(dir.path().join("apisip.toml")).unwrap();
     assert_ne!(config, before, "the update must have merged something");
@@ -576,7 +597,14 @@ fn update_refuses_a_token_url_that_references_the_environment() {
         .args(["update", "--yes", v2_path.to_str().unwrap()])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("`oauth`"));
+        .stderr(predicate::str::contains(
+            "the auth scheme `oauth` is refused: the tokenUrl contains `${`",
+        ))
+        .stderr(predicate::str::contains("removed").not())
+        .stdout(predicate::str::contains(
+            "Auth scheme refused, still in the spec: oauth: the tokenUrl contains `${`",
+        ))
+        .stdout(predicate::str::contains("removed").not());
     assert_eq!(
         std::fs::read_to_string(dir.path().join("apisip.toml")).unwrap(),
         before
