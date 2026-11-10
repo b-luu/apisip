@@ -16,6 +16,9 @@ use super::{first_url, load_schema, print_rate_limit_warning, select_streams, tr
 pub async fn run(ws: &Workspace) -> Result<bool> {
     let config = ws.load_config()?;
     println!("Config: {} is valid", ws.config_path().display());
+    for w in super::shadow_warnings(ws)? {
+        println!("{w}");
+    }
     if config.source.rate_limit.is_none() {
         print_rate_limit_warning(false);
     }

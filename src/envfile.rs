@@ -1,10 +1,48 @@
 //! Reading and writing `.env` files without losing comments or ordering.
 //! Files are always written with mode 0600.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
+
+/// Names of the variables set in the process before `load` read `.env`.
+static PRESET: OnceLock<HashSet<String>> = OnceLock::new();
+
+/// Loads `.env` into the process environment. Variables already set win
+/// over the file; `shadowed` reports the ones whose value differs.
+pub fn load(path: &Path) -> Result<()> {
+    PRESET.get_or_init(|| {
+        std::env::vars_os()
+            .filter_map(|(k, _)| k.into_string().ok())
+            .collect()
+    });
+    if path.exists() {
+        dotenvy::from_path(path)
+            .map_err(|e| anyhow::anyhow!("reading {}: {}", path.display(), describe(&e)))?;
+    }
+    Ok(())
+}
+
+/// Keys with a value in `.env` that a variable set before `load` overrides
+/// with another value. Names only: the values are secrets.
+pub fn shadowed(path: &Path) -> Result<Vec<String>> {
+    let Some(preset) = PRESET.get() else {
+        return Ok(Vec::new());
+    };
+    let mut seen = HashSet::new();
+    Ok(read(path)?
+        .into_iter()
+        // The first line of a key is the one loading uses.
+        .filter(|(k, _)| seen.insert(k.clone()))
+        .filter(|(k, v)| {
+            !v.is_empty() && preset.contains(k) && std::env::var(k).is_ok_and(|p| p != *v)
+        })
+        .map(|(k, _)| k)
+        .collect())
+}
 
 /// Parses `KEY=VALUE` lines the same way `dotenvy` does for our own output.
 pub fn read(path: &Path) -> Result<Vec<(String, String)>> {
