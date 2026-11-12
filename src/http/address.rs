@@ -205,7 +205,8 @@ pub fn new_hosts(source: &Source, before: &Source) -> NewHosts {
     for (key, why) in unreadable {
         eprintln!(
             "warning: cannot read the host of {key} in apisip.toml ({why}), so no \
-             address class is recorded for it: fix {key}, then run `apisip update` again"
+             address class is recorded for it: fix {key}, then add its host to \
+             address_class under [source], or re-run `apisip init`"
         );
     }
     hosts
