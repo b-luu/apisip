@@ -51,7 +51,13 @@ pub async fn run(ws: &Workspace, stream: Option<String>) -> Result<()> {
     }
     let none = Vec::new();
     match stream {
-        None => table(&streams, &state, &runs, &quarantine),
+        None => table(
+            &streams,
+            &state,
+            &runs,
+            &quarantine,
+            config.source.max_pages,
+        ),
         Some(_) => {
             let s = streams[0];
             let spec = ws.load_spec(&config).await.ok();
@@ -169,20 +175,23 @@ fn table(
     state: &State,
     runs: &BTreeMap<String, Vec<Run>>,
     quarantine: &BTreeMap<String, Vec<Quarantine>>,
+    max_pages: u64,
 ) {
     println!(
-        "{:<24} {:<26} {:<26} {:<26} {:>8} {:>11} {:>6}",
-        "STREAM", "MODE", "WATERMARK", "LAST RUN", "RECORDS", "QUARANTINED", "DRIFT"
+        "{:<24} {:<26} {:<26} {:<26} {:>6} {:>8} {:>11} {:>6}",
+        "STREAM", "MODE", "WATERMARK", "LAST RUN", "PAGES", "RECORDS", "QUARANTINED", "DRIFT"
     );
     for s in streams {
         let last = runs.get(&s.name).and_then(|r| last_fetch(r));
         let quarantined: usize = quarantine[&s.name].iter().map(|q| q.records).sum();
         println!(
-            "{:<24} {:<26} {:<26} {:<26} {:>8} {:>11} {:>6}",
+            "{:<24} {:<26} {:<26} {:<26} {:>6} {:>8} {:>11} {:>6}",
             s.name,
             mode(s, state),
             watermark(s, state).unwrap_or("-"),
             last.map(run_label).unwrap_or_else(|| "never".into()),
+            last.map(|r| r.report.pages.to_string())
+                .unwrap_or_else(|| "-".into()),
             last.map(|r| r.report.records.to_string())
                 .unwrap_or_else(|| "-".into()),
             quarantined,
@@ -191,8 +200,18 @@ fn table(
         );
     }
     println!(
-        "\nLAST RUN, RECORDS and DRIFT are from the last fetch; QUARANTINED counts every quarantine file."
+        "\nLAST RUN, PAGES, RECORDS and DRIFT are from the last fetch; QUARANTINED counts every quarantine file."
     );
+    if max_pages > 0 {
+        println!(
+            "A stream fails when it needs more than max_pages = {} in one run.",
+            pages(max_pages)
+        );
+    }
+}
+
+fn pages(n: u64) -> String {
+    format!("{n} page{}", if n == 1 { "" } else { "s" })
 }
 
 async fn detail(
@@ -225,8 +244,13 @@ async fn detail(
     }
     for r in runs {
         let rep = &r.report;
+        // A replay reads no pages.
+        let pages = match r.kind {
+            RunKind::Fetch => format!("{}, ", pages(rep.pages)),
+            RunKind::Replay => String::new(),
+        };
         let mut line = format!(
-            "  {:<28} {:<26} {} records, {} quarantined",
+            "  {:<28} {:<26} {pages}{} records, {} quarantined",
             r.run_id,
             run_label(r),
             rep.records,
