@@ -417,8 +417,8 @@ mod tests {
         );
         // Relative, or written with a variable: nothing to read.
         assert_eq!(
-            read("https://api.example.test", Some("/oauth/${UNSET}")).0,
-            ["api.example.test"]
+            read("https://api.example.test", Some("/oauth/${UNSET}")),
+            (vec!["api.example.test".to_string()], vec![])
         );
         assert!(read("https://${UNSET}/v1", Some("${UNSET}")).0.is_empty());
         let (hosts, unreadable) = read(
