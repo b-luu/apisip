@@ -167,7 +167,11 @@ fn hosts_as_written(source: &Source) -> (Vec<String>, Unreadable) {
     for (key, raw) in urls {
         let filled = crate::config::interpolate(raw);
         // A relative `token_url` names the `base_url` host, already counted.
-        let relative = key == "token_url" && !filled.as_deref().unwrap_or(raw).starts_with("http");
+        let relative = key == "token_url"
+            && match &filled {
+                Ok(f) => !f.starts_with("http"),
+                Err(_) => !raw.contains("://"),
+            };
         if relative || authority(raw).contains("${") {
             continue;
         }
@@ -200,9 +204,8 @@ pub fn new_hosts(source: &Source, before: &Source) -> NewHosts {
     let (hosts, unreadable) = hosts_as_written(source);
     for (key, why) in unreadable {
         eprintln!(
-            "warning: cannot read the host of {key} in apisip.toml ({why}), so its \
-             address class is not recorded and `run` and `check` only warn for it: \
-             add its host to address_class under [source]"
+            "warning: cannot read the host of {key} in apisip.toml ({why}), so no \
+             address class is recorded for it: fix {key}, then run `apisip update` again"
         );
     }
     hosts
@@ -426,5 +429,22 @@ mod tests {
         assert_eq!(unreadable.len(), 1);
         assert_eq!(unreadable[0].0, "base_url");
         assert!(unreadable[0].1.contains(unset), "{unreadable:?}");
+        let (hosts, unreadable) = read(
+            "https://api.example.test/${UNSET}",
+            Some("${UNSET}://auth.example.test/token"),
+        );
+        assert_eq!(
+            (hosts, unreadable[0].0),
+            (vec!["api.example.test".to_string()], "token_url")
+        );
+        // One entry for a host both URLs name.
+        assert_eq!(
+            read(
+                "https://api.example.test/${UNSET}",
+                Some("https://API.example.test/token")
+            )
+            .0,
+            ["api.example.test"]
+        );
     }
 }
