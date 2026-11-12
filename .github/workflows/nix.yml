@@ -1,7 +1,7 @@
 name: Nix
 
-# The flake builds the crate from source and runs the test suite again, which
-# takes minutes. Only a change to the flake or the dependencies can break it.
+# The flake builds the crate from source, which takes minutes. The tests run in
+# ci.yml. Only a change to the flake or the dependencies can break the build.
 on:
   push:
     branches: [main]
