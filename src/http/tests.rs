@@ -619,6 +619,40 @@ async fn a_chunked_response_of_exactly_max_response_mb_passes() {
 }
 
 #[tokio::test]
+async fn a_gzip_response_over_max_response_mb_decoded_fails() {
+    // About 2 KiB on the wire, 2 MiB once decoded: the limit counts decoded
+    // bytes, so a hostile API cannot fill memory with a small gzip body.
+    use std::io::Write;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    gz.write_all(format!("[{}]", " ".repeat(2 * 1024 * 1024)).as_bytes())
+        .unwrap();
+    let body = gz.finish().unwrap();
+    assert!(body.len() < 1024 * 1024);
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-encoding", "gzip")
+                .set_body_raw(body, "application/json"),
+        )
+        .mount(&server)
+        .await;
+    let c = ApiClient::new(&Source {
+        max_response_mb: 1,
+        ..source(&server)
+    })
+    .unwrap();
+    let err = format!(
+        "{:#}",
+        c.get(&c.endpoint("/big").unwrap()).await.unwrap_err()
+    );
+    assert!(
+        err.contains("more than 1048576 bytes, over max_response_mb = 1"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
 async fn a_body_cut_off_midway_does_not_blame_max_response_mb() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
