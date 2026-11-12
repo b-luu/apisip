@@ -204,9 +204,14 @@ fn table(
     );
     if max_pages > 0 {
         println!(
-            "A stream fails when it needs more than max_pages = {max_pages} pages in one run."
+            "A stream fails when it needs more than max_pages = {} in one run.",
+            pages(max_pages)
         );
     }
+}
+
+fn pages(n: u64) -> String {
+    format!("{n} page{}", if n == 1 { "" } else { "s" })
 }
 
 async fn detail(
@@ -241,7 +246,7 @@ async fn detail(
         let rep = &r.report;
         // A replay reads no pages.
         let pages = match r.kind {
-            RunKind::Fetch => format!("{} pages, ", rep.pages),
+            RunKind::Fetch => format!("{}, ", pages(rep.pages)),
             RunKind::Replay => String::new(),
         };
         let mut line = format!(

@@ -493,7 +493,7 @@ fn inspect_reads_the_destination_without_the_api() {
         format!("Watermark:  {watermark}"),
         "Schema:     schemas/users.json (spec)".into(),
         "3 pages, 24 records, 1 quarantined".into(),
-        "1 pages, 0 records, 0 quarantined, 1 unchanged".into(),
+        "1 page, 0 records, 0 quarantined, 1 unchanged".into(),
         "data/users/_quarantine/".into(),
         "(1 records)".into(),
         "data/_apisip/views/users_current.sql".into(),
@@ -522,6 +522,13 @@ fn inspect_reads_the_destination_without_the_api() {
     .unwrap();
     let out = stdout(&apisip(d).arg("inspect").assert().success());
     assert!(!out.contains("max_pages"), "{out}");
+    std::fs::write(
+        &config,
+        text.replace("max_pages = 1000\n", "max_pages = 1\n"),
+    )
+    .unwrap();
+    let out = stdout(&apisip(d).arg("inspect").assert().success());
+    assert!(out.contains("max_pages = 1 page in one run"), "{out}");
     apisip(d)
         .args(["inspect", "nope"])
         .assert()
