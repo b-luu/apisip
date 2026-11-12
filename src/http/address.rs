@@ -152,38 +152,67 @@ fn recorded(source: &Source, host: &str) -> Option<AddressClass> {
         .map(|(_, &c)| c)
 }
 
+/// The key of each URL whose host cannot be read, with the reason, which
+/// names no value from the environment.
+type Unreadable = Vec<(&'static str, String)>;
+
+/// The host names `source` connects to, as `host_names` finds them, but read
+/// as written, so an unset `${VAR}` outside the host does not hide a host.
+fn hosts_as_written(source: &Source) -> (Vec<String>, Unreadable) {
+    let mut urls = vec![("base_url", source.base_url.as_str())];
+    if let Some(AuthConfig::Oauth2ClientCredentials { token_url, .. }) = &source.auth {
+        urls.push(("token_url", token_url.as_str()));
+    }
+    let (mut hosts, mut unreadable) = (Vec::<String>::new(), Vec::new());
+    for (key, raw) in urls {
+        let filled = crate::config::interpolate(raw);
+        // A relative `token_url` names the `base_url` host, already counted.
+        let relative = key == "token_url" && !filled.as_deref().unwrap_or(raw).starts_with("http");
+        if relative || authority(raw).contains("${") {
+            continue;
+        }
+        let url = url::Url::parse(raw)
+            .or_else(|_| -> Result<url::Url> { Ok(url::Url::parse(&filled?)?) });
+        match url {
+            Ok(url) => {
+                if let Some(Host::Domain(d)) = url.host()
+                    && !hosts.iter().any(|h| h == d)
+                {
+                    hosts.push(d.to_string());
+                }
+            }
+            Err(e) => unreadable.push((key, format!("{e:#}"))),
+        }
+    }
+    (hosts, unreadable)
+}
+
 /// Each new host with its class, `None` when it could not be classified.
 pub type NewHosts = Vec<(String, Option<AddressClass>)>;
 
 /// The hosts `source` connects to that `before` did not, with no entry in
 /// `address_class` yet, each with its class as `record` finds it: `None` when
 /// the host does not resolve or resolves to addresses of several classes.
-/// Fails when the hosts of `before` cannot be read, as every host would then
-/// count as new.
-pub fn new_hosts(source: &Source, before: &Source) -> Result<NewHosts> {
-    let mut old = host_names(before).context("reading the old config's hosts")?;
-    // The hosts as written too: `host_names` skips a `token_url` it cannot
-    // fill, though its host is not new.
-    let mut written = vec![before.base_url.as_str()];
-    if let Some(AuthConfig::Oauth2ClientCredentials { token_url, .. }) = &before.auth {
-        written.push(token_url);
+/// Hosts are read as written, and a URL of `source` whose host cannot be read
+/// gets a warning that names it.
+pub fn new_hosts(source: &Source, before: &Source) -> NewHosts {
+    let old = hosts_as_written(before).0;
+    let (hosts, unreadable) = hosts_as_written(source);
+    for (key, why) in unreadable {
+        eprintln!(
+            "warning: cannot read the host of {key} in apisip.toml ({why}), so its \
+             address class is not recorded and `run` and `check` only warn for it: \
+             add its host to address_class under [source]"
+        );
     }
-    for raw in written {
-        if let Ok(url) = url::Url::parse(raw)
-            && let Some(Host::Domain(d)) = url.host()
-            && !authority(raw).contains("${")
-        {
-            old.push(d.to_string());
-        }
-    }
-    Ok(host_names(source)?
+    hosts
         .into_iter()
         .filter(|h| !old.contains(h) && recorded(source, h).is_none())
         .map(|h| {
             let class = lookup(&h).ok().and_then(|a| class_of(&a));
             (h, class)
         })
-        .collect())
+        .collect()
 }
 
 /// The checked addresses of each recorded host, for the client to connect to.
@@ -363,5 +392,39 @@ mod tests {
             BTreeMap::from([("localhost".to_string(), AddressClass::Loopback)])
         );
         assert_eq!(host_names(&s).unwrap(), ["localhost"]);
+    }
+
+    #[test]
+    fn hosts_are_read_as_written_and_an_unreadable_url_is_named() {
+        let unset = "APISIP_ADDR_TEST_NEVER_SET";
+        let read = |b: &str, t: Option<&str>| {
+            let b = b.replace("UNSET", unset);
+            let t = t.map(|t| t.replace("UNSET", unset));
+            hosts_as_written(&source(&b, t.as_deref()))
+        };
+        assert_eq!(
+            read(
+                "https://api.example.test/${UNSET}",
+                Some("https://auth.example.test/token?k=${UNSET}")
+            ),
+            (
+                vec!["api.example.test".to_string(), "auth.example.test".into()],
+                vec![]
+            )
+        );
+        // Relative, or written with a variable: nothing to read.
+        assert_eq!(
+            read("https://api.example.test", Some("/oauth/${UNSET}")).0,
+            ["api.example.test"]
+        );
+        assert!(read("https://${UNSET}/v1", Some("${UNSET}")).0.is_empty());
+        let (hosts, unreadable) = read(
+            "${UNSET}://api.example.test/v1",
+            Some("https://auth.example.test/token"),
+        );
+        assert_eq!(hosts, ["auth.example.test"]);
+        assert_eq!(unreadable.len(), 1);
+        assert_eq!(unreadable[0].0, "base_url");
+        assert!(unreadable[0].1.contains(unset), "{unreadable:?}");
     }
 }
