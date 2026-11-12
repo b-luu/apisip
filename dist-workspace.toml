@@ -24,3 +24,7 @@ install-updater = false
 github-action-commits = { "actions/checkout" = "3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9", "actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333" }
 # release.yml carries hand edits that `dist generate` would undo (see CONTRIBUTING.md)
 allow-dirty = ["ci"]
+
+# dist 0.33 defaults aarch64-apple-darwin to macos-14, which GitHub no longer serves
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
