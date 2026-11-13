@@ -36,8 +36,8 @@ CI runs these jobs on every pull request:
 - `coverage`: `cargo llvm-cov` reports line coverage in the job summary. It has
   no threshold.
 
-Two more run outside the pull request flow. `Nix` builds the flake on
-pushes to main, weekly, and on pull requests that touch the flake or the
+Two more run outside the pull request flow. `Nix` builds the flake
+weekly, and on pushes to main and pull requests that touch the flake or the
 dependencies. `Toolchain canary` runs clippy and the tests on the latest stable
 Rust every week and opens an issue when they fail.
 

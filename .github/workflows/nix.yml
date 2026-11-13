@@ -1,10 +1,12 @@
 name: Nix
 
 # The flake builds the crate from source, which takes minutes. The tests run in
-# ci.yml. Only a change to the flake or the dependencies can break the build.
+# ci.yml. Only a change to the flake or the dependencies is likely to break the build;
+# the weekly run catches code that needs a newer rustc than nixpkgs ships.
 on:
   push:
     branches: [main]
+    paths: [flake.nix, flake.lock, Cargo.toml, Cargo.lock, .github/workflows/nix.yml]
   pull_request:
     paths: [flake.nix, flake.lock, Cargo.toml, Cargo.lock, .github/workflows/nix.yml]
   schedule:
