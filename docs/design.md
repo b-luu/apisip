@@ -253,7 +253,7 @@ Main crates: `tokio`, `reqwest` (rustls), `serde`, `serde_json`, `serde-saphyr` 
   - `packages.default`, built with `rustPlatform.buildRustPackage` from `Cargo.lock`;
   - `apps.default`, so `nix run github:<owner>/apisip -- init …` works;
   - `devShells.default` with cargo, rustc, clippy, rustfmt, rust-analyzer and duckdb;
-  - `checks` running the test suite.
+  - `checks` building the package; the tests run outside Nix.
 
   The README documents `cargo install` first and Nix as an alternative. During development, `nix develop` provides the toolchain locally, so no ad hoc shell is needed.
 - **Other files:**

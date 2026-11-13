@@ -21,18 +21,9 @@
           version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
           src = pkgs.lib.cleanSource ./.;
           cargoLock.lockFile = ./Cargo.lock;
-          # Tests that need the network or an S3 server are #[ignore]d or gated,
-          # so the sandbox runs the rest. The HTTP client loads CA certificates
-          # even for plain-HTTP test servers.
-          doCheck = true;
-          # Debug tests: the crash-safety tests use fail points that release builds compile out.
-          checkType = "debug";
-          nativeCheckInputs = [
-            pkgs.cacert
-            pkgs.duckdb
-          ];
-          # The view checks run DuckDB; fail rather than skip if it is missing.
-          APISIP_REQUIRE_DUCKDB = "1";
+          # The tests run in CI outside Nix. Running them here too compiled
+          # every crate a second time, in debug.
+          doCheck = false;
           meta = {
             description = "Ingest any API described by an OpenAPI spec into JSONL or Parquet";
             license = with pkgs.lib.licenses; [
