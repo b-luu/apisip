@@ -245,12 +245,12 @@ async fn detail(
     for r in runs {
         let rep = &r.report;
         // A replay reads no pages.
-        let pages = match r.kind {
+        let pages_prefix = match r.kind {
             RunKind::Fetch => format!("{}, ", pages(rep.pages)),
             RunKind::Replay => String::new(),
         };
         let mut line = format!(
-            "  {:<28} {:<26} {pages}{} records, {} quarantined",
+            "  {:<28} {:<26} {pages_prefix}{} records, {} quarantined",
             r.run_id,
             run_label(r),
             rep.records,
