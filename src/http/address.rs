@@ -170,7 +170,7 @@ fn hosts_as_written(source: &Source) -> (Vec<String>, Unreadable) {
         let relative = key == "token_url"
             && match &filled {
                 Ok(f) => !f.starts_with("http"),
-                // A `://` after the path starts, as in `?next=http://…`, is no scheme.
+                // A `://` after a `/`, `?` or `#`, as in `?next=http://…`, is no scheme.
                 Err(_) => !raw
                     .find("://")
                     .is_some_and(|i| !raw[..i].contains(['/', '?', '#'])),
@@ -424,13 +424,17 @@ mod tests {
             read("https://api.example.test", Some("/oauth/${UNSET}")),
             (vec!["api.example.test".to_string()], vec![])
         );
-        assert_eq!(
-            read(
-                "https://api.example.test",
-                Some("/oauth/${UNSET}?next=http://a.test")
-            ),
-            (vec!["api.example.test".to_string()], vec![])
-        );
+        for t in [
+            "/oauth/${UNSET}?next=http://a.test",
+            "${UNSET}?next=http://a.test",
+            "${UNSET}#http://a.test",
+        ] {
+            assert_eq!(
+                read("https://api.example.test", Some(t)),
+                (vec!["api.example.test".to_string()], vec![]),
+                "{t}"
+            );
+        }
         assert!(read("https://${UNSET}/v1", Some("${UNSET}")).0.is_empty());
         let (hosts, unreadable) = read(
             "${UNSET}://api.example.test/v1",
