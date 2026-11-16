@@ -624,8 +624,9 @@ async fn a_gzip_response_over_max_response_mb_decoded_fails() {
     // bytes, so a hostile API cannot fill memory with a small gzip body.
     use std::io::Write;
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
-    gz.write_all(format!("[{}]", " ".repeat(2 * 1024 * 1024)).as_bytes())
-        .unwrap();
+    gz.write_all(b"[").unwrap();
+    gz.write_all(&vec![b' '; 2 * 1024 * 1024]).unwrap();
+    gz.write_all(b"]").unwrap();
     let body = gz.finish().unwrap();
     assert!(body.len() < 1024 * 1024);
     let server = MockServer::start().await;
