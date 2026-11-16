@@ -102,16 +102,18 @@ with its seeds:
 
 ```sh
 cargo install cargo-fuzz
+mkdir -p fuzz/corpus/spec
 cargo +nightly fuzz run spec fuzz/corpus/spec fuzz/seeds/spec tests/fixtures
 ```
 
-The first folder collects new inputs, the others are read-only seeds. Pass
+The first folder collects new inputs and must exist; the others are read-only
+seeds. Pass
 `-- -max_total_time=600` to stop after ten minutes. A crash is saved under
 `fuzz/artifacts/<target>/`; replay it with `cargo +nightly fuzz run <target>
 <file>`. A fixed crash gets a regression test in the crate's own suite.
 
 On pull requests that touch the code, the `ClusterFuzzLite` workflow builds
-the targets with AddressSanitizer and fuzzes the changed code for ten minutes.
+the targets with AddressSanitizer and fuzzes them for ten minutes in total.
 
 ## Try a change by hand
 
