@@ -1,7 +1,7 @@
 name: ClusterFuzzLite
 
-# Builds the cargo-fuzz targets in fuzz/ and fuzzes the code a pull request
-# changes. See "Fuzzing" in CONTRIBUTING.md.
+# Builds the cargo-fuzz targets in fuzz/ and fuzzes them, ten minutes in
+# total, on pull requests that touch the code. See "Fuzzing" in CONTRIBUTING.md.
 on:
   pull_request:
     paths: [src/**, fuzz/**, tests/fixtures/**, Cargo.toml, Cargo.lock, .clusterfuzzlite/**, .github/workflows/cflite-pr.yml]
@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      actions: read # reads the corpus that earlier runs uploaded as artifacts
+      actions: read # cifuzz looks up artifacts of earlier runs (corpus, coverage)
     steps:
       - name: Build fuzzers
         id: build

@@ -18,3 +18,18 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      fuzz-cargo:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /.clusterfuzzlite
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
