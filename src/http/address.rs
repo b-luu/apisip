@@ -170,7 +170,10 @@ fn hosts_as_written(source: &Source) -> (Vec<String>, Unreadable) {
         let relative = key == "token_url"
             && match &filled {
                 Ok(f) => !f.starts_with("http"),
-                Err(_) => !raw.contains("://"),
+                // A `://` after the path starts, as in `?next=http://…`, is no scheme.
+                Err(_) => !raw
+                    .find("://")
+                    .is_some_and(|i| !raw[..i].contains(['/', '?', '#'])),
             };
         if relative || authority(raw).contains("${") {
             continue;
@@ -419,6 +422,13 @@ mod tests {
         // Relative, or written with a variable: nothing to read.
         assert_eq!(
             read("https://api.example.test", Some("/oauth/${UNSET}")),
+            (vec!["api.example.test".to_string()], vec![])
+        );
+        assert_eq!(
+            read(
+                "https://api.example.test",
+                Some("/oauth/${UNSET}?next=http://a.test")
+            ),
             (vec!["api.example.test".to_string()], vec![])
         );
         assert!(read("https://${UNSET}/v1", Some("${UNSET}")).0.is_empty());
