@@ -1,0 +1,14 @@
+[source]
+spec = "spec.json"
+base_url = "https://api.example.test"
+retry = { max_tries = 1 }
+
+[destination]
+url = "file://out"
+format = "parquet"
+
+[[streams]]
+name = "users"
+path = "/users"
+primary_key = "id"
+incremental = { cursor = "updated_at" }
