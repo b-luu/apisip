@@ -300,12 +300,7 @@ async fn an_epoch_number_cursor_is_capped() {
     let server = MockServer::start().await;
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
-    let ws = setup(
-        dir,
-        &server,
-        r#"{ cursor = "id", param = "updated_since", epoch = "seconds" }"#,
-        "",
-    );
+    let incremental = r#"{ cursor = "id", param = "updated_since", epoch = "seconds" }"#;
     let ids = |v: &[u64]| Value::Array(v.iter().map(|i| json!({"id": i})).collect());
 
     Mock::given(method("GET"))
@@ -314,15 +309,45 @@ async fn an_epoch_number_cursor_is_capped() {
         .respond_with(ResponseTemplate::new(200).set_body_json(ids(&[NOW, FAR])))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/users"))
+        .and(query_param("updated_since", FAR.to_string()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ids(&[FAR])))
+        .mount(&server)
+        .await;
+    let ws = setup(dir, &server, incremental, "");
     assert!(run(&ws, RunOptions::default()).await.unwrap());
     assert_eq!(watermark(dir), Some(NOW.to_string()));
     let r = last_report(dir);
     assert_eq!(r.records, 2, "the far-future record is still written");
     assert!(
-        r.warnings
-            .iter()
-            .any(|w| w.starts_with("1 record(s) have a `id` value later than")),
+        r.warnings.iter().any(
+            |w| w.starts_with("1 record(s) have a `id` value later than")
+                && w.contains("read as epoch seconds")
+        ),
         "{:?}",
         r.warnings
     );
+
+    // A watermark stored past the cap (here, by a huge skew) gets a warning,
+    // and a full refresh lowers it.
+    let full = || RunOptions {
+        full_refresh: true,
+        ..Default::default()
+    };
+    let wide = setup(dir, &server, incremental, r#"max_cursor_skew = "200y""#);
+    assert!(run(&wide, full()).await.unwrap());
+    assert_eq!(watermark(dir), Some(FAR.to_string()));
+    let ws = setup(dir, &server, incremental, "");
+    assert!(run(&ws, RunOptions::default()).await.unwrap());
+    let r = last_report(dir);
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.starts_with(&format!("the stored watermark ({FAR}) is later than"))),
+        "{:?}",
+        r.warnings
+    );
+    assert!(run(&ws, full()).await.unwrap());
+    assert_eq!(watermark(dir), Some(NOW.to_string()));
 }

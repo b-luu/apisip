@@ -13,7 +13,7 @@ use futures::{StreamExt, TryStreamExt};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::config::{Cast, Config, Format, Mode, StreamConfig};
+use crate::config::{Cast, Config, Epoch, Format, Mode, StreamConfig};
 use crate::http::{self, ApiClient};
 use crate::incremental::{
     Boundary, BoundaryTracker, CursorValue, EarlyStop, MAX_BOUNDARY, Range, beyond, field,
@@ -497,10 +497,16 @@ async fn commit(
     let epoch = s.incremental.as_ref().and_then(|i| i.epoch);
     if let (n @ 1.., Some(c)) = (range.future(), cap) {
         report.warnings.push(format!(
-            "{n} record(s) have a `{}` value later than {}: they were written but do not \
+            "{n} record(s) have a `{}` value later than {}{}: they were written but do not \
              move the watermark. Raise max_cursor_skew under [source] if these values are real",
             cursor.unwrap_or_default(),
-            cap_text(ctx, c)
+            cap_text(ctx, c),
+            match epoch {
+                Some(Epoch::Seconds) => ", read as epoch seconds (check incremental.epoch)",
+                Some(Epoch::Milliseconds) =>
+                    ", read as epoch milliseconds (check incremental.epoch)",
+                None => "",
+            }
         ));
     }
     if let Some(d) = &mut drift {
