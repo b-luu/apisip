@@ -383,6 +383,17 @@ pub struct Incremental {
     /// Descending sort on the cursor, for client-side early stop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<Sort>,
+    /// A number cursor that holds epoch time, so `max_cursor_skew` caps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<Epoch>,
+}
+
+/// The unit of an epoch number cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Epoch {
+    Seconds,
+    Milliseconds,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

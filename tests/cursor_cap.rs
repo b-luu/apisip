@@ -292,3 +292,37 @@ async fn integer_cursors_above_2_53_advance_exactly() {
     let r = last_report(dir);
     assert_eq!((r.records, r.unchanged), (1, 1));
 }
+
+#[tokio::test]
+async fn an_epoch_number_cursor_is_capped() {
+    const NOW: u64 = 1_767_225_600; // 2026-01-01
+    const FAR: u64 = 4_102_444_800; // 2100-01-01
+    let server = MockServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let ws = setup(
+        dir,
+        &server,
+        r#"{ cursor = "id", param = "updated_since", epoch = "seconds" }"#,
+        "",
+    );
+    let ids = |v: &[u64]| Value::Array(v.iter().map(|i| json!({"id": i})).collect());
+
+    Mock::given(method("GET"))
+        .and(path("/users"))
+        .and(query_param_is_missing("updated_since"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ids(&[NOW, FAR])))
+        .mount(&server)
+        .await;
+    assert!(run(&ws, RunOptions::default()).await.unwrap());
+    assert_eq!(watermark(dir), Some(NOW.to_string()));
+    let r = last_report(dir);
+    assert_eq!(r.records, 2, "the far-future record is still written");
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.starts_with("1 record(s) have a `id` value later than")),
+        "{:?}",
+        r.warnings
+    );
+}

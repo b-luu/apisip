@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::config::{ApiKeyLocation, Mode, Pagination};
+use crate::config::{ApiKeyLocation, Epoch, Mode, Pagination};
 
 fn load(name: &str) -> Spec {
     let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -387,4 +387,27 @@ fn server_variables_never_reference_the_environment() {
     ] {
         assert_eq!(base_url(server.clone()), None, "{server}");
     }
+}
+
+#[test]
+fn a_unix_time_cursor_is_read_as_epoch_seconds() {
+    let detect_cursor = |cursor: serde_json::Value| {
+        let doc = serde_json::json!({
+            "openapi": "3.0.3",
+            "paths": {"/charges": {"get": {
+                "parameters": [{"name": "updated_since", "in": "query", "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+                    "type": "array", "items": {"type": "object", "properties": {
+                        "id": {"type": "string"}, "updated": cursor}}}}}}}
+            }}}
+        });
+        let d = detect(&Spec::parse(&doc.to_string(), "spec.json").unwrap());
+        stream(&d, "charges").incremental.clone().unwrap().epoch
+    };
+    let epoch = serde_json::json!({"type": "integer", "format": "unix-time"});
+    assert_eq!(detect_cursor(epoch), Some(Epoch::Seconds));
+    // No hint, or a string cursor, stays uncapped.
+    assert_eq!(detect_cursor(serde_json::json!({"type": "integer"})), None);
+    let text = serde_json::json!({"type": "string", "format": "unix-time"});
+    assert_eq!(detect_cursor(text), None);
 }

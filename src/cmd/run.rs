@@ -262,8 +262,9 @@ async fn prepare<'a>(
         _ => None,
     };
     let cap = cursor_cap(ctx);
+    let epoch = s.incremental.as_ref().and_then(|i| i.epoch);
     if let (Some(w), Some(c)) = (&watermark, cap)
-        && beyond(&CursorValue::parse(w), cap)
+        && beyond(&CursorValue::parse(w), cap, epoch)
     {
         report.warnings.push(format!(
             "the stored watermark ({w}) is later than {}: records after it are never fetched. \
@@ -339,7 +340,7 @@ async fn prepare<'a>(
         drift,
         writer,
         quarantine: None,
-        range: Range::new(watermark.as_deref(), cap),
+        range: Range::new(watermark.as_deref(), cap, epoch),
         tracker: BoundaryTracker::default(),
         mistyped_cursors: 0,
     };
@@ -493,6 +494,7 @@ async fn commit(
         ));
     }
     let cap = cursor_cap(ctx);
+    let epoch = s.incremental.as_ref().and_then(|i| i.epoch);
     if let (n @ 1.., Some(c)) = (range.future(), cap) {
         report.warnings.push(format!(
             "{n} record(s) have a `{}` value later than {}: they were written but do not \
@@ -574,7 +576,8 @@ async fn commit(
             let stored = entry.watermark_for(c).map(CursorValue::parse);
             // A full refresh saw every record: it may lower a watermark
             // that a far-future value pushed past the cap in an earlier run.
-            let reset = ctx.options.full_refresh && stored.as_ref().is_some_and(|w| beyond(w, cap));
+            let reset =
+                ctx.options.full_refresh && stored.as_ref().is_some_and(|w| beyond(w, cap, epoch));
             match stored.map(|w| new.partial_cmp(&w)) {
                 _ if reset => {
                     entry.watermark = Some(obs.max.clone());
