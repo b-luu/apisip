@@ -94,9 +94,20 @@ fn host_names(source: &Source) -> Result<Vec<String>> {
 }
 
 /// The `host:port` part of a URL as written, before any `${VAR}` is filled.
+/// When the text before the first `://` is not a scheme, that `://` sits in
+/// the path or query, or a `${VAR}` supplies the scheme, so the whole URL is
+/// returned: any `${VAR}` in it may then supply the host.
 fn authority(raw: &str) -> &str {
-    let rest = raw.split_once("://").map_or(raw, |(_, r)| r);
-    rest.split(['/', '?', '#']).next().unwrap_or_default()
+    match raw.split_once("://") {
+        Some((scheme, rest))
+            if scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)) =>
+        {
+            rest.split(['/', '?', '#']).next().unwrap_or_default()
+        }
+        _ => raw,
+    }
 }
 
 #[cfg(test)]
@@ -299,6 +310,18 @@ mod tests {
         assert!(names("http://127.0.0.1:8080", None).is_empty());
         assert!(names("http://[::1]:8080", Some("http://10.0.0.1/token")).is_empty());
         assert!(names("https://${APISIP_ADDR_TEST_HOST}.example.test", None).is_empty());
+        unsafe { std::env::set_var("APISIP_ADDR_TEST_BASE", "https://tenant.example.test") };
+        assert!(names("${APISIP_ADDR_TEST_BASE}/x?r=http://a.test", None).is_empty());
+        assert!(names("${APISIP_ADDR_TEST_URL}?r=http://a.test", None).is_empty());
+        assert_eq!(
+            names(
+                "https://api.example.test",
+                Some("${APISIP_ADDR_TEST_URL}?r=http://a.test")
+            ),
+            ["api.example.test"]
+        );
+        unsafe { std::env::set_var("APISIP_ADDR_TEST_SCHEME", "https://tenant.example.test/?") };
+        assert!(names("${APISIP_ADDR_TEST_SCHEME}://a.test", None).is_empty());
         assert_eq!(
             names(
                 "https://api.example.test",
