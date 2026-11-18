@@ -169,16 +169,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let ws = Workspace::new(cli.dir)?;
     // Load .env before the runtime starts any thread. Variables already set
     // in the process environment win over the file.
-    let env = ws.env_path();
-    if env.exists() {
-        dotenvy::from_path(&env).map_err(|e| {
-            anyhow::anyhow!(
-                "reading {}: {}",
-                env.display(),
-                apisip::envfile::describe(&e)
-            )
-        })?;
-    }
+    apisip::envfile::load(&ws.env_path())?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

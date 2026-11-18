@@ -226,7 +226,8 @@ cast = "lossless"                 # default; "exact" or "none" for stricter typi
 ```
 
 - **Secrets:** `${VAR}` is read from `.env`, then from the process
-  environment, which wins.
+  environment, which wins. `init` and `check` warn, naming the variable but
+  never its value, when the environment overrides a value set in `.env`.
 - **Auth:** bearer, API key (header, query or cookie), HTTP basic, and OAuth2
   client credentials. OAuth2 fetches a token from the spec's `tokenUrl`, caches
   it, and refreshes it on expiry or on a 401. The OAuth2 client id and secret
