@@ -251,13 +251,7 @@ pub fn apply(text: &str, d: &Diff, theirs: &Config, r: &Resolution) -> Result<St
 /// such host, with `None` for one that could not be classified.
 pub fn record_new_hosts(text: &str, mine: &Config) -> Result<(String, NewHosts)> {
     let merged = Config::parse(text).context("the merged apisip.toml is invalid")?;
-    let hosts = match crate::http::address::new_hosts(&merged.source, &mine.source) {
-        Ok(hosts) => hosts,
-        Err(e) => {
-            eprintln!("warning: no address class recorded for a new host: {e:#}");
-            return Ok((text.to_string(), vec![]));
-        }
-    };
+    let hosts = crate::http::address::new_hosts(&merged.source, &mine.source);
     if hosts.iter().all(|(_, c)| c.is_none()) {
         return Ok((text.to_string(), hosts));
     }
@@ -527,12 +521,18 @@ path = "/legacy"
             BTreeMap::from([("localhost".to_string(), AddressClass::Loopback)])
         );
 
-        // An unset variable in token_url warns, and does not fail the update.
+        // An unset variable outside the host does not hide the host.
         let unset = text.replace("/token", "/token?k=${APISIP_UPDATE_TEST_UNSET}");
+        let (out, hosts) = record_new_hosts(&unset, &mine).unwrap();
         assert_eq!(
-            record_new_hosts(&unset, &mine).unwrap(),
-            (unset.clone(), vec![])
+            hosts,
+            [("localhost".to_string(), Some(AddressClass::Loopback))]
         );
+        assert!(out.contains("localhost = \"loopback\""), "{out}");
+
+        // Nor does one in base_url hide the token_url host.
+        let both = unset.replace("/v1", "/${APISIP_UPDATE_TEST_UNSET}");
+        assert_eq!(record_new_hosts(&both, &mine).unwrap().1, hosts);
 
         // A host the old config used behind an unset variable is not new.
         let fixed = cfg(&unset);
@@ -541,9 +541,17 @@ path = "/legacy"
             (text.clone(), vec![])
         );
 
-        // When the old config's hosts cannot be read, nothing is recorded.
-        let old = cfg(&at("http://${APISIP_UPDATE_TEST_UNSET}/v1"));
+        // Nor in the old config's base_url, whose host is then not new.
+        let old = cfg(&at("http://localhost:1/${APISIP_UPDATE_TEST_UNSET}"));
         let text = at("http://localhost:1/v1");
-        assert_eq!(record_new_hosts(&text, &old).unwrap(), (text, vec![]));
+        assert_eq!(
+            record_new_hosts(&text, &old).unwrap(),
+            (text.clone(), vec![])
+        );
+
+        // An old host written with a variable is never recorded, so a host
+        // written out in its place is new.
+        let old = cfg(&at("http://${APISIP_UPDATE_TEST_UNSET}/v1"));
+        assert_eq!(record_new_hosts(&text, &old).unwrap().1, hosts);
     }
 }
