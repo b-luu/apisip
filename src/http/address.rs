@@ -113,11 +113,15 @@ fn domain_hosts(source: &Source) -> Result<Vec<(String, bool)>> {
 fn unused(source: &Source, hosts: &[(String, bool)]) -> Vec<String> {
     let mut out = Vec::new();
     for key in source.address_class.keys() {
-        let bare = key.trim_start_matches('[').trim_end_matches(']');
+        let ip = key
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+            .ok();
         let names = |var: bool| {
-            hosts
-                .iter()
-                .any(|(h, v)| *v == var && bare.eq_ignore_ascii_case(h))
+            hosts.iter().any(|(h, v)| {
+                *v == var && (key.eq_ignore_ascii_case(h) || ip.is_some() && h.parse().ok() == ip)
+            })
         };
         if names(false) {
             continue;
@@ -128,7 +132,7 @@ fn unused(source: &Source, hosts: &[(String, bool)]) -> Vec<String> {
              a host written with ${VAR} in base_url or token_url, and apisip checks only \
              hosts written out in apisip.toml"
                 .to_string()
-        } else if bare.parse::<IpAddr>().is_ok() {
+        } else if ip.is_some() {
             format!(
                 "warning: the \"{key}\" entry of address_class under [source] is never \
                  checked: it is an IP address, whose class cannot change"
@@ -477,10 +481,21 @@ mod tests {
         unsafe { std::env::set_var("APISIP_ADDR_TEST_IP6", "fd00::7") };
         let mut s = source("http://[${APISIP_ADDR_TEST_IP6}]:8080", None);
         s.address_class
-            .insert("[fd00::7]".into(), AddressClass::Private);
+            .insert("[FD00:0::7]".into(), AddressClass::Private);
         let warnings = unused(&s, &domain_hosts(&s).unwrap());
         assert_eq!(warnings.len(), 1, "{warnings:#?}");
-        assert!(!warnings[0].contains("fd00"), "{}", warnings[0]);
+        assert!(
+            !warnings[0].to_lowercase().contains("fd00"),
+            "{}",
+            warnings[0]
+        );
+
+        let mut s = source("https://api.example.test", None);
+        s.address_class
+            .insert("[api.example.test]".into(), AddressClass::Public);
+        let warnings = unused(&s, &domain_hosts(&s).unwrap());
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(warnings[0].contains("matches neither"), "{}", warnings[0]);
     }
 
     #[test]
