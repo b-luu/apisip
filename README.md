@@ -258,9 +258,10 @@ cast = "lossless"                 # default; "exact" or "none" for stricter typi
   body apisip reads. A larger one fails the stream with its size; raise the
   setting, or lower the page size the stream requests. An OAuth2 token
   response is capped at 1 MB. `max_pages` (default 1000) is the most pages
-  one stream fetches in one run, counting the empty or repeated page that
-  ends pagination. A stream with more fails rather than commit part of its
-  data; raise it, or set it to 0 for no limit.
+  one stream fetches in one run. apisip fetches one more page past it, and
+  the stream is complete if that page is empty and ends pagination. A
+  stream with more fails rather than commit part of its data; raise it, or
+  set it to 0 for no limit.
 - **Addresses:** `init` records whether each host in `base_url` and
   `token_url` resolves to a public, private, loopback or link-local address,
   for example `address_class = { "api.example.com" = "public" }`. `update`

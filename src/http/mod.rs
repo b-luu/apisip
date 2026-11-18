@@ -392,20 +392,24 @@ pub fn pages(
         let mut next = Some(paginator.first(first));
         let mut fetched = 0;
         while let Some(url) = next.take() {
-            // The stream fails rather than stops, so a runaway is not
-            // committed as if it were complete.
-            if client.max_pages > 0 && fetched >= client.max_pages {
+            fetched += 1;
+            let page = client.get(&url).await?;
+            let recs = extract_records(&page.body, &records);
+            next = paginator.next(&page, &recs);
+            // One page past the limit is fetched so that a stream ending with
+            // an empty page is complete. The stream fails rather than stops,
+            // so a runaway is not committed as if it were complete.
+            if client.max_pages > 0
+                && fetched > client.max_pages
+                && (!recs.is_empty() || next.is_some())
+            {
                 Err(anyhow::anyhow!(
-                    "{} still has a next page after max_pages = {} pages in this run: raise \
+                    "{} has more than max_pages = {} pages in this run: raise \
                      max_pages under [source], or set it to 0 for no limit",
                     client.shown(&origin),
                     client.max_pages
                 ))?;
             }
-            fetched += 1;
-            let page = client.get(&url).await?;
-            let recs = extract_records(&page.body, &records);
-            next = paginator.next(&page, &recs);
             // Credentials go with every request: never to another host. The
             // stream fails rather than stops, so no partial data is committed.
             if let Some(n) = &next
