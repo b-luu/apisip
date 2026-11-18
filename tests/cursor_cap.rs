@@ -323,7 +323,7 @@ async fn an_epoch_number_cursor_is_capped() {
     assert!(
         r.warnings.iter().any(
             |w| w.starts_with("1 record(s) have a `id` value later than")
-                && w.contains("read as epoch seconds")
+                && w.contains(r#"with incremental.epoch = "seconds""#)
         ),
         "{:?}",
         r.warnings

@@ -502,9 +502,9 @@ async fn commit(
             cursor.unwrap_or_default(),
             cap_text(ctx, c),
             match epoch {
-                Some(Epoch::Seconds) => ", read as epoch seconds (check incremental.epoch)",
-                Some(Epoch::Milliseconds) =>
-                    ", read as epoch milliseconds (check incremental.epoch)",
+                // The config, not the value: a timestamp cursor can carry `epoch` too.
+                Some(Epoch::Seconds) => r#", with incremental.epoch = "seconds""#,
+                Some(Epoch::Milliseconds) => r#", with incremental.epoch = "milliseconds""#,
                 None => "",
             }
         ));
