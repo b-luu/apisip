@@ -36,9 +36,9 @@ CI runs these jobs on every pull request:
 - `coverage`: `cargo llvm-cov` reports line coverage in the job summary. It has
   no threshold.
 
-Two more run outside the pull request flow. `Nix` runs `nix flake check` and
-the `release.yml` check described under Releases on pushes to main, weekly,
-and on pull requests that touch the flake, the dependencies or the dist
+Two more run outside the pull request flow. `Nix` builds the flake and runs
+the `release.yml` check described under Releases. It runs weekly, and on pushes
+to main and pull requests that touch the flake, the dependencies or the dist
 release config. `Toolchain canary` runs clippy and the tests on the latest stable
 Rust every week and opens an issue when they fail.
 
@@ -84,8 +84,8 @@ Optional suites:
     cargo test --test e2e s3
   ```
 
-- **Nix**: `nix flake check` builds the package and runs the test suite in the
-  sandbox.
+- **Nix**: `nix flake check` builds the package. It does not run the tests:
+  the `gates` job does.
 
 ## Try a change by hand
 

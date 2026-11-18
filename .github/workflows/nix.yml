@@ -1,12 +1,22 @@
 name: Nix
 
-# The flake builds the crate from source and runs the test suite again, which
-# takes minutes. Only a change to the flake or the dependencies can break it.
+# The flake builds the crate from source, which takes minutes. The tests run in
+# ci.yml. Only a change to the flake or the dependencies is likely to break the
+# build; the weekly run catches code that needs a newer rustc than nixpkgs ships.
 # The job also checks that release.yml is still dist's output plus the hand
 # edits, with the dist the flake provides, so the release config is on the list.
 on:
   push:
     branches: [main]
+    paths:
+      - flake.nix
+      - flake.lock
+      - Cargo.toml
+      - Cargo.lock
+      - dist-workspace.toml
+      - .github/release-edits.patch
+      - .github/workflows/release.yml
+      - .github/workflows/nix.yml
   pull_request:
     paths:
       - flake.nix
