@@ -5,10 +5,10 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
-    # chrono and humantime are flagged unmaintained with no replacement release yet;
-    # apisip and parquet/object_store still depend on them. Remove once migrated.
-    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; migration tracked separately" },
-    { id = "RUSTSEC-2026-0542", reason = "humantime wraps chrono; migration tracked separately" },
+    # Remove once apisip and its dependencies move off these crates:
+    # https://github.com/b-luu/apisip/issues/148
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no safe upgrade; see #148" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained, no safe upgrade; see #148" },
 ]
 
 [licenses]
