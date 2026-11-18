@@ -4,6 +4,7 @@
 //! version, and unknown vendor extensions survive untouched.
 
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
@@ -54,9 +55,25 @@ impl<'a> Operation<'a> {
     }
 }
 
+/// Largest spec download, decoded. GitHub's full REST spec is about 12 MB of JSON.
+const SPEC_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Longest spec download, body included, as for one API request.
+const SPEC_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Fetches a spec from a URL, or reads it from a file relative to `base_dir`.
 pub async fn fetch_text(src: &str, base_dir: &Path) -> Result<String> {
     if src.starts_with("http://") || src.starts_with("https://") {
+        fetch_url(src, SPEC_MAX_BYTES, SPEC_TIMEOUT).await
+    } else {
+        let path = src.strip_prefix("file://").unwrap_or(src);
+        let path = base_dir.join(path);
+        std::fs::read_to_string(&path).with_context(|| format!("reading spec {}", path.display()))
+    }
+}
+
+async fn fetch_url(src: &str, limit: u64, timeout: Duration) -> Result<String> {
+    let download = async {
         let resp = reqwest::Client::builder()
             .user_agent(concat!("apisip/", env!("CARGO_PKG_VERSION")))
             .build()?
@@ -72,11 +89,21 @@ pub async fn fetch_text(src: &str, base_dir: &Path) -> Result<String> {
         if !status.is_success() {
             bail!("fetching spec {src}: HTTP {status}");
         }
-        Ok(resp.text().await?)
-    } else {
-        let path = src.strip_prefix("file://").unwrap_or(src);
-        let path = base_dir.join(path);
-        std::fs::read_to_string(&path).with_context(|| format!("reading spec {}", path.display()))
+        let hint = format!(
+            "over the {} MiB limit for a spec download: save the spec to a file and pass its path",
+            limit / (1024 * 1024)
+        );
+        let body = crate::http::read_limited(resp, limit, &hint)
+            .await
+            .with_context(|| format!("fetching spec {src}"))?;
+        Ok(String::from_utf8_lossy(&body).into_owned())
+    };
+    match tokio::time::timeout(timeout, download).await {
+        Ok(text) => text,
+        Err(_) => bail!(
+            "fetching spec {src}: no complete answer after {timeout:?}: save the spec to a file \
+             and pass its path"
+        ),
     }
 }
 
@@ -983,5 +1010,69 @@ mod tests {
     fn rejects_non_specs() {
         assert!(Spec::parse("{\"hello\": 1}", "x").is_err());
         assert!(Spec::parse("<html>", "x").is_err());
+    }
+
+    async fn spec_server(body: Vec<u8>, delay: Duration) -> wiremock::MockServer {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(body, "application/json")
+                    .set_delay(delay),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn a_spec_download_is_capped_in_size() {
+        const MIB: usize = 1024 * 1024;
+        let server = spec_server(vec![b' '; MIB], Duration::ZERO).await;
+        let url = format!("{}/openapi.json", server.uri());
+        assert_eq!(
+            fetch_url(&url, MIB as u64, SPEC_TIMEOUT)
+                .await
+                .unwrap()
+                .len(),
+            MIB
+        );
+        let server = spec_server(vec![b' '; MIB + 1], Duration::ZERO).await;
+        let url = format!("{}/openapi.json", server.uri());
+        let err = format!(
+            "{:#}",
+            fetch_url(&url, MIB as u64, SPEC_TIMEOUT).await.unwrap_err()
+        );
+        assert!(err.contains(&format!("fetching spec {url}")), "{err}");
+        assert!(
+            err.contains("over the 1 MiB limit for a spec download"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spec_as_large_as_real_ones_downloads() {
+        // GitHub's full REST spec is about 12 MB.
+        let size = 16 * 1024 * 1024;
+        let server = spec_server(vec![b' '; size], Duration::ZERO).await;
+        let url = format!("{}/openapi.json", server.uri());
+        assert_eq!(fetch_text(&url, Path::new(".")).await.unwrap().len(), size);
+    }
+
+    #[tokio::test]
+    async fn a_spec_download_is_capped_in_time() {
+        let server = spec_server(b"{}".to_vec(), Duration::from_secs(5)).await;
+        let url = format!("{}/openapi.json", server.uri());
+        let err = fetch_url(&url, SPEC_MAX_BYTES, Duration::from_millis(100))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(&format!(
+                "fetching spec {url}: no complete answer after 100ms"
+            )),
+            "{err}"
+        );
     }
 }
