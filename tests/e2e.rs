@@ -553,6 +553,36 @@ fn a_missing_rate_limit_is_warned_about() {
     }
 }
 
+#[test]
+fn an_address_class_entry_never_checked_is_warned_about() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init(&mock, d, &["--streams", "plans"]);
+    let config = d.join("apisip.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    let text: String = text
+        .lines()
+        .map(|l| {
+            if l.starts_with("base_url") {
+                format!("{l}\naddress_class = {{ \"old.example.test\" = \"public\" }}\n")
+            } else {
+                format!("{l}\n")
+            }
+        })
+        .collect();
+    std::fs::write(&config, text).unwrap();
+    for cmd in ["check", "run"] {
+        apisip(d)
+            .arg(cmd)
+            .assert()
+            .success()
+            .stderr(predicate::str::contains(
+                "the \"old.example.test\" entry of address_class under [source] is never checked",
+            ));
+    }
+}
+
 /// Fail points exist in debug builds only.
 #[cfg(debug_assertions)]
 #[test]

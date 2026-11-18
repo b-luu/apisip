@@ -58,6 +58,16 @@ pub fn classify(ip: IpAddr) -> AddressClass {
 /// change, and so are hosts written with `${VAR}`, so that the value from the
 /// environment is never written to `apisip.toml`.
 fn host_names(source: &Source) -> Result<Vec<String>> {
+    Ok(domain_hosts(source)?
+        .into_iter()
+        .filter(|(_, var)| !var)
+        .map(|(h, _)| h)
+        .collect())
+}
+
+/// Each host name `source` connects to, with whether it is written with
+/// `${VAR}`. IP literals are left out.
+fn domain_hosts(source: &Source) -> Result<Vec<(String, bool)>> {
     let mut urls = vec![(
         source.base_url.as_str(),
         super::parse_base(&source.base_url)?,
@@ -81,16 +91,56 @@ fn host_names(source: &Source) -> Result<Vec<String>> {
             urls.push((raw, url));
         }
     }
-    let mut hosts = Vec::new();
+    let mut hosts: Vec<(String, bool)> = Vec::new();
     for (raw, url) in urls {
-        if let Some(Host::Domain(d)) = url.host()
-            && !authority(raw).contains("${")
-            && !hosts.iter().any(|h| h == d)
-        {
-            hosts.push(d.to_string());
+        if let Some(Host::Domain(d)) = url.host() {
+            let var = authority(raw).contains("${");
+            if !hosts.iter().any(|(h, v)| h == d && *v == var) {
+                hosts.push((d.to_string(), var));
+            }
         }
     }
     Ok(hosts)
+}
+
+/// A warning for each `address_class` entry that no check reads, with the
+/// reason. `hosts` is what `domain_hosts` returns.
+fn unused(source: &Source, hosts: &[(String, bool)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for key in source.address_class.keys() {
+        let names = |var: bool| {
+            hosts
+                .iter()
+                .any(|(h, v)| *v == var && key.eq_ignore_ascii_case(h))
+        };
+        if names(false) {
+            continue;
+        }
+        let ip = key
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+            .is_ok();
+        out.push(if ip {
+            format!(
+                "warning: the \"{key}\" entry of address_class under [source] is never \
+                 checked: it is an IP address, whose class cannot change"
+            )
+        } else if names(true) {
+            // The key is the value of a `${VAR}`, so it is not shown.
+            "warning: an entry of address_class under [source] is never checked: it names \
+             a host written with ${VAR} in base_url or token_url, and apisip checks only \
+             hosts written out in apisip.toml"
+                .to_string()
+        } else {
+            format!(
+                "warning: the \"{key}\" entry of address_class under [source] is never \
+                 checked: it matches neither the base_url host nor the token_url host; \
+                 fix the host name or remove the entry"
+            )
+        });
+    }
+    out
 }
 
 /// The `host:port` part of a URL as written, before any `${VAR}` is filled.
@@ -201,6 +251,9 @@ pub fn new_hosts(source: &Source, before: &Source) -> Result<NewHosts> {
 /// The checked addresses of each recorded host, for the client to connect to.
 /// Fails when a host now resolves to an address of another class.
 pub fn pinned(source: &Source) -> Result<Vec<(String, Vec<SocketAddr>)>> {
+    for warning in unused(source, &domain_hosts(source)?) {
+        eprintln!("{warning}");
+    }
     let mut out = Vec::new();
     for host in host_names(source)? {
         let Some(want) = recorded(source, &host) else {
@@ -375,6 +428,41 @@ mod tests {
             pinned(&s).is_err(),
             "a key in another case is still checked"
         );
+    }
+
+    #[test]
+    fn warns_about_address_class_entries_never_checked() {
+        unsafe { std::env::set_var("APISIP_ADDR_TEST_UNUSED", "tenant.example.test") };
+        let mut s = source(
+            "https://API.example.test/v1",
+            Some("https://${APISIP_ADDR_TEST_UNUSED}/token"),
+        );
+        for key in [
+            "api.example.test",
+            "Api.Example.Test",
+            "10.0.0.1",
+            "[::1]",
+            "tenant.example.test",
+            "old.example.test",
+        ] {
+            s.address_class.insert(key.into(), AddressClass::Public);
+        }
+        let warnings = unused(&s, &domain_hosts(&s).unwrap());
+        assert_eq!(warnings.len(), 4, "{warnings:#?}");
+        assert!(warnings[0].contains("\"10.0.0.1\" entry") && warnings[0].contains("IP address"));
+        assert!(warnings[1].contains("\"[::1]\" entry") && warnings[1].contains("IP address"));
+        assert!(
+            warnings[2].contains("\"old.example.test\" entry")
+                && warnings[2].contains("matches neither"),
+            "{}",
+            warnings[2]
+        );
+        assert!(
+            warnings[3].contains("written with ${VAR}"),
+            "{}",
+            warnings[3]
+        );
+        assert!(!warnings[3].contains("tenant"), "{}", warnings[3]);
     }
 
     #[test]
