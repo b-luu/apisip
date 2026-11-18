@@ -473,6 +473,14 @@ mod tests {
         assert_eq!(warnings.len(), 1, "{warnings:#?}");
         assert!(!warnings[0].contains("10.9.8.7"), "{}", warnings[0]);
         assert!(host_names(&s).unwrap().is_empty());
+
+        unsafe { std::env::set_var("APISIP_ADDR_TEST_IP6", "fd00::7") };
+        let mut s = source("http://[${APISIP_ADDR_TEST_IP6}]:8080", None);
+        s.address_class
+            .insert("[fd00::7]".into(), AddressClass::Private);
+        let warnings = unused(&s, &domain_hosts(&s).unwrap());
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(!warnings[0].contains("fd00"), "{}", warnings[0]);
     }
 
     #[test]
