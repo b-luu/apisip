@@ -35,7 +35,7 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
     }
     let p = Prompter::new(o.yes)?;
     let cwd = std::env::current_dir()?;
-    let spec = Spec::load(&o.spec, &cwd).await?;
+    let spec = Spec::load(&o.spec, &cwd, &[]).await?;
     let det = detect::detect(&spec);
     eprintln!(
         "Read \"{}\": {} data endpoint(s) found, {} skipped.",

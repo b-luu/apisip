@@ -130,7 +130,8 @@ impl Workspace {
             let text = std::fs::read_to_string(&snap)?;
             return Spec::parse(&text, &config.source.spec);
         }
-        Spec::load(&config.source.spec, &self.dir).await
+        let pins = crate::http::address::spec_pins(&config.source.spec, &config.source)?;
+        Spec::load(&config.source.spec, &self.dir, &pins).await
     }
 
     pub fn save_meta(&self, spec: &Spec, baseline: &str) -> Result<()> {
