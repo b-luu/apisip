@@ -159,7 +159,7 @@ Maintainers only. Releases follow the conventional commits on `main`.
   nix develop -c dist generate --mode ci
   git apply .github/release-edits.patch
   git checkout dist-workspace.toml
-  git diff --exit-code
+  git add --intent-to-add . && git diff --exit-code
   ```
 
 - Every action in `release.yml` is pinned by commit SHA through

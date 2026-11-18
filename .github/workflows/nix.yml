@@ -50,6 +50,6 @@ jobs:
           nix develop -c dist generate --mode ci
           git apply .github/release-edits.patch
           git checkout dist-workspace.toml
-          git diff --exit-code
+          git add --intent-to-add . && git diff --exit-code
       - run: nix flake check
       - run: nix run . -- --help
