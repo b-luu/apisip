@@ -66,7 +66,8 @@ fn host_names(source: &Source) -> Result<Vec<String>> {
 }
 
 /// Each host name `source` connects to, with whether it is written with
-/// `${VAR}`. IP literals are left out.
+/// `${VAR}`. IP literals are left out, except those from a `${VAR}`, which
+/// only `unused` reads, so that it never shows them.
 fn domain_hosts(source: &Source) -> Result<Vec<(String, bool)>> {
     let mut urls = vec![(
         source.base_url.as_str(),
@@ -93,11 +94,15 @@ fn domain_hosts(source: &Source) -> Result<Vec<(String, bool)>> {
     }
     let mut hosts: Vec<(String, bool)> = Vec::new();
     for (raw, url) in urls {
-        if let Some(Host::Domain(d)) = url.host() {
-            let var = authority(raw).contains("${");
-            if !hosts.iter().any(|(h, v)| h == d && *v == var) {
-                hosts.push((d.to_string(), var));
-            }
+        let var = authority(raw).contains("${");
+        let host = match url.host() {
+            Some(Host::Domain(d)) => d.to_string(),
+            Some(Host::Ipv4(ip)) if var => ip.to_string(),
+            Some(Host::Ipv6(ip)) if var => ip.to_string(),
+            _ => continue,
+        };
+        if !hosts.iter().any(|(h, v)| *h == host && *v == var) {
+            hosts.push((host, var));
         }
     }
     Ok(hosts)
@@ -108,30 +113,26 @@ fn domain_hosts(source: &Source) -> Result<Vec<(String, bool)>> {
 fn unused(source: &Source, hosts: &[(String, bool)]) -> Vec<String> {
     let mut out = Vec::new();
     for key in source.address_class.keys() {
+        let bare = key.trim_start_matches('[').trim_end_matches(']');
         let names = |var: bool| {
             hosts
                 .iter()
-                .any(|(h, v)| *v == var && key.eq_ignore_ascii_case(h))
+                .any(|(h, v)| *v == var && bare.eq_ignore_ascii_case(h))
         };
         if names(false) {
             continue;
         }
-        let ip = key
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .parse::<IpAddr>()
-            .is_ok();
-        out.push(if ip {
-            format!(
-                "warning: the \"{key}\" entry of address_class under [source] is never \
-                 checked: it is an IP address, whose class cannot change"
-            )
-        } else if names(true) {
+        out.push(if names(true) {
             // The key is the value of a `${VAR}`, so it is not shown.
             "warning: an entry of address_class under [source] is never checked: it names \
              a host written with ${VAR} in base_url or token_url, and apisip checks only \
              hosts written out in apisip.toml"
                 .to_string()
+        } else if bare.parse::<IpAddr>().is_ok() {
+            format!(
+                "warning: the \"{key}\" entry of address_class under [source] is never \
+                 checked: it is an IP address, whose class cannot change"
+            )
         } else {
             format!(
                 "warning: the \"{key}\" entry of address_class under [source] is never \
@@ -463,6 +464,15 @@ mod tests {
             warnings[3]
         );
         assert!(!warnings[3].contains("tenant"), "{}", warnings[3]);
+
+        unsafe { std::env::set_var("APISIP_ADDR_TEST_IP", "10.9.8.7") };
+        let mut s = source("http://${APISIP_ADDR_TEST_IP}:8080", None);
+        s.address_class
+            .insert("10.9.8.7".into(), AddressClass::Private);
+        let warnings = unused(&s, &domain_hosts(&s).unwrap());
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(!warnings[0].contains("10.9.8.7"), "{}", warnings[0]);
+        assert!(host_names(&s).unwrap().is_empty());
     }
 
     #[test]
