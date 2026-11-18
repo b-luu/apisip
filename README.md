@@ -257,7 +257,9 @@ cast = "lossless"                 # default; "exact" or "none" for stricter typi
 - **Limits:** `max_response_mb` (default 64) is the largest API response
   body apisip reads. A larger one fails the stream with its size; raise the
   setting, or lower the page size the stream requests. An OAuth2 token
-  response is capped at 1 MB. `max_pages` (default 1000) is the most pages
+  response is capped at 1 MB. A spec that `init` or `update` downloads is
+  capped at 64 MiB and 5 minutes; for a larger one, save it to a file and
+  pass its path. `max_pages` (default 1000) is the most pages
   one stream fetches in one run, counting the empty or repeated page that
   ends pagination. A stream with more fails rather than commit part of its
   data; raise it, or set it to 0 for no limit.
