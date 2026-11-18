@@ -152,7 +152,7 @@ Maintainers only. Releases follow the conventional commits on `main`.
   its config.
 - The `Nix` workflow does that check instead: it removes the `allow-dirty`
   line, runs `dist generate`, applies the patch and fails if the result
-  differs from `release.yml`. Run the same check locally:
+  differs from `release.yml`. Run the same check locally, in a clean checkout:
 
   ```sh
   sed -i.bak '/^allow-dirty/d' dist-workspace.toml && rm dist-workspace.toml.bak
