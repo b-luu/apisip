@@ -96,11 +96,15 @@ pub async fn run(ws: &Workspace, o: UpdateOptions) -> Result<bool> {
             "apisip.toml unchanged."
         }
     );
-    if !plan.d.removed.is_empty() {
+    let gone = plan.gone();
+    if !gone.is_empty() {
         println!(
             "Disabled (gone from the spec, data and watermarks kept): {}",
-            plan.d.removed.join(", ")
+            gone.join(", ")
         );
+    }
+    for (name, reason) in &plan.refused {
+        println!("Disabled {name} (data and watermarks kept): {reason}");
     }
     for line in kept {
         println!("{line}");
@@ -118,6 +122,8 @@ struct Plan {
     new_spec: Spec,
     det: Detection,
     d: Diff,
+    /// Removed endpoints still in the spec but refused by detection, with why.
+    refused: BTreeMap<String, String>,
     store: Option<Store>,
     schemas: Vec<StreamSchema>,
     spec_change: Option<String>,
@@ -149,6 +155,15 @@ impl Plan {
         let det = detect::detect(&new_spec);
         let theirs = det.baseline(&mine.source);
         let d = diff(&base, &theirs, &mine);
+        let refused = d
+            .removed
+            .iter()
+            .filter_map(|name| {
+                let path = &base.streams.iter().find(|s| &s.name == name)?.path;
+                let skip = det.skipped.iter().find(|s| &s.path == path)?;
+                Some((name.clone(), super::printable(&skip.reason)))
+            })
+            .collect();
 
         let store = super::open_existing_store(ws, &mine);
         let undeclared = match &store {
@@ -170,6 +185,7 @@ impl Plan {
             new_spec,
             det,
             d,
+            refused,
             store,
             schemas,
             spec_change,
@@ -181,6 +197,8 @@ impl Plan {
     async fn print(&self) {
         print_diff(
             &self.d,
+            &self.gone(),
+            &self.refused,
             &self.schemas,
             self.auth_changed
                 .then_some((&self.old_auth, &self.det.auth)),
@@ -188,6 +206,16 @@ impl Plan {
         if let Some(store) = &self.store {
             print_drift(store, &self.mine, &self.new_spec).await;
         }
+    }
+
+    /// The removed endpoints that are really gone from the spec.
+    fn gone(&self) -> Vec<&str> {
+        self.d
+            .removed
+            .iter()
+            .filter(|n| !self.refused.contains_key(*n))
+            .map(String::as_str)
+            .collect()
     }
 
     fn changed(&self) -> bool {

@@ -1,13 +1,14 @@
 //! What update prints before it asks anything: the config and schema
 //! changes, the auth schemes, and the drift the last runs saw.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
 use super::auth::auth_names;
 use super::config_merge::{Diff, Kind, changes_views};
 use super::schema_merge::{self, StreamSchema};
+use crate::cmd::printable;
 use crate::config::Config;
 use crate::detect::{self, AuthOption};
 use crate::schema::RecordSchema;
@@ -17,17 +18,22 @@ use crate::state::Manifest;
 
 pub(super) fn print_diff(
     d: &Diff,
+    gone: &[&str],
+    refused: &BTreeMap<String, String>,
     schemas: &[StreamSchema],
     auth: Option<(&Option<Vec<AuthOption>>, &Vec<AuthOption>)>,
 ) {
     if !d.added.is_empty() {
         println!("New endpoints: {}", d.added.join(", "));
     }
-    if !d.removed.is_empty() {
+    if !gone.is_empty() {
         println!(
             "Removed from the spec (will be disabled): {}",
-            d.removed.join(", ")
+            gone.join(", ")
         );
+    }
+    for (name, reason) in refused {
+        println!("Refused, still in the spec (will be disabled): {name}: {reason}");
     }
     for c in &d.fields {
         let what = match &c.stream {
@@ -79,10 +85,16 @@ pub(super) fn print_diff(
     if let Some((Some(old), new)) = auth {
         let (o, n) = (auth_names(old), auth_names(new));
         for s in n.difference(&o) {
-            println!("Auth scheme added: {s}");
+            println!("Auth scheme added: {}", printable(s));
         }
         for s in o.difference(&n) {
-            println!("Auth scheme removed: {s}");
+            match super::auth::refusal(new, s) {
+                Some(why) => println!(
+                    "Auth scheme refused, still in the spec: {}: {why}",
+                    printable(s)
+                ),
+                None => println!("Auth scheme removed: {}", printable(s)),
+            }
         }
     }
 }
