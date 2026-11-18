@@ -100,9 +100,10 @@ fn host_names(source: &Source) -> Result<Vec<String>> {
 fn authority(raw: &str) -> &str {
     match raw.split_once("://") {
         Some((scheme, rest))
-            if scheme
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)) =>
+            if scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)) =>
         {
             rest.split(['/', '?', '#']).next().unwrap_or_default()
         }
@@ -322,6 +323,9 @@ mod tests {
         );
         unsafe { std::env::set_var("APISIP_ADDR_TEST_SCHEME", "https://tenant.example.test/?") };
         assert!(names("${APISIP_ADDR_TEST_SCHEME}://a.test", None).is_empty());
+        assert_eq!(authority("https://a.test/x"), "a.test");
+        assert_eq!(authority("://a.test/${X}"), "://a.test/${X}");
+        assert_eq!(authority("1://a.test/${X}"), "1://a.test/${X}");
         assert_eq!(
             names(
                 "https://api.example.test",
