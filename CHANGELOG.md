@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/b-luu/apisip/compare/v0.4.0...v0.4.1) - 2026-11-18
+
+### Fixed
+
+- *(http)* require a scheme to start with a letter
+- *(http)* read a URL's host only after a real scheme
+- *(release)* build aarch64-apple-darwin on macos-15
+
+### Other
+
+- *(http)* reuse one env var in the authority test
+- Merge remote-tracking branch 'origin/main' into ci/nix-build-only
+- *(contributing)* run the local dist check in a clean checkout
+- *(nix)* fail the dist check on new untracked files
+- *(contributing)* make the release.yml check's sed portable to BSD
+- *(nix)* check release.yml against dist output
+- *(deps)* bump the cargo-minor-patch group with 3 updates ([#140](https://github.com/b-luu/apisip/pull/140))
+- *(http)* write the gzip test payload without an extra copy
+- *(nix)* skip the Nix job on pushes that only touch code
+- *(http)* pin that max_response_mb counts decoded gzip bytes
+- *(nix)* build the flake without running the tests
+
 ## [0.4.0](https://github.com/b-luu/apisip/compare/v0.3.0...v0.4.0) - 2026-11-10
 
 ### Fixed

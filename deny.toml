@@ -4,7 +4,12 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # Remove once apisip and its dependencies move off these crates:
+    # https://github.com/b-luu/apisip/issues/148
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no safe upgrade; see #148" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained, no safe upgrade; see #148" },
+]
 
 [licenses]
 version = 2
