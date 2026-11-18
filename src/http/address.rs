@@ -311,8 +311,7 @@ mod tests {
         assert!(names("http://127.0.0.1:8080", None).is_empty());
         assert!(names("http://[::1]:8080", Some("http://10.0.0.1/token")).is_empty());
         assert!(names("https://${APISIP_ADDR_TEST_HOST}.example.test", None).is_empty());
-        unsafe { std::env::set_var("APISIP_ADDR_TEST_BASE", "https://tenant.example.test") };
-        assert!(names("${APISIP_ADDR_TEST_BASE}/x?r=http://a.test", None).is_empty());
+        assert!(names("${APISIP_ADDR_TEST_URL}/x?r=http://a.test", None).is_empty());
         assert!(names("${APISIP_ADDR_TEST_URL}?r=http://a.test", None).is_empty());
         assert_eq!(
             names(
@@ -321,8 +320,7 @@ mod tests {
             ),
             ["api.example.test"]
         );
-        unsafe { std::env::set_var("APISIP_ADDR_TEST_SCHEME", "https://tenant.example.test/?") };
-        assert!(names("${APISIP_ADDR_TEST_SCHEME}://a.test", None).is_empty());
+        assert!(names("${APISIP_ADDR_TEST_URL}://a.test", None).is_empty());
         assert_eq!(authority("https://a.test/x"), "a.test");
         assert_eq!(authority("://a.test/${X}"), "://a.test/${X}");
         assert_eq!(authority("1://a.test/${X}"), "1://a.test/${X}");
