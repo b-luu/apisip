@@ -34,6 +34,7 @@ pub struct Operation<'a> {
 }
 
 impl<'a> Operation<'a> {
+    #[cfg(test)]
     pub fn param(&self, name: &str) -> Option<&'a Value> {
         self.params
             .iter()
@@ -173,6 +174,7 @@ impl Spec {
 
     /// Returns a deep copy of a schema with every local `$ref` inlined and
     /// `allOf` merged. A recursive ref is replaced by an empty (free-form) schema.
+    #[cfg(test)]
     pub fn inline(&self, v: &Value) -> Value {
         self.inline_bounded(v).0
     }

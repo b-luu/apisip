@@ -16,7 +16,7 @@ use crate::schema::Drift;
 use crate::sink::{META_DIR, Store};
 use crate::workspace::Workspace;
 
-pub const STATE_FILE: &str = "_apisip/state.json";
+pub(crate) const STATE_FILE: &str = "_apisip/state.json";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct State {
@@ -34,34 +34,34 @@ pub struct StreamState {
     pub watermark: Option<String>,
     /// The cursor field the watermark belongs to; a different field resets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
+    pub(crate) cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_committed_at: Option<DateTime<Utc>>,
+    pub(crate) last_committed_at: Option<DateTime<Utc>>,
     /// Cursor range of the last committed run, to flag overlaps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_range: Option<CursorRange>,
+    pub(crate) last_range: Option<CursorRange>,
     /// Fingerprints of the records written at the watermark: the next run
     /// asks from the watermark inclusive and skips them when unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub boundary: Vec<String>,
+    pub(crate) boundary: Vec<String>,
     /// Set when a run saw the cursor go up under a descending sort. Holds the
     /// sort it was seen with: changing the sort in apisip.toml clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unreliable_sort: Option<String>,
+    pub(crate) unreliable_sort: Option<String>,
 }
 
 impl StreamState {
     /// The watermark, if it belongs to this cursor field.
-    pub fn watermark_for(&self, cursor: &str) -> Option<&str> {
+    pub(crate) fn watermark_for(&self, cursor: &str) -> Option<&str> {
         match &self.cursor {
             Some(c) if c == cursor => self.watermark.as_deref(),
             _ => None,
         }
     }
 
-    pub fn sort_is_unreliable(&self, sort: Option<&Sort>) -> bool {
+    pub(crate) fn sort_is_unreliable(&self, sort: Option<&Sort>) -> bool {
         match (sort, &self.unreliable_sort) {
             (Some(s), Some(seen)) => sort_signature(s) == *seen,
             _ => false,
@@ -70,7 +70,7 @@ impl StreamState {
 }
 
 /// Why a folder may not write a destination another folder owns.
-pub fn foreign_owner(url: &str, owner: &str, this: Option<&str>) -> String {
+pub(crate) fn foreign_owner(url: &str, owner: &str, this: Option<&str>) -> String {
     format!(
         "the destination {url} belongs to another apisip folder (folder id {owner}; this \
          folder's is {}). Two folders writing one destination would mix their data. Use \
@@ -80,18 +80,18 @@ pub fn foreign_owner(url: &str, owner: &str, this: Option<&str>) -> String {
     )
 }
 
-pub fn sort_signature(s: &Sort) -> String {
+pub(crate) fn sort_signature(s: &Sort) -> String {
     serde_json::to_string(s).unwrap_or_default()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CursorRange {
-    pub min: String,
-    pub max: String,
+pub(crate) struct CursorRange {
+    pub(crate) min: String,
+    pub(crate) max: String,
 }
 
 impl State {
-    pub async fn load(store: &Store) -> Result<State> {
+    pub(crate) async fn load(store: &Store) -> Result<State> {
         match store.get(STATE_FILE).await? {
             None => Ok(State::default()),
             Some(b) => serde_json::from_slice(&b)
@@ -104,7 +104,7 @@ impl State {
     /// on the version read, and a conflict re-reads and re-applies `change`.
     /// A local destination has no conditional writes and relies on
     /// `Store::commit_lock`, which every caller holds. Returns the state as written.
-    pub async fn update(store: &Store, mut change: impl FnMut(&mut State)) -> Result<State> {
+    pub(crate) async fn update(store: &Store, mut change: impl FnMut(&mut State)) -> Result<State> {
         let path = Path::from(STATE_FILE);
         let started = std::time::Instant::now();
         let mut transient = 0;
@@ -209,22 +209,22 @@ fn is_zero(n: &u64) -> bool {
 /// What one run did, written to `_apisip/runs/<run_id>.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
-    pub run_id: String,
-    pub started_at: DateTime<Utc>,
+    pub(crate) run_id: String,
+    pub(crate) started_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<DateTime<Utc>>,
-    pub status: RunStatus,
-    pub full_refresh: bool,
-    pub format: String,
+    pub(crate) finished_at: Option<DateTime<Utc>>,
+    pub(crate) status: RunStatus,
+    pub(crate) full_refresh: bool,
+    pub(crate) format: String,
     pub streams: BTreeMap<String, StreamReport>,
     #[serde(default, skip_serializing_if = "RunKind::is_fetch")]
-    pub kind: RunKind,
+    pub(crate) kind: RunKind,
 }
 
 /// A run fetches from the API; a replay re-reads quarantined records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RunKind {
+pub(crate) enum RunKind {
     #[default]
     Fetch,
     Replay,
@@ -238,7 +238,7 @@ impl RunKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RunStatus {
+pub(crate) enum RunStatus {
     Running,
     Success,
     Partial,
@@ -247,38 +247,38 @@ pub enum RunStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamReport {
-    pub status: StreamStatus,
-    pub mode: String,
+    pub(crate) status: StreamStatus,
+    pub(crate) mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub(crate) error: Option<String>,
     pub records: u64,
-    pub quarantined: u64,
-    pub pages: u64,
+    pub(crate) quarantined: u64,
+    pub(crate) pages: u64,
     #[serde(default)]
-    pub files: Vec<String>,
+    pub(crate) files: Vec<String>,
     /// `from` is the watermark the run started from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed: Option<CursorRange>,
+    pub(crate) observed: Option<CursorRange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlap: Option<Overlap>,
     /// Records at the watermark skipped because an earlier run wrote them unchanged.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unchanged: u64,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub unreliable_sort: bool,
+    pub(crate) unreliable_sort: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema: Option<crate::schema::SchemaSource>,
+    pub(crate) schema: Option<crate::schema::SchemaSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub drift: Option<Drift>,
+    pub(crate) drift: Option<Drift>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum StreamStatus {
+pub(crate) enum StreamStatus {
     Committed,
     Failed,
 }
@@ -286,13 +286,13 @@ pub enum StreamStatus {
 /// This run fetched records older than the previous run's newest one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Overlap {
-    pub previous_run_id: Option<String>,
-    pub previous_max: String,
+    pub(crate) previous_run_id: Option<String>,
+    pub(crate) previous_max: String,
 }
 
 impl StreamReport {
     /// A committed stream with nothing done yet; `mode` as the manifest shows it.
-    pub fn new(mode: &str) -> StreamReport {
+    pub(crate) fn new(mode: &str) -> StreamReport {
         StreamReport {
             status: StreamStatus::Committed,
             mode: mode.into(),
@@ -316,7 +316,7 @@ impl StreamReport {
 impl Manifest {
     /// Sets the status from the stream reports and the finish time. Returns
     /// the number of failed streams.
-    pub fn finish(&mut self) -> usize {
+    pub(crate) fn finish(&mut self) -> usize {
         let failed = self
             .streams
             .values()
@@ -335,7 +335,7 @@ impl Manifest {
         format!("{META_DIR}/runs/{run_id}.json")
     }
 
-    pub async fn save(&self, store: &Store) -> Result<()> {
+    pub(crate) async fn save(&self, store: &Store) -> Result<()> {
         store
             .put(
                 &Manifest::path(&self.run_id),
@@ -430,7 +430,10 @@ fn is_transient(e: &object_store::Error) -> bool {
 }
 
 /// Streams whose descending sort was found unreliable by an earlier run.
-pub async fn unreliable_streams(ws: &Workspace, config: &Config) -> Result<BTreeSet<String>> {
+pub(crate) async fn unreliable_streams(
+    ws: &Workspace,
+    config: &Config,
+) -> Result<BTreeSet<String>> {
     if let Some(dir) = config
         .destination
         .url

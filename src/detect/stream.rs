@@ -104,7 +104,6 @@ pub(super) fn detect_stream(spec: &Spec, op: &Operation) -> Result<DetectedStrea
             incremental,
             cast: Default::default(),
         },
-        method: op.method,
         fields,
     })
 }

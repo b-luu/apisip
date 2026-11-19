@@ -25,7 +25,6 @@ pub use throttle::Throttle;
 #[derive(Debug, Clone)]
 pub struct Page {
     pub url: Url,
-    pub status: u16,
     pub headers: HeaderMap,
     pub body: Value,
 }
@@ -160,6 +159,7 @@ pub(crate) fn http_client(pins: &[(String, Vec<std::net::SocketAddr>)]) -> Resul
 
 impl ApiClient {
     /// Builds the client for a `[source]`. Fails when a `${VAR}` it needs is unset.
+    #[cfg(test)]
     pub fn new(source: &Source) -> Result<Arc<ApiClient>> {
         ApiClient::build(source, &[])
     }
@@ -310,7 +310,6 @@ impl ApiClient {
                 };
                 return Ok(Page {
                     url: url.clone(),
-                    status,
                     headers,
                     body,
                 });

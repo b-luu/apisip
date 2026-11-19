@@ -18,7 +18,7 @@ use crate::spec::Spec;
 use crate::workspace::Workspace;
 
 /// The streams to run: the named ones, or every enabled one.
-pub fn select_streams(config: &Config, names: &[String]) -> Result<Vec<StreamConfig>> {
+pub(crate) fn select_streams(config: &Config, names: &[String]) -> Result<Vec<StreamConfig>> {
     if names.is_empty() {
         return Ok(config
             .streams
@@ -60,7 +60,7 @@ pub(super) fn find_stream<'a>(config: &'a Config, name: &str) -> Result<&'a Stre
 
 /// Where a stream's schema comes from: `spec`, `inferred`, `edited` (the
 /// file differs from what apisip wrote), or `?` when the spec is unreadable.
-pub fn schema_label(ws: &Workspace, spec: Option<&Spec>, s: &StreamConfig) -> &'static str {
+pub(crate) fn schema_label(ws: &Workspace, spec: Option<&Spec>, s: &StreamConfig) -> &'static str {
     match ws.read_schema(&s.name).ok().flatten() {
         Some(_) if ws.schema_edited(&s.name).unwrap_or(false) => "edited",
         Some(v) if v.get(SOURCE_KEY).and_then(|v| v.as_str()) == Some("inferred") => "inferred",
@@ -74,7 +74,7 @@ pub fn schema_label(ws: &Workspace, spec: Option<&Spec>, s: &StreamConfig) -> &'
 }
 
 /// The destination, or `None` when it is a local folder nothing was written to yet.
-pub fn open_existing_store(ws: &Workspace, config: &Config) -> Option<Store> {
+pub(crate) fn open_existing_store(ws: &Workspace, config: &Config) -> Option<Store> {
     let url = interpolate(&config.destination.url).ok()?;
     if !url.starts_with("s3://") && !Store::local_dir(&url, &ws.dir).ok()?.exists() {
         return None;
@@ -84,7 +84,7 @@ pub fn open_existing_store(ws: &Workspace, config: &Config) -> Option<Store> {
 
 /// A stream's record schema: `schemas/<stream>.json`, or the spec's when
 /// the file is missing. `None` when there is neither: the run infers one.
-pub fn load_schema(
+pub(crate) fn load_schema(
     ws: &Workspace,
     spec: Option<&Spec>,
     s: &StreamConfig,
@@ -113,7 +113,7 @@ pub fn load_schema(
 }
 
 /// The warning for a stream whose spec schema is too large to inline in full.
-pub fn truncation_warning(spec: &Spec, s: &StreamConfig) -> Option<String> {
+pub(crate) fn truncation_warning(spec: &Spec, s: &StreamConfig) -> Option<String> {
     schema_truncated(spec, s).then(|| {
         format!(
             "warning: the schema of stream {} is too large to inline; fields past the limit are untyped",
@@ -123,7 +123,7 @@ pub fn truncation_warning(spec: &Spec, s: &StreamConfig) -> Option<String> {
 }
 
 /// The content of a schema file for a stream the spec describes.
-pub fn spec_schema_file(spec: &Spec, s: &StreamConfig) -> Option<serde_json::Value> {
+pub(crate) fn spec_schema_file(spec: &Spec, s: &StreamConfig) -> Option<serde_json::Value> {
     let mut item = stream_record_schema(spec, s)?;
     RecordSchema::from_spec(&item)?;
     item[SOURCE_KEY] = "spec".into();
@@ -131,7 +131,7 @@ pub fn spec_schema_file(spec: &Spec, s: &StreamConfig) -> Option<serde_json::Val
 }
 
 /// The endpoint URL with the stream's fixed params, before paging and incremental params.
-pub fn first_url(client: &ApiClient, s: &StreamConfig) -> Result<Url> {
+pub(crate) fn first_url(client: &ApiClient, s: &StreamConfig) -> Result<Url> {
     let mut url = client.endpoint(&s.path)?;
     for (k, v) in &s.params {
         crate::http::paginate::set_param(&mut url, k, &interpolate(v)?);
@@ -145,7 +145,7 @@ pub fn first_url(client: &ApiClient, s: &StreamConfig) -> Result<Url> {
     Ok(url)
 }
 
-pub fn pagination_label(p: &Option<Pagination>) -> &'static str {
+pub(crate) fn pagination_label(p: &Option<Pagination>) -> &'static str {
     match p {
         None => "single page",
         Some(Pagination::PageNumber { .. }) => "page number",
@@ -163,7 +163,7 @@ pub(crate) fn printable(s: &str) -> String {
 }
 
 /// The warning printed when no static rate limit is configured.
-pub fn print_rate_limit_warning(long: bool) {
+pub(crate) fn print_rate_limit_warning(long: bool) {
     if long {
         eprintln!(
             "warning: no rate limit was found in the spec, so none is configured.\n\

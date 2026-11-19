@@ -26,26 +26,26 @@ use crate::workspace::Workspace;
 
 /// One property of a schema file, with whether it is required.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Field {
-    pub schema: Value,
-    pub required: bool,
+pub(crate) struct Field {
+    pub(crate) schema: Value,
+    pub(crate) required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct FieldMerge {
-    pub field: String,
-    pub base: Option<Field>,
-    pub theirs: Option<Field>,
-    pub mine: Option<Field>,
-    pub kind: Kind,
+pub(crate) struct FieldMerge {
+    pub(crate) field: String,
+    pub(crate) base: Option<Field>,
+    pub(crate) theirs: Option<Field>,
+    pub(crate) mine: Option<Field>,
+    pub(crate) kind: Kind,
     /// Whether taking the spec's side keeps the files already written readable.
-    pub compatible: bool,
+    pub(crate) compatible: bool,
 }
 
 impl FieldMerge {
     /// What the spec changed. Without an edit here, that is also what
     /// taking the spec's side does to the current file.
-    pub fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         let f = &self.field;
         match (&self.base, &self.theirs) {
             (None, Some(t)) => format!("+ {f} ({})", label(t)),
@@ -78,7 +78,7 @@ fn label(f: &Field) -> &'static str {
 }
 
 /// The properties of a schema file, in file order.
-pub fn fields(file: &Value) -> Vec<(String, Field)> {
+pub(crate) fn fields(file: &Value) -> Vec<(String, Field)> {
     let required: Vec<&str> = file
         .get("required")
         .and_then(Value::as_array)
@@ -102,7 +102,7 @@ pub fn fields(file: &Value) -> Vec<(String, Field)> {
 
 /// The three-way comparison. Without a baseline, the current file counts as
 /// unedited.
-pub fn diff(base: Option<&Value>, theirs: &Value, mine: &Value) -> Vec<FieldMerge> {
+pub(crate) fn diff(base: Option<&Value>, theirs: &Value, mine: &Value) -> Vec<FieldMerge> {
     let (b, t, m) = (fields(base.unwrap_or(mine)), fields(theirs), fields(mine));
     let get = |side: &[(String, Field)], k: &str| {
         side.iter().find(|(n, _)| n == k).map(|(_, f)| f.clone())
@@ -144,7 +144,7 @@ pub fn diff(base: Option<&Value>, theirs: &Value, mine: &Value) -> Vec<FieldMerg
 
 /// Whether data written as `from` still reads as `to`: the same type,
 /// integer to number, and objects that only gain fields.
-pub fn widens(from: &Shape, to: &Shape) -> bool {
+pub(crate) fn widens(from: &Shape, to: &Shape) -> bool {
     match (from, to) {
         _ if from == to => true,
         (Shape::Int, Shape::Float) => true,
@@ -159,7 +159,7 @@ pub fn widens(from: &Shape, to: &Shape) -> bool {
 }
 
 /// The current file with the spec's side of the chosen changes.
-pub fn apply(mine: &Value, changes: &[&FieldMerge]) -> Value {
+pub(crate) fn apply(mine: &Value, changes: &[&FieldMerge]) -> Value {
     let mut out = mine.clone();
     for c in changes {
         set_field(&mut out, &c.field, c.theirs.as_ref());
@@ -168,7 +168,7 @@ pub fn apply(mine: &Value, changes: &[&FieldMerge]) -> Value {
 }
 
 /// Declares a field the runs saw but the schema does not.
-pub fn adopt(file: &mut Value, name: &str, shape: &Shape) {
+pub(crate) fn adopt(file: &mut Value, name: &str, shape: &Shape) {
     let f = Field {
         schema: shape.json_schema(),
         required: false,
@@ -210,7 +210,7 @@ fn set_field(file: &mut Value, name: &str, f: Option<&Field>) {
 }
 
 /// The type the runs observed for an undeclared field, from an example value.
-pub fn observed_shape(name: &str, example: &Value) -> Shape {
+pub(crate) fn observed_shape(name: &str, example: &Value) -> Shape {
     let record = Value::Object(Map::from_iter([(name.to_string(), example.clone())]));
     RecordSchema::infer(&[record])
         .fields

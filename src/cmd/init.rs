@@ -493,7 +493,7 @@ fn stream_names(streams: &[StreamConfig]) -> String {
 }
 
 /// Empty -> the default; a path -> `file://<path>`; URLs unchanged.
-pub fn normalize_destination(input: &str) -> String {
+pub(crate) fn normalize_destination(input: &str) -> String {
     let t = input.trim();
     if t.is_empty() {
         return crate::config::DEFAULT_DESTINATION.into();
