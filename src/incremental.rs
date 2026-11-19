@@ -221,9 +221,10 @@ impl Range {
     }
 }
 
-/// Whether a cursor is a timestamp later than the cap. One far-future value
-/// (bad data, a sentinel date) would otherwise become the watermark, and
-/// every later record would never be fetched. Numbers are capped only with
+/// Whether a cursor is later than the cap: a timestamp, or a number read as
+/// epoch time in the `epoch` unit. One far-future value (bad data, a
+/// sentinel date) would otherwise become the watermark, and every later
+/// record would never be fetched. Numbers are capped only with
 /// an `epoch` unit, since a counter has none; text is not capped.
 pub fn beyond(c: &CursorValue, cap: Option<DateTime<Utc>>, epoch: Option<Epoch>) -> bool {
     let Some(cap) = cap else {
