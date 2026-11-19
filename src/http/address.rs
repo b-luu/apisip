@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use url::Host;
 
 use crate::auth::resolve_token_url;
+use crate::cmd::printable;
 use crate::config::{AddressClass, AuthConfig, Source};
 
 pub fn classify(ip: IpAddr) -> AddressClass {
@@ -138,6 +139,8 @@ fn unused(source: &Source, hosts: &[(String, bool)]) -> Vec<String> {
                  checked: it is an IP address, whose class cannot change"
             )
         } else {
+            // The key comes from apisip.toml and may hold a terminal escape.
+            let key = printable(key);
             format!(
                 "warning: the \"{key}\" entry of address_class under [source] is never \
                  checked: it matches neither the base_url host nor the token_url host; \
@@ -496,6 +499,18 @@ mod tests {
         let warnings = unused(&s, &domain_hosts(&s).unwrap());
         assert_eq!(warnings.len(), 1, "{warnings:#?}");
         assert!(warnings[0].contains("matches neither"), "{}", warnings[0]);
+
+        let mut s = source("https://api.example.test", None);
+        s.address_class
+            .insert("old\u{1b}[2J.example.test".into(), AddressClass::Public);
+        let warnings = unused(&s, &domain_hosts(&s).unwrap());
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(!warnings[0].contains('\u{1b}'), "{:?}", warnings[0]);
+        assert!(
+            warnings[0].contains("\"old [2J.example.test\" entry"),
+            "{:?}",
+            warnings[0]
+        );
     }
 
     #[test]
