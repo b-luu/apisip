@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 /// Parses `KEY=VALUE` lines the same way `dotenvy` does for our own output.
-pub fn read(path: &Path) -> Result<Vec<(String, String)>> {
+pub(crate) fn read(path: &Path) -> Result<Vec<(String, String)>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -40,7 +40,7 @@ pub fn describe(e: &dotenvy::Error) -> String {
     }
 }
 
-pub fn get(path: &Path, key: &str) -> Result<Option<String>> {
+pub(crate) fn get(path: &Path, key: &str) -> Result<Option<String>> {
     Ok(read(path)?
         .into_iter()
         .find(|(k, _)| k == key)
@@ -49,7 +49,7 @@ pub fn get(path: &Path, key: &str) -> Result<Option<String>> {
 
 /// Sets `Some(value)` keys, and adds `None` keys with an empty value when
 /// they are absent. Other lines are kept as they are.
-pub fn upsert(path: &Path, updates: &[(String, Option<String>)]) -> Result<()> {
+pub(crate) fn upsert(path: &Path, updates: &[(String, Option<String>)]) -> Result<()> {
     let existing = if path.exists() {
         std::fs::read_to_string(path)?
     } else {
@@ -73,7 +73,7 @@ pub fn upsert(path: &Path, updates: &[(String, Option<String>)]) -> Result<()> {
 }
 
 /// Writes `.env.example`: the same keys, empty values.
-pub fn write_example(path: &Path, keys: &[String]) -> Result<()> {
+pub(crate) fn write_example(path: &Path, keys: &[String]) -> Result<()> {
     let mut text =
         String::from("# Copy to .env and fill in. apisip reads .env from the folder it runs in.\n");
     for k in keys {
@@ -106,7 +106,7 @@ fn quote(v: &str) -> String {
     }
 }
 
-pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -131,7 +131,7 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Adds `entry` to a `.gitignore`, creating it if needed.
-pub fn ensure_gitignored(path: &Path, entry: &str) -> Result<()> {
+pub(crate) fn ensure_gitignored(path: &Path, entry: &str) -> Result<()> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     if existing
         .lines()
@@ -149,7 +149,7 @@ pub fn ensure_gitignored(path: &Path, entry: &str) -> Result<()> {
 }
 
 /// `****abcd` for display; never the whole secret.
-pub fn mask(v: &str) -> String {
+pub(crate) fn mask(v: &str) -> String {
     if v.is_empty() {
         return "(empty)".into();
     }

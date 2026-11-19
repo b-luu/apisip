@@ -127,10 +127,6 @@ impl Authenticator {
         Ok(Authenticator { kind })
     }
 
-    pub fn none() -> Authenticator {
-        Authenticator { kind: Kind::None }
-    }
-
     /// The resolved secret values, so callers can mask them in messages.
     /// They include the encoded Basic credential and the OAuth2 access
     /// tokens fetched so far: a server can echo either back in an error.

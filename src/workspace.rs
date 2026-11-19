@@ -12,7 +12,7 @@ use crate::spec::Spec;
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
-    pub dir: PathBuf,
+    pub(crate) dir: PathBuf,
 }
 
 impl Workspace {
@@ -24,28 +24,28 @@ impl Workspace {
         Ok(Workspace { dir })
     }
 
-    pub fn config_path(&self) -> PathBuf {
+    pub(crate) fn config_path(&self) -> PathBuf {
         self.dir.join(CONFIG_FILE)
     }
     pub fn env_path(&self) -> PathBuf {
         self.dir.join(".env")
     }
-    pub fn meta_dir(&self) -> PathBuf {
+    pub(crate) fn meta_dir(&self) -> PathBuf {
         self.dir.join(".apisip")
     }
-    pub fn spec_snapshot_path(&self) -> PathBuf {
+    pub(crate) fn spec_snapshot_path(&self) -> PathBuf {
         self.meta_dir().join("spec.json")
     }
-    pub fn baseline_path(&self) -> PathBuf {
+    pub(crate) fn baseline_path(&self) -> PathBuf {
         self.meta_dir().join("baseline.toml")
     }
-    pub fn folder_id_path(&self) -> PathBuf {
+    pub(crate) fn folder_id_path(&self) -> PathBuf {
         self.meta_dir().join("folder-id")
     }
 
     /// The id that marks this folder as the owner of its destination. Copies
     /// of the folder (git clones) share it. Created when missing.
-    pub fn folder_id(&self) -> Result<String> {
+    pub(crate) fn folder_id(&self) -> Result<String> {
         if let Some(id) = self.read_folder_id()? {
             return Ok(id);
         }
@@ -56,7 +56,7 @@ impl Workspace {
         Ok(id)
     }
 
-    pub fn read_folder_id(&self) -> Result<Option<String>> {
+    pub(crate) fn read_folder_id(&self) -> Result<Option<String>> {
         match std::fs::read_to_string(self.folder_id_path()) {
             Ok(t) => Ok(Some(t.trim().to_string()).filter(|id| !id.is_empty())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -65,46 +65,51 @@ impl Workspace {
     }
 
     /// The editable record schema of a stream.
-    pub fn schema_path(&self, stream: &str) -> PathBuf {
+    pub(crate) fn schema_path(&self, stream: &str) -> PathBuf {
         self.dir.join("schemas").join(format!("{stream}.json"))
     }
     /// The schema apisip last wrote for a stream, to tell edits apart.
-    pub fn schema_baseline_path(&self, stream: &str) -> PathBuf {
+    pub(crate) fn schema_baseline_path(&self, stream: &str) -> PathBuf {
         self.meta_dir()
             .join("schemas")
             .join(format!("{stream}.json"))
     }
 
-    pub fn read_schema(&self, stream: &str) -> Result<Option<Value>> {
+    pub(crate) fn read_schema(&self, stream: &str) -> Result<Option<Value>> {
         read_json(&self.schema_path(stream))
     }
 
-    pub fn read_schema_baseline(&self, stream: &str) -> Result<Option<Value>> {
+    pub(crate) fn read_schema_baseline(&self, stream: &str) -> Result<Option<Value>> {
         read_json(&self.schema_baseline_path(stream))
     }
 
     /// Writes a stream's schema file and its baseline.
-    pub fn write_schema(&self, stream: &str, schema: &Value) -> Result<()> {
+    pub(crate) fn write_schema(&self, stream: &str, schema: &Value) -> Result<()> {
         self.write_schema_files(stream, schema, schema)
     }
 
     /// Writes a schema file that differs from its baseline: the user kept
     /// some of their own changes.
-    pub fn write_schema_files(&self, stream: &str, file: &Value, baseline: &Value) -> Result<()> {
+    pub(crate) fn write_schema_files(
+        &self,
+        stream: &str,
+        file: &Value,
+        baseline: &Value,
+    ) -> Result<()> {
         write_json(&self.schema_path(stream), file)?;
         write_json(&self.schema_baseline_path(stream), baseline)
     }
 
     /// Whether the schema file differs from the one apisip wrote.
-    pub fn schema_edited(&self, stream: &str) -> Result<bool> {
+    pub(crate) fn schema_edited(&self, stream: &str) -> Result<bool> {
         Ok(self.read_schema(stream)? != read_json(&self.schema_baseline_path(stream))?)
     }
 
-    pub fn has_config(&self) -> bool {
+    pub(crate) fn has_config(&self) -> bool {
         self.config_path().exists()
     }
 
-    pub fn load_config(&self) -> Result<Config> {
+    pub(crate) fn load_config(&self) -> Result<Config> {
         let path = self.config_path();
         if !path.exists() {
             bail!(
@@ -118,13 +123,13 @@ impl Workspace {
         Config::parse(&text).with_context(|| format!("invalid {}", path.display()))
     }
 
-    pub fn read_config_text(&self) -> Result<String> {
+    pub(crate) fn read_config_text(&self) -> Result<String> {
         std::fs::read_to_string(self.config_path()).context("reading apisip.toml")
     }
 
     /// The spec used for schemas at run time: the snapshot `init`/`update`
     /// stored, so runs do not depend on the network or on spec changes.
-    pub async fn load_spec(&self, config: &Config) -> Result<Spec> {
+    pub(crate) async fn load_spec(&self, config: &Config) -> Result<Spec> {
         let snap = self.spec_snapshot_path();
         if snap.exists() {
             let text = std::fs::read_to_string(&snap)?;
@@ -133,7 +138,7 @@ impl Workspace {
         Spec::load(&config.source.spec, &self.dir).await
     }
 
-    pub fn save_meta(&self, spec: &Spec, baseline: &str) -> Result<()> {
+    pub(crate) fn save_meta(&self, spec: &Spec, baseline: &str) -> Result<()> {
         std::fs::create_dir_all(self.meta_dir())?;
         std::fs::write(
             self.spec_snapshot_path(),
@@ -167,7 +172,7 @@ fn write_json(path: &Path, v: &Value) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
-pub fn display_dir(p: &Path) -> String {
+pub(crate) fn display_dir(p: &Path) -> String {
     std::fs::canonicalize(p)
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| p.display().to_string())

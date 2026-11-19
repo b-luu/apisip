@@ -1,19 +1,19 @@
 //! apisip: point it at an OpenAPI spec, get JSONL or Parquet files.
 //!
-//! The binary is the main interface; the library exposes the same pieces
-//! for tests and for embedding.
+//! The binary is the interface. The library exposes only what the binary and
+//! the integration tests use. It is not an embedding API.
 
-pub mod auth;
+pub(crate) mod auth;
 pub mod cmd;
-pub mod config;
-pub mod detect;
+pub(crate) mod config;
+pub(crate) mod detect;
 pub mod envfile;
-pub mod http;
-pub mod incremental;
-pub mod prompt;
-pub mod schema;
-pub mod sink;
-pub mod spec;
+pub(crate) mod http;
+pub(crate) mod incremental;
+pub(crate) mod prompt;
+pub(crate) mod schema;
+pub(crate) mod sink;
+pub(crate) mod spec;
 pub mod state;
-pub mod views;
+pub(crate) mod views;
 pub mod workspace;

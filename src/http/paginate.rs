@@ -247,7 +247,6 @@ mod tests {
     fn page(url: &str, body: Value) -> Page {
         Page {
             url: Url::parse(url).unwrap(),
-            status: 200,
             headers: HeaderMap::new(),
             body,
         }

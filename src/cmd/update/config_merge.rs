@@ -24,7 +24,7 @@ const STREAM_KEYS: [&str; 6] = [
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
+pub(crate) enum Kind {
     /// The user never edited it: take the spec's value.
     Update,
     /// Both the user and the spec changed it, differently.
@@ -34,33 +34,33 @@ pub enum Kind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct FieldChange {
+pub(crate) struct FieldChange {
     /// `None` for `[source]`.
-    pub stream: Option<String>,
-    pub key: String,
-    pub base: Value,
-    pub theirs: Value,
-    pub mine: Value,
-    pub kind: Kind,
+    pub(crate) stream: Option<String>,
+    pub(crate) key: String,
+    pub(crate) base: Value,
+    pub(crate) theirs: Value,
+    pub(crate) mine: Value,
+    pub(crate) kind: Kind,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Diff {
-    pub fields: Vec<FieldChange>,
+pub(crate) struct Diff {
+    pub(crate) fields: Vec<FieldChange>,
     /// New endpoints, not in apisip.toml yet.
-    pub added: Vec<String>,
+    pub(crate) added: Vec<String>,
     /// Endpoints gone from the spec that are still enabled.
-    pub removed: Vec<String>,
+    pub(crate) removed: Vec<String>,
 }
 
 impl Diff {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.fields.is_empty() && self.added.is_empty() && self.removed.is_empty()
     }
 }
 
 /// The three-way comparison. Pure, so the merge rules are tested directly.
-pub fn diff(base: &Config, theirs: &Config, mine: &Config) -> Diff {
+pub(crate) fn diff(base: &Config, theirs: &Config, mine: &Config) -> Diff {
     let mut d = Diff::default();
     let (b, t, m) = (
         object(&base.source),
@@ -146,17 +146,17 @@ fn field(obj: &Value, key: &str) -> Value {
 
 /// What the user decided, applied to the text of apisip.toml.
 #[derive(Debug, Default)]
-pub struct Resolution {
+pub(crate) struct Resolution {
     /// Field changes to write, by index in `Diff::fields`.
-    pub take: BTreeSet<usize>,
+    pub(crate) take: BTreeSet<usize>,
     /// New streams to add enabled; the others are added disabled.
-    pub enable: BTreeSet<String>,
-    pub auth: Option<Option<AuthConfig>>,
-    pub spec: Option<String>,
+    pub(crate) enable: BTreeSet<String>,
+    pub(crate) auth: Option<Option<AuthConfig>>,
+    pub(crate) spec: Option<String>,
 }
 
 /// Edits apisip.toml in place with toml_edit, so comments and layout survive.
-pub fn apply(text: &str, d: &Diff, theirs: &Config, r: &Resolution) -> Result<String> {
+pub(crate) fn apply(text: &str, d: &Diff, theirs: &Config, r: &Resolution) -> Result<String> {
     let mut doc: DocumentMut = text.parse().context("apisip.toml is not valid TOML")?;
     let rendered: DocumentMut = theirs
         .render("", &BTreeMap::new(), None)
@@ -249,7 +249,7 @@ pub fn apply(text: &str, d: &Diff, theirs: &Config, r: &Resolution) -> Result<St
 /// Adds to `address_class` the class of each host the merged `text` connects
 /// to and `mine` did not, as `init` records it. Returns the new text and every
 /// such host, with `None` for one that could not be classified.
-pub fn record_new_hosts(text: &str, mine: &Config) -> Result<(String, NewHosts)> {
+pub(crate) fn record_new_hosts(text: &str, mine: &Config) -> Result<(String, NewHosts)> {
     let merged = Config::parse(text).context("the merged apisip.toml is invalid")?;
     let hosts = match crate::http::address::new_hosts(&merged.source, &mine.source) {
         Ok(hosts) => hosts,
