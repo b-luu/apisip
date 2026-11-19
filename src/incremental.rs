@@ -6,6 +6,8 @@ use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
+use crate::config::Epoch;
+
 /// A record field by dotted path (`updated_at`, `meta.updated_at`).
 pub fn field<'a>(record: &'a Value, path: &str) -> Option<&'a Value> {
     path.split('.')
@@ -121,7 +123,8 @@ pub struct Range {
     kind: Option<Kind>,
     by_kind: [KindRange; 3],
     cap: Option<DateTime<Utc>>,
-    future: usize,
+    epoch: Option<Epoch>,
+    future: [usize; 3],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -155,11 +158,12 @@ impl CursorValue {
 
 impl Range {
     /// A range whose values must be of the same kind as this watermark, and
-    /// whose timestamps must not be later than `cap`.
-    pub fn new(watermark: Option<&str>, cap: Option<DateTime<Utc>>) -> Range {
+    /// whose timestamps (and `epoch` numbers) must not be later than `cap`.
+    pub fn new(watermark: Option<&str>, cap: Option<DateTime<Utc>>, epoch: Option<Epoch>) -> Range {
         Range {
             kind: watermark.map(|w| CursorValue::parse(w).kind()),
             cap,
+            epoch,
             ..Range::default()
         }
     }
@@ -169,8 +173,8 @@ impl Range {
         let Some(c) = CursorValue::from_json(v) else {
             return false;
         };
-        if beyond(&c, self.cap) {
-            self.future += 1;
+        if beyond(&c, self.cap, self.epoch) {
+            self.future[c.kind() as usize] += 1;
             return false;
         }
         let r = &mut self.by_kind[c.kind() as usize];
@@ -190,10 +194,8 @@ impl Range {
             [Kind::Time, Kind::Number, Kind::Text]
                 .into_iter()
                 .rev()
-                // Capped timestamps still vote: a stray text value must not win.
-                .max_by_key(|k| {
-                    self.by_kind[*k as usize].count + if *k == Kind::Time { self.future } else { 0 }
-                })
+                // Capped values still vote: a stray text value must not win.
+                .max_by_key(|k| self.by_kind[*k as usize].count + self.future[*k as usize])
                 .unwrap_or(Kind::Time)
         });
         &self.by_kind[kind as usize]
@@ -205,9 +207,9 @@ impl Range {
         total - self.chosen().count
     }
 
-    /// Timestamps left out because they are later than the cap.
+    /// Values left out because they are later than the cap.
     pub fn future(&self) -> usize {
-        self.future
+        self.future.iter().sum()
     }
 
     pub fn min_raw(&self) -> Option<String> {
@@ -219,11 +221,25 @@ impl Range {
     }
 }
 
-/// Whether a cursor is a timestamp later than the cap. One far-future value
-/// (bad data, a sentinel date) would otherwise become the watermark, and
-/// every later record would never be fetched. Numbers and text are not capped.
-pub fn beyond(c: &CursorValue, cap: Option<DateTime<Utc>>) -> bool {
-    matches!((c, cap), (CursorValue::Time(t), Some(cap)) if *t > cap)
+/// Whether a cursor is later than the cap: a timestamp, or a number read as
+/// epoch time in the `epoch` unit. One far-future value (bad data, a
+/// sentinel date) would otherwise become the watermark, and every later
+/// record would never be fetched. Numbers are capped only with
+/// an `epoch` unit, since a counter has none; text is not capped.
+pub fn beyond(c: &CursorValue, cap: Option<DateTime<Utc>>, epoch: Option<Epoch>) -> bool {
+    let Some(cap) = cap else {
+        return false;
+    };
+    let limit = epoch.map(|e| match e {
+        Epoch::Seconds => i128::from(cap.timestamp()),
+        Epoch::Milliseconds => i128::from(cap.timestamp_millis()),
+    });
+    match (c, limit) {
+        (CursorValue::Time(t), _) => *t > cap,
+        (CursorValue::Int(i), Some(l)) => *i > l,
+        (CursorValue::Number(n), Some(l)) => int_cmp_float(l, *n) == Some(Ordering::Less),
+        _ => false,
+    }
 }
 
 /// Most fingerprints kept for one watermark. Past this, none are kept and
@@ -462,14 +478,14 @@ mod tests {
     fn a_stray_text_value_never_becomes_the_watermark() {
         let dates = [json!("2026-01-01T00:00:00Z"), json!("2026-01-02T00:00:00Z")];
         // No watermark yet: the kind seen most often wins.
-        let mut r = Range::new(None, None);
+        let mut r = Range::new(None, None, None);
         for v in dates.iter().chain([&json!("N/A")]) {
             r.observe(v);
         }
         assert_eq!(r.max_raw().as_deref(), Some("2026-01-02T00:00:00Z"));
         assert_eq!(r.ignored(), 1);
         // With a watermark, its kind wins even when outnumbered.
-        let mut r = Range::new(Some("2025-12-31T00:00:00Z"), None);
+        let mut r = Range::new(Some("2025-12-31T00:00:00Z"), None, None);
         for v in [json!("N/A"), json!("unknown"), dates[0].clone()] {
             r.observe(&v);
         }
@@ -480,7 +496,7 @@ mod tests {
     #[test]
     fn a_far_future_timestamp_never_becomes_the_watermark() {
         let cap = crate::schema::parse_timestamp("2026-02-01T00:00:00Z");
-        let mut r = Range::new(None, cap);
+        let mut r = Range::new(None, cap, None);
         assert!(r.observe(&json!("2026-01-01T00:00:00Z")));
         assert!(!r.observe(&json!("2099-01-01T00:00:00Z")));
         assert!(
@@ -490,16 +506,46 @@ mod tests {
         assert_eq!(r.max_raw().as_deref(), Some("2026-02-01T00:00:00Z"));
         assert_eq!((r.future(), r.ignored()), (1, 0));
         // Numbers and text are not capped.
-        let mut r = Range::new(None, cap);
+        let mut r = Range::new(None, cap, None);
         assert!(r.observe(&json!(4_102_444_800_u64)));
         assert!(r.observe(&json!("zzz")));
         assert_eq!(r.future(), 0);
         // Capped timestamps still outvote a stray text value.
-        let mut r = Range::new(None, cap);
+        let mut r = Range::new(None, cap, None);
         r.observe(&json!("2099-01-01T00:00:00Z"));
         r.observe(&json!("N/A"));
         assert_eq!(r.max_raw(), None);
         assert_eq!((r.future(), r.ignored()), (1, 1));
+    }
+
+    #[test]
+    fn a_far_future_epoch_number_never_becomes_the_watermark() {
+        let cap = crate::schema::parse_timestamp("2026-02-01T00:00:00Z");
+        let secs = 1_769_904_000_i64; // the cap in epoch seconds
+        let mut r = Range::new(None, cap, Some(Epoch::Seconds));
+        assert!(r.observe(&json!(secs - 86_400)));
+        assert!(!r.observe(&json!(4_102_444_800_u64)), "2100-01-01");
+        assert!(!r.observe(&json!(secs as f64 + 0.5)));
+        assert!(r.observe(&json!(secs)), "the cap itself is kept");
+        assert_eq!(r.max_raw(), Some(secs.to_string()));
+        assert_eq!((r.future(), r.ignored()), (2, 0));
+        // Capped numbers still outvote a stray text value.
+        let mut r = Range::new(None, cap, Some(Epoch::Milliseconds));
+        assert!(r.observe(&json!(secs * 1000)));
+        assert!(!r.observe(&json!(secs * 1000 + 1)));
+        assert!(!r.observe(&json!(4_102_444_800_000_u64)));
+        r.observe(&json!("N/A"));
+        assert_eq!(r.max_raw(), Some((secs * 1000).to_string()));
+        assert_eq!((r.future(), r.ignored()), (2, 1));
+        // A stored epoch watermark reads back as a number and is checked too.
+        let stored = CursorValue::parse("4102444800");
+        assert!(beyond(&stored, cap, Some(Epoch::Seconds)));
+        assert!(!beyond(&stored, cap, None));
+        assert!(!beyond(
+            &CursorValue::parse(&secs.to_string()),
+            cap,
+            Some(Epoch::Seconds)
+        ));
     }
 
     #[test]
@@ -599,7 +645,7 @@ mod tests {
             CursorValue::from_json(&json!(i64::MIN)) < CursorValue::from_json(&json!(u64::MAX))
         );
 
-        let mut r = Range::new(None, None);
+        let mut r = Range::new(None, None, None);
         r.observe(&json!(W - 1));
         r.observe(&json!(W));
         assert_eq!(r.max_raw(), Some(W.to_string()));

@@ -13,7 +13,7 @@ use futures::{StreamExt, TryStreamExt};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::config::{Cast, Config, Format, Mode, StreamConfig};
+use crate::config::{Cast, Config, Epoch, Format, Mode, StreamConfig};
 use crate::http::{self, ApiClient};
 use crate::incremental::{
     Boundary, BoundaryTracker, CursorValue, EarlyStop, MAX_BOUNDARY, Range, beyond, field,
@@ -221,8 +221,8 @@ struct Fetch<'a> {
     mistyped_cursors: usize,
 }
 
-/// The latest timestamp cursor that may move a watermark in this run. None
-/// when the skew is too large to add: no cap.
+/// The latest timestamp or epoch-number cursor that may move a watermark
+/// in this run. None when the skew is too large to add: no cap.
 fn cursor_cap(ctx: &Ctx) -> Option<DateTime<Utc>> {
     chrono::Duration::from_std(ctx.config.source.max_cursor_skew)
         .ok()
@@ -262,8 +262,9 @@ async fn prepare<'a>(
         _ => None,
     };
     let cap = cursor_cap(ctx);
+    let epoch = s.incremental.as_ref().and_then(|i| i.epoch);
     if let (Some(w), Some(c)) = (&watermark, cap)
-        && beyond(&CursorValue::parse(w), cap)
+        && beyond(&CursorValue::parse(w), cap, epoch)
     {
         report.warnings.push(format!(
             "the stored watermark ({w}) is later than {}: records after it are never fetched. \
@@ -339,7 +340,7 @@ async fn prepare<'a>(
         drift,
         writer,
         quarantine: None,
-        range: Range::new(watermark.as_deref(), cap),
+        range: Range::new(watermark.as_deref(), cap, epoch),
         tracker: BoundaryTracker::default(),
         mistyped_cursors: 0,
     };
@@ -493,12 +494,19 @@ async fn commit(
         ));
     }
     let cap = cursor_cap(ctx);
+    let epoch = s.incremental.as_ref().and_then(|i| i.epoch);
     if let (n @ 1.., Some(c)) = (range.future(), cap) {
         report.warnings.push(format!(
-            "{n} record(s) have a `{}` value later than {}: they were written but do not \
+            "{n} record(s) have a `{}` value later than {}{}: they were written but do not \
              move the watermark. Raise max_cursor_skew under [source] if these values are real",
             cursor.unwrap_or_default(),
-            cap_text(ctx, c)
+            cap_text(ctx, c),
+            match epoch {
+                // The config, not the value: a timestamp cursor can carry `epoch` too.
+                Some(Epoch::Seconds) => r#", with incremental.epoch = "seconds""#,
+                Some(Epoch::Milliseconds) => r#", with incremental.epoch = "milliseconds""#,
+                None => "",
+            }
         ));
     }
     if let Some(d) = &mut drift {
@@ -574,7 +582,8 @@ async fn commit(
             let stored = entry.watermark_for(c).map(CursorValue::parse);
             // A full refresh saw every record: it may lower a watermark
             // that a far-future value pushed past the cap in an earlier run.
-            let reset = ctx.options.full_refresh && stored.as_ref().is_some_and(|w| beyond(w, cap));
+            let reset =
+                ctx.options.full_refresh && stored.as_ref().is_some_and(|w| beyond(w, cap, epoch));
             match stored.map(|w| new.partial_cmp(&w)) {
                 _ if reset => {
                     entry.watermark = Some(obs.max.clone());

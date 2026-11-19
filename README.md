@@ -314,8 +314,12 @@ A timestamp cursor later than the run start plus `max_cursor_skew` (under
 dated 2099 by mistake would otherwise become the watermark, and every later
 record would never be fetched. The record is still written, and the run warns.
 Raise the setting if your API has real future dates (scheduled records); a
-large value such as `"200y"` turns the cap off. Number and text cursors are
-not capped. If a run before this check stored a far-future watermark, `run`
+large value such as `"200y"` turns the cap off. Text cursors are not capped,
+and number cursors only when they hold epoch time: `init` sets
+`epoch = "seconds"` in the stream's `incremental` table when the spec marks
+the cursor `format: unix-time`. Set `epoch = "seconds"` or `"milliseconds"`
+by hand when the spec says nothing; without it, apisip cannot tell epoch time
+from a counter. If a run before this check stored a far-future watermark, `run`
 warns about it, and `apisip run --full-refresh --stream <name>` resets it to
 the newest value under the cap (it needs at least one). A far-future record is
 written again on every run; the views deduplicate it.

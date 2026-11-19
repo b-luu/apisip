@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::DetectedStream;
 use super::names::norm;
-use crate::config::{Incremental, Pagination, Sort, StreamConfig};
+use crate::config::{Epoch, Incremental, Pagination, Sort, StreamConfig};
 use crate::spec::{Operation, Spec, schema_type};
 
 pub(super) fn detect_stream(spec: &Spec, op: &Operation) -> Result<DetectedStream, String> {
@@ -437,15 +437,24 @@ fn detect_incremental(
     fields: &[String],
     record_schema: Option<&Value>,
 ) -> Option<Incremental> {
+    let field_schema = |f: &str| {
+        record_schema.and_then(|s| s.pointer(&format!("/properties/{}", escape_pointer(f))))
+    };
     let cursor = CURSOR_FIELDS.iter().find_map(|c| {
         fields.iter().find(|f| {
             norm(f) == *c
-                && record_schema
-                    .and_then(|s| s.pointer(&format!("/properties/{}", escape_pointer(f))))
+                && field_schema(f)
                     .and_then(schema_type)
                     .is_some_and(|t| matches!(t, "string" | "integer" | "number"))
         })
     })?;
+    // `unix-time` is the de facto format of an epoch-seconds number (no standard exists).
+    let epoch = field_schema(cursor)
+        .filter(|s| schema_type(s) != Some("string"))
+        .and_then(|s| s.get("format"))
+        .and_then(Value::as_str)
+        .filter(|f| *f == "unix-time")
+        .map(|_| Epoch::Seconds);
     let params = query_params(spec, op);
 
     let is_filter = |n: &str| {
@@ -470,6 +479,7 @@ fn detect_incremental(
             cursor: cursor.clone(),
             param: Some(p.name.to_string()),
             sort: None,
+            epoch,
         });
     }
 
@@ -477,6 +487,7 @@ fn detect_incremental(
         cursor: cursor.clone(),
         param: None,
         sort: detect_sort(&params, cursor),
+        epoch,
     })
 }
 
