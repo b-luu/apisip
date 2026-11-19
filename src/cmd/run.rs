@@ -221,8 +221,8 @@ struct Fetch<'a> {
     mistyped_cursors: usize,
 }
 
-/// The latest timestamp cursor that may move a watermark in this run. None
-/// when the skew is too large to add: no cap.
+/// The latest timestamp or epoch-number cursor that may move a watermark
+/// in this run. None when the skew is too large to add: no cap.
 fn cursor_cap(ctx: &Ctx) -> Option<DateTime<Utc>> {
     chrono::Duration::from_std(ctx.config.source.max_cursor_skew)
         .ok()

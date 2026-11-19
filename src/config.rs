@@ -41,8 +41,9 @@ pub struct Source {
     /// Most pages one stream fetches in one run; 0 for no limit.
     #[serde(default = "default_max_pages")]
     pub max_pages: u64,
-    /// How far past the run start a timestamp cursor may be and still move
-    /// the watermark. Later values are written but do not count.
+    /// How far past the run start a timestamp (or epoch-number) cursor may
+    /// be and still move the watermark. Later values are written but do not
+    /// count.
     #[serde(
         default = "default_max_cursor_skew",
         with = "duration_str",
