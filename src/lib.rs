@@ -15,5 +15,7 @@ pub mod schema;
 pub mod sink;
 pub mod spec;
 pub mod state;
+#[cfg(test)]
+mod time_tests;
 pub mod views;
 pub mod workspace;

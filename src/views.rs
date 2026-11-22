@@ -256,6 +256,12 @@ incremental = { cursor = "meta.updated_at", param = "since" }"#,
             "{bounded}"
         );
         assert!(!bounded.contains(&unbounded), "{bounded}");
+        let at = "2026-11-08T21:30:00.123456789Z".parse().unwrap();
+        let bounded = history_sql(&s, &src, "r1", Some(at)).unwrap();
+        assert!(
+            bounded.contains("'2026-11-08T21:30:00.123456Z')"),
+            "{bounded}"
+        );
         // A state without a commit time keeps the old bound.
         assert!(
             history_sql(&s, &src, "r1", None)
