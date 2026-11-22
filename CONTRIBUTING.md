@@ -154,10 +154,12 @@ Maintainers only. Releases follow the conventional commits on `main`.
   line, runs `dist generate`, applies the patch and fails if the result
   differs from `release.yml`, including any new file dist writes. The patch
   names the dist release in the deleted `curl` line as `DIST_VERSION`, so a
-  dist upgrade does not break it. Run the same check locally, in a clean
-  checkout:
+  dist upgrade does not break it. The workflow also checks that
+  `.github/actions/install-dist` pins the release that `cargo-dist-version`
+  names. Run the same checks locally, in a clean checkout:
 
   ```sh
+  grep -Eq "^ +DIST_VERSION: v$(sed -n 's/^cargo-dist-version = "\(.*\)"/\1/p' dist-workspace.toml)$" .github/actions/install-dist/action.yml
   sed -i.bak '/^allow-dirty/d' dist-workspace.toml && rm dist-workspace.toml.bak
   nix develop -c dist generate --mode ci
   sed -i.bak 's|/download/v[0-9.]*/cargo-dist-installer|/download/DIST_VERSION/cargo-dist-installer|' \
@@ -187,8 +189,8 @@ Maintainers only. Releases follow the conventional commits on `main`.
   ```
 
   A target that needs a container would need the rustup step back, since the
-  container has no cargo. For an upgrade, also set `DIST_VERSION` and the four SHA-256 values in
-  `.github/actions/install-dist` from the new release's `.sha256` files.
+  container has no cargo. For an upgrade, also set the `DIST_VERSION` variable and the four SHA-256
+  values in `.github/actions/install-dist/action.yml` from the new release's `.sha256` files.
   `dist` refuses to run when its version differs from `cargo-dist-version`, so a
   `nix flake update` that moves nixpkgs to another dist release needs a
   `cargo-dist-version` bump and this regeneration in the same pull request.
