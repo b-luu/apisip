@@ -8,8 +8,8 @@ use std::pin::pin;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Utc};
 use futures::{StreamExt, TryStreamExt};
+use jiff::Timestamp;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -99,7 +99,7 @@ pub async fn run(ws: &Workspace, options: RunOptions) -> Result<bool> {
     };
     let client = ApiClient::for_config(&config)?;
     let store = Arc::new(Store::open(&config.destination, &ws.dir)?);
-    let layout = Layout::new(Utc::now());
+    let layout = Layout::new(Timestamp::now());
     let folder_id = ws.folder_id()?;
     let state = claim(&store, &folder_id).await?;
     // Leftovers of an interrupted run were never committed: drop them.
@@ -223,18 +223,17 @@ struct Fetch<'a> {
 
 /// The latest timestamp cursor that may move a watermark in this run. None
 /// when the skew is too large to add: no cap.
-fn cursor_cap(ctx: &Ctx) -> Option<DateTime<Utc>> {
-    chrono::Duration::from_std(ctx.config.source.max_cursor_skew)
+fn cursor_cap(ctx: &Ctx) -> Option<Timestamp> {
+    jiff::SignedDuration::try_from(ctx.config.source.max_cursor_skew)
         .ok()
-        .and_then(|d| ctx.layout.started.checked_add_signed(d))
+        .and_then(|d| ctx.layout.started.checked_add(d).ok())
 }
 
 /// How the cap reads in a warning: the time, and where it comes from.
-fn cap_text(ctx: &Ctx, cap: DateTime<Utc>) -> String {
+fn cap_text(ctx: &Ctx, cap: Timestamp) -> String {
     format!(
-        "{} (run start + {})",
-        cap.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        humantime::format_duration(ctx.config.source.max_cursor_skew)
+        "{cap:.0} (run start + {})",
+        crate::config::format_duration(ctx.config.source.max_cursor_skew)
     )
 }
 
@@ -363,7 +362,7 @@ impl Fetch<'_> {
         report.pages += 1;
         let stamp = Stamp {
             run_id: &ctx.layout.run_id,
-            extracted: Utc::now(),
+            extracted: Timestamp::now(),
         };
         let (mut records, stop) = match &mut self.early {
             Some(g) => g.page(records),
@@ -556,7 +555,7 @@ async fn commit(
         .filter(|_| !snapshot)
         .map(|o| tracker.finish(&o.max))
         .unwrap_or_default();
-    let committed_at = Utc::now();
+    let committed_at = Timestamp::now();
     let mut overlap = None;
     let fresh = State::update(&ctx.store, |state| {
         let entry = state.streams.entry(name.clone()).or_default();

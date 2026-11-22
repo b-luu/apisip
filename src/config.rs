@@ -453,14 +453,206 @@ pub mod duration_str {
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
 
     pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&humantime::format_duration(*d).to_string())
+        s.serialize_str(&super::format_duration(*d))
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
         let s = String::deserialize(d)?;
-        humantime::parse_duration(&s)
-            .map_err(|e| D::Error::custom(format!("invalid duration {s:?}: {e}")))
+        super::parse_duration(&s).map(|(d, _)| d).ok_or_else(|| {
+            D::Error::custom(format!(
+                "invalid duration {s:?}: write it like \"90s\", \"10m\" or \"2h 30m\""
+            ))
+        })
     }
+}
+
+/// A timestamp in RFC 3339 with `Z` and 0, 3, 6 or 9 fraction digits, the
+/// fewest that are exact, as `_apisip/` files have always held it. Reads any
+/// RFC 3339 timestamp.
+pub mod timestamp_str {
+    use jiff::Timestamp;
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn text(t: &Timestamp) -> String {
+        let n = t.subsec_nanosecond();
+        let digits = match n {
+            0 => 0,
+            _ if n % 1_000_000 == 0 => 3,
+            _ if n % 1_000 == 0 => 6,
+            _ => 9,
+        };
+        format!("{t:.digits$}")
+    }
+
+    pub fn serialize<S: Serializer>(t: &Timestamp, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&text(t))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Timestamp, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(D::Error::custom)
+    }
+
+    pub mod option {
+        use jiff::Timestamp;
+        use serde::{Deserialize, Deserializer, Serializer};
+
+        pub fn serialize<S: Serializer>(t: &Option<Timestamp>, s: S) -> Result<S::Ok, S::Error> {
+            match t {
+                Some(t) => super::serialize(t, s),
+                None => s.serialize_none(),
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Timestamp>, D::Error> {
+            #[derive(Deserialize)]
+            struct W(#[serde(with = "super")] Timestamp);
+            Ok(Option::<W>::deserialize(d)?.map(|W(t)| t))
+        }
+    }
+}
+
+/// A duration as apisip writes it: `1m`, `24h`, `2h 30m`.
+pub fn format_duration(d: Duration) -> String {
+    static PRINTER: jiff::fmt::friendly::SpanPrinter = jiff::fmt::friendly::SpanPrinter::new();
+    PRINTER.unsigned_duration_to_string(&d)
+}
+
+/// Reads a duration in jiff's friendly format, or in the syntax older
+/// versions read. The flag is true when the old syntax gave the value: a
+/// string both read, but to different values, keeps its old value.
+pub fn parse_duration(s: &str) -> Option<(Duration, bool)> {
+    static PARSER: jiff::fmt::friendly::SpanParser = jiff::fmt::friendly::SpanParser::new();
+    let new = PARSER
+        .parse_span(s)
+        .ok()
+        .and_then(|span| {
+            span.to_duration(jiff::SpanRelativeTo::days_are_24_hours())
+                .ok()
+        })
+        .and_then(|d| Duration::try_from(d).ok());
+    match (new, parse_legacy_duration(s)) {
+        (Some(n), Some(old)) if n == old => Some((n, false)),
+        (_, Some(old)) => Some((old, true)),
+        (Some(n), None) => Some((n, false)),
+        (None, None) => None,
+    }
+}
+
+/// shortcut: the duration syntax of apisip 0.4 and older (humantime 2.4's), so
+/// old configs still load, with a warning; remove it in a later release.
+fn parse_legacy_duration(s: &str) -> Option<Duration> {
+    let digits = |s: &str| s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let mut rest = s.trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    let mut total: u128 = 0;
+    while !rest.is_empty() {
+        let n = digits(rest);
+        let int: u64 = rest[..n].parse().ok()?;
+        rest = &rest[n..];
+        let mut frac = None;
+        if let Some(r) = rest.strip_prefix('.') {
+            let n = digits(r);
+            frac = Some((r[..n].parse::<u64>().ok()?, 10u64.checked_pow(n as u32)?));
+            rest = &r[n..];
+        }
+        rest = rest.trim_start();
+        let n = rest
+            .find(|c: char| !(c.is_ascii_alphabetic() || c == '\u{b5}'))
+            .unwrap_or(rest.len());
+        // Nanoseconds per unit; from hours up, a fraction counts in whole seconds.
+        let (unit, whole_secs): (u64, bool) = match &rest[..n] {
+            "nanos" | "nsec" | "ns" => (1, false),
+            "usec" | "us" | "\u{b5}s" => (1_000, false),
+            "millis" | "msec" | "ms" => (1_000_000, false),
+            "seconds" | "second" | "secs" | "sec" | "s" => (1_000_000_000, false),
+            "minutes" | "minute" | "min" | "mins" | "m" => (60_000_000_000, false),
+            "hours" | "hour" | "hr" | "hrs" | "h" => (3_600, true),
+            "days" | "day" | "d" => (86_400, true),
+            "weeks" | "week" | "wk" | "wks" | "w" => (604_800, true),
+            "months" | "month" | "M" => (2_630_016, true),
+            "years" | "year" | "yr" | "yrs" | "y" => (31_557_600, true),
+            _ => return None,
+        };
+        rest = rest[n..].trim_start();
+        let scale: u128 = if whole_secs { 1_000_000_000 } else { 1 };
+        total = total.checked_add(int as u128 * unit as u128 * scale)?;
+        if let Some((num, den)) = frac {
+            if unit == 1 {
+                return None;
+            }
+            total = total.checked_add((num.checked_mul(unit)? / den) as u128 * scale)?;
+        }
+    }
+    let secs = u64::try_from(total / 1_000_000_000).ok()?;
+    Some(Duration::new(secs, (total % 1_000_000_000) as u32))
+}
+
+/// A duration key of apisip.toml written in the old syntax.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LegacyDuration {
+    pub key: String,
+    pub old: String,
+    pub new: String,
+}
+
+const DURATION_KEYS: [&[&str]; 4] = [
+    &["source", "max_cursor_skew"],
+    &["source", "rate_limit", "period"],
+    &["source", "retry", "max_backoff"],
+    &["source", "retry", "max_wait"],
+];
+
+/// The durations of apisip.toml that only the old syntax reads, and what
+/// `update` rewrites them to: the same value, to the nearest hour from 1 hour
+/// up, so a month does not print as `730h 29m 3s`.
+pub fn legacy_durations(text: &str) -> Vec<LegacyDuration> {
+    let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for path in DURATION_KEYS {
+        let item = path.iter().try_fold(doc.as_item(), |i, k| i.get(k));
+        let Some(old) = item.and_then(|i| i.as_str()) else {
+            continue;
+        };
+        if let Some((d, true)) = parse_duration(old) {
+            let hour = 3_600_000_000_000u128;
+            let d = if d.as_nanos() >= hour {
+                Duration::from_secs(((d.as_nanos() + hour / 2) / hour * 3_600) as u64)
+            } else {
+                d
+            };
+            out.push(LegacyDuration {
+                key: path.join("."),
+                old: old.to_string(),
+                new: format_duration(d),
+            });
+        }
+    }
+    out
+}
+
+/// Rewrites the given legacy durations in place, keeping comments and layout.
+pub fn rewrite_durations(text: &str, legacy: &[LegacyDuration]) -> anyhow::Result<String> {
+    let mut doc = text.parse::<toml_edit::DocumentMut>()?;
+    for l in legacy {
+        let mut item = doc.as_item_mut();
+        for k in l.key.split('.') {
+            item = item
+                .get_mut(k)
+                .ok_or_else(|| anyhow::anyhow!("{} is missing", l.key))?;
+        }
+        let v = item
+            .as_value_mut()
+            .ok_or_else(|| anyhow::anyhow!("{} is not a value", l.key))?;
+        let decor = v.decor().clone();
+        *v = l.new.as_str().into();
+        *v.decor_mut() = decor;
+    }
+    Ok(doc.to_string())
 }
 
 pub mod bytes_str {
@@ -718,11 +910,44 @@ incremental = { cursor = "updated_at", sort = { param = "sort", value = "-update
     }
 
     #[test]
+    fn only_the_old_spellings_jiff_does_not_read_alike_take_the_legacy_path() {
+        let legacy = ["1M", "1month", "2months", "1y", "1year", "2years"];
+        for (text, secs, nanos) in crate::time_tests::DURATIONS {
+            let (d, old) = parse_duration(text).unwrap();
+            assert_eq!(d, Duration::new(*secs, *nanos), "{text}");
+            assert_eq!(old, legacy.contains(text), "{text}");
+        }
+        // Both read it, to different values: the old value wins, with a warning.
+        assert_eq!(parse_duration("0.0001h"), Some((Duration::ZERO, true)));
+        assert_eq!(
+            parse_duration("1.5h"),
+            Some((Duration::from_secs(5_400), false))
+        );
+        assert_eq!(parse_legacy_duration("1.5ns"), None);
+    }
+
+    #[test]
+    fn durations_print_in_jiff_format_and_read_back() {
+        for (d, text) in [
+            (Duration::from_secs(60), "1m"),
+            (Duration::from_secs(90), "1m 30s"),
+            (Duration::from_secs(600), "10m"),
+            (Duration::from_secs(86_400), "24h"),
+            (Duration::from_secs(7 * 86_400), "168h"),
+            (Duration::from_millis(1), "1ms"),
+            (Duration::from_millis(1_500), "1s 500ms"),
+        ] {
+            assert_eq!(format_duration(d), text);
+            assert_eq!(parse_duration(text), Some((d, false)), "{text}");
+        }
+    }
+
+    #[test]
     fn max_cursor_skew_reads_a_duration_and_is_written_when_set() {
         let mut c = sample();
         c.source.max_cursor_skew = Duration::from_secs(7 * 86_400);
         let text = c.render("", &BTreeMap::new(), None);
-        assert!(text.contains("max_cursor_skew = \"7days\""), "{text}");
+        assert!(text.contains("max_cursor_skew = \"168h\""), "{text}");
         assert_eq!(Config::parse(&text).unwrap(), c);
     }
 

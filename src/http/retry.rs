@@ -47,7 +47,7 @@ impl RetryPolicy {
             return Ok(());
         }
         let secs = |d: Duration| {
-            humantime::format_duration(Duration::from_secs(d.as_secs_f64().ceil() as u64))
+            crate::config::format_duration(Duration::from_secs(d.as_secs_f64().ceil() as u64))
         };
         anyhow::bail!(
             "{what}, and the next retry would wait {} after {} already waited, past \
@@ -82,9 +82,10 @@ pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
         // `inf` or `1e30` is a wait too long to represent: max_wait refuses it.
         return Some(Duration::try_from_secs_f64(secs.max(0.0)).unwrap_or(Duration::MAX));
     }
-    let when = chrono::DateTime::parse_from_rfc2822(v).ok()?;
-    let secs = (when.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_milliseconds();
-    Some(Duration::from_millis(secs.max(0) as u64))
+    static PARSER: jiff::fmt::rfc2822::DateTimeParser = jiff::fmt::rfc2822::DateTimeParser::new();
+    let when = PARSER.parse_timestamp(v).ok()?;
+    let ms = when.duration_since(jiff::Timestamp::now()).as_millis();
+    Some(Duration::from_millis(ms.max(0) as u64))
 }
 
 #[cfg(test)]
@@ -101,7 +102,11 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert("retry-after", HeaderValue::from_static("120"));
         assert_eq!(policy().delay(0, Some(&h)), Duration::from_secs(120));
-        let date = (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc2822();
+        let date = jiff::fmt::rfc2822::DateTimePrinter::new()
+            .timestamp_to_rfc9110_string(
+                &(jiff::Timestamp::now() + jiff::SignedDuration::from_secs(30)),
+            )
+            .unwrap();
         h.insert("retry-after", HeaderValue::from_str(&date).unwrap());
         let d = policy().delay(0, Some(&h)).as_secs();
         assert!((28..=30).contains(&d), "{d}");

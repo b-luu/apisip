@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::{AuthConfig, Config};
+use crate::config::{self, AuthConfig, Config, LegacyDuration};
 use crate::detect::{self, AuthOption, Detection, EnvVar};
 use crate::envfile;
 use crate::prompt::{self, Prompter};
@@ -68,7 +68,8 @@ pub async fn run(ws: &Workspace, o: UpdateOptions) -> Result<bool> {
     }
     let creds = prompt::ask_credentials(&p, &vars, |k| current_value(ws, k))?;
 
-    let merged = apply(&plan.text, &plan.d, &plan.theirs, &r)?;
+    let text = config::rewrite_durations(&plan.text, &plan.legacy)?;
+    let merged = apply(&text, &plan.d, &plan.theirs, &r)?;
     let (merged, new_hosts) = record_new_hosts(&merged, &plan.mine)?;
     for (host, class) in new_hosts {
         match class {
@@ -112,6 +113,8 @@ pub async fn run(ws: &Workspace, o: UpdateOptions) -> Result<bool> {
 /// files and the auth schemes of the old and new spec.
 struct Plan {
     text: String,
+    /// Durations in the old syntax, rewritten whatever the spec says.
+    legacy: Vec<LegacyDuration>,
     mine: Config,
     base: Config,
     theirs: Config,
@@ -163,6 +166,7 @@ impl Plan {
             .is_some_and(|old| auth_names(old) != auth_names(&det.auth));
 
         Ok(Plan {
+            legacy: config::legacy_durations(&text),
             text,
             mine,
             base,
@@ -185,6 +189,12 @@ impl Plan {
             self.auth_changed
                 .then_some((&self.old_auth, &self.det.auth)),
         );
+        for l in &self.legacy {
+            println!(
+                "{}: {:?} -> {:?} (old duration syntax: rewriting)",
+                l.key, l.old, l.new
+            );
+        }
         if let Some(store) = &self.store {
             print_drift(store, &self.mine, &self.new_spec).await;
         }
@@ -192,6 +202,7 @@ impl Plan {
 
     fn changed(&self) -> bool {
         !self.d.is_empty()
+            || !self.legacy.is_empty()
             || self.schemas.iter().any(StreamSchema::changed)
             || self.auth_changed
             || self.spec_change.is_some()

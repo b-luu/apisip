@@ -254,6 +254,11 @@ cast = "lossless"                 # default; "exact" or "none" for stricter typi
   pacing waits between successful pages do not. Keep it well under the time
   between two scheduled runs, so that a slow API never makes one run overlap
   the next.
+- **Durations** (`period`, `max_backoff`, `max_wait`, `max_cursor_skew`) use
+  units from nanoseconds to weeks, such as `"90s"`, `"10m"`, `"2h 30m"` or
+  `"7d"`. Months and years (`"1M"`, `"1y"`), which older versions read, still
+  load with a warning; `apisip update` rewrites them in hours. That support
+  goes in a later version.
 - **Limits:** `max_response_mb` (default 64) is the largest API response
   body apisip reads. A larger one fails the stream with its size; raise the
   setting, or lower the page size the stream requests. An OAuth2 token
@@ -310,7 +315,7 @@ A cursor value that breaks the spec, or whose type differs from the others
 counts those records.
 
 A timestamp cursor later than the run start plus `max_cursor_skew` (under
-`[source]`, default `"1d"`) does not move the watermark either. One record
+`[source]`, default `"24h"`) does not move the watermark either. One record
 dated 2099 by mistake would otherwise become the watermark, and every later
 record would never be fetched. The record is still written, and the run warns.
 Raise the setting if your API has real future dates (scheduled records); a

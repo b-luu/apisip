@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde_json::Value;
 
 /// A record field by dotted path (`updated_at`, `meta.updated_at`).
@@ -19,7 +19,7 @@ pub fn field<'a>(record: &'a Value, path: &str) -> Option<&'a Value> {
 /// would round, and neighbours would compare equal.
 #[derive(Debug, Clone)]
 pub enum CursorValue {
-    Time(DateTime<Utc>),
+    Time(Timestamp),
     Int(i128),
     Number(f64),
     Text(String),
@@ -56,7 +56,11 @@ impl CursorValue {
 
     fn text(&self) -> String {
         match self {
-            CursorValue::Time(t) => t.to_rfc3339(),
+            // The text earlier versions compared with, offset `+00:00`.
+            CursorValue::Time(t) => {
+                let t = crate::config::timestamp_str::text(t);
+                format!("{}+00:00", t.trim_end_matches('Z'))
+            }
             CursorValue::Int(i) => i.to_string(),
             CursorValue::Number(n) => n.to_string(),
             CursorValue::Text(s) => s.clone(),
@@ -120,7 +124,7 @@ pub fn raw(v: &Value) -> String {
 pub struct Range {
     kind: Option<Kind>,
     by_kind: [KindRange; 3],
-    cap: Option<DateTime<Utc>>,
+    cap: Option<Timestamp>,
     future: usize,
 }
 
@@ -156,7 +160,7 @@ impl CursorValue {
 impl Range {
     /// A range whose values must be of the same kind as this watermark, and
     /// whose timestamps must not be later than `cap`.
-    pub fn new(watermark: Option<&str>, cap: Option<DateTime<Utc>>) -> Range {
+    pub fn new(watermark: Option<&str>, cap: Option<Timestamp>) -> Range {
         Range {
             kind: watermark.map(|w| CursorValue::parse(w).kind()),
             cap,
@@ -222,7 +226,7 @@ impl Range {
 /// Whether a cursor is a timestamp later than the cap. One far-future value
 /// (bad data, a sentinel date) would otherwise become the watermark, and
 /// every later record would never be fetched. Numbers and text are not capped.
-pub fn beyond(c: &CursorValue, cap: Option<DateTime<Utc>>) -> bool {
+pub fn beyond(c: &CursorValue, cap: Option<Timestamp>) -> bool {
     matches!((c, cap), (CursorValue::Time(t), Some(cap)) if *t > cap)
 }
 

@@ -115,7 +115,15 @@ impl Workspace {
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        Config::parse(&text).with_context(|| format!("invalid {}", path.display()))
+        let config = Config::parse(&text).with_context(|| format!("invalid {}", path.display()))?;
+        for l in crate::config::legacy_durations(&text) {
+            eprintln!(
+                "warning: {} = {:?} uses the old duration syntax; write {:?}. The old syntax \
+                 will be removed in a later version. Run `apisip update` to rewrite it.",
+                l.key, l.old, l.new
+            );
+        }
+        Ok(config)
     }
 
     pub fn read_config_text(&self) -> Result<String> {

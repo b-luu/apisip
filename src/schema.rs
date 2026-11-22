@@ -3,10 +3,13 @@
 //! does not fit is reported as drift (and quarantined for Parquet).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use jiff::Timestamp;
+use jiff::civil::{Date, DateTime};
+use jiff::tz::Offset;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -396,11 +399,9 @@ fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
             o => o.to_string(),
         })),
         (Shape::Timestamp, Value::String(s)) => {
-            parse_timestamp(s).map(|t| Value::from(t.timestamp_micros()))
+            parse_timestamp(s).map(|t| Value::from(t.as_microsecond()))
         }
-        (Shape::Date, Value::String(s)) => NaiveDate::parse_from_str(s, "%Y-%m-%d")
-            .ok()
-            .map(|_| v.clone()),
+        (Shape::Date, Value::String(s)) => parse_date(s).map(|_| v.clone()),
         (Shape::Struct(fields), Value::Object(obj)) => {
             let mut out = Map::new();
             for (name, s) in fields {
@@ -446,14 +447,64 @@ fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
     })
 }
 
-pub fn parse_timestamp(s: &str) -> Option<DateTime<Utc>> {
-    if let Ok(t) = DateTime::parse_from_rfc3339(s) {
-        return Some(t.with_timezone(&Utc));
+// RFC 3339, and offset-less forms as lenient about widths and spaces as
+// the parser of earlier versions, so a cursor keeps its kind.
+static RFC3339: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:([Zz])|([+-])(\d{2}):(\d{2}))$").unwrap()
+});
+static NAIVE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^\s*\+?(\d{4})-(\d{1,2})-(\d{1,2})(?:T|\s+)(\d{1,2}):(\d{1,2}):(\d{1,2})(?:\.(\d+))?$",
+    )
+    .unwrap()
+});
+static DATE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*\+?(\d{4})-(\d{1,2})-(\d{1,2})$").unwrap());
+
+pub fn parse_timestamp(s: &str) -> Option<Timestamp> {
+    let (c, offset) = match RFC3339.captures(s) {
+        Some(c) if c.get(8).is_some() => (c, 0),
+        Some(c) => {
+            let (h, m): (i32, i32) = (c[10].parse().ok()?, c[11].parse().ok()?);
+            if m > 59 {
+                return None;
+            }
+            let sign = if &c[9] == "-" { -1 } else { 1 };
+            (c, sign * (h * 3600 + m * 60))
+        }
+        None => (NAIVE.captures(s)?, 0),
+    };
+    let n = |i: usize| c[i].parse::<i16>().ok();
+    let second = n(6)?;
+    // A leap second reads as the first instant of the next minute.
+    let leap = second == 60;
+    let nanos = c.get(7).map_or(Some(0), |f| {
+        format!("{:0<9}", &f.as_str()[..f.len().min(9)])
+            .parse()
+            .ok()
+    })?;
+    let dt = DateTime::new(
+        n(1)?,
+        n(2)? as i8,
+        n(3)? as i8,
+        n(4)? as i8,
+        n(5)? as i8,
+        if leap { 59 } else { second as i8 },
+        nanos,
+    )
+    .ok()?;
+    let t = Offset::from_seconds(offset).ok()?.to_timestamp(dt).ok()?;
+    if leap {
+        t.checked_add(jiff::SignedDuration::from_secs(1)).ok()
+    } else {
+        Some(t)
     }
-    ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"]
-        .iter()
-        .find_map(|f| NaiveDateTime::parse_from_str(s, f).ok())
-        .map(|n| n.and_utc())
+}
+
+/// A `date` value: `YYYY-MM-DD`.
+fn parse_date(s: &str) -> Option<Date> {
+    let c = DATE.captures(s)?;
+    Date::new(c[1].parse().ok()?, c[2].parse().ok()?, c[3].parse().ok()?).ok()
 }
 
 fn infer_value(v: &Value) -> Shape {

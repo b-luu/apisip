@@ -166,7 +166,7 @@ mod tests {
             "address": {"properties": {"city": {"type": "string"}}}
         }}))
         .unwrap();
-        let layout = Layout::new(chrono::Utc::now());
+        let layout = Layout::new(jiff::Timestamp::now());
         let mut w = ParquetWriter::new(
             store.clone(),
             &layout,

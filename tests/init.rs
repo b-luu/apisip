@@ -582,3 +582,83 @@ fn update_refuses_a_token_url_that_references_the_environment() {
         before
     );
 }
+
+#[test]
+fn update_rewrites_durations_in_the_old_syntax_and_nothing_else() {
+    let dir = tempfile::tempdir().unwrap();
+    apisip(dir.path())
+        .args([
+            "init",
+            &fixture("openapi30.yaml"),
+            "--yes",
+            "--plan",
+            "free",
+        ])
+        .assert()
+        .success();
+    let path = dir.path().join("apisip.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("period = \"1m\""), "{text}");
+    // A config written by an older version: month and year units, a
+    // sub-hour value only the old syntax reads, and a comment to keep.
+    assert!(
+        text.contains("max_backoff = \"1m\", max_wait = \"10m\""),
+        "{text}"
+    );
+    let old = text
+        .replace("rate_limit = {", "# my limit\nrate_limit = {")
+        .replace("period = \"1m\"", "period = \"1M\"")
+        .replace("max_backoff = \"1m\"", "max_backoff = \"0.001M\"")
+        .replace(
+            "[destination]",
+            "max_cursor_skew = \"1y\" # yearly\n\n[destination]",
+        );
+    std::fs::write(&path, &old).unwrap();
+
+    apisip(dir.path())
+        .arg("list")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "warning: source.rate_limit.period = \"1M\" uses the old duration syntax; write \"731h\"",
+        ))
+        .stderr(predicate::str::contains("max_wait").not());
+
+    apisip(dir.path())
+        .args(["update", "--check"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(
+            "source.rate_limit.period: \"1M\" -> \"731h\"",
+        ))
+        .stdout(predicate::str::contains(
+            "source.max_cursor_skew: \"1y\" -> \"8766h\"",
+        ))
+        .stdout(predicate::str::contains(
+            "source.retry.max_backoff: \"0.001M\" -> \"43m 50s\"",
+        ));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+
+    apisip(dir.path())
+        .args(["update", "--yes"])
+        .assert()
+        .success();
+    let new = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        new,
+        old.replace("\"1M\"", "\"731h\"")
+            .replace("\"1y\"", "\"8766h\"")
+            .replace("\"0.001M\"", "\"43m 50s\""),
+    );
+
+    apisip(dir.path())
+        .args(["update", "--check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No change"));
+    apisip(dir.path())
+        .arg("list")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("old duration syntax").not());
+}
