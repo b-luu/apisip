@@ -52,14 +52,16 @@ jobs:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
           gc-max-store-size-linux: 5G
+      - run: nix flake check
+      - run: nix run . -- --help
       # allow-dirty also turns off dist's own check, so regenerate without it,
-      # re-apply the hand edits and require no difference (CONTRIBUTING.md)
+      # re-apply the hand edits and require no difference (CONTRIBUTING.md).
+      # Runs even when the build fails, to report both failures.
       - name: Check release.yml against dist
+        if: ${{ !cancelled() }}
         run: |
           sed -i '/^allow-dirty/d' dist-workspace.toml
           nix develop -c dist generate --mode ci
           git apply .github/release-edits.patch
           git checkout dist-workspace.toml
           git add --intent-to-add . && git diff --exit-code
-      - run: nix flake check
-      - run: nix run . -- --help
