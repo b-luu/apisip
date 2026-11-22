@@ -152,11 +152,16 @@ Maintainers only. Releases follow the conventional commits on `main`.
   its config.
 - The `Nix` workflow does that check instead: it removes the `allow-dirty`
   line, runs `dist generate`, applies the patch and fails if the result
-  differs from `release.yml`. Run the same check locally, in a clean checkout:
+  differs from `release.yml`, including any new file dist writes. The patch
+  names the dist release in the deleted `curl` line as `DIST_VERSION`, so a
+  dist upgrade does not break it. Run the same check locally, in a clean
+  checkout:
 
   ```sh
   sed -i.bak '/^allow-dirty/d' dist-workspace.toml && rm dist-workspace.toml.bak
   nix develop -c dist generate --mode ci
+  sed -i.bak 's|/download/v[0-9.]*/cargo-dist-installer|/download/DIST_VERSION/cargo-dist-installer|' \
+    .github/workflows/release.yml && rm .github/workflows/release.yml.bak
   git apply .github/release-edits.patch
   git checkout dist-workspace.toml
   git add --intent-to-add . && git diff --exit-code
@@ -175,6 +180,8 @@ Maintainers only. Releases follow the conventional commits on `main`.
   ```sh
   sed -i.bak '/^allow-dirty/d' dist-workspace.toml && rm dist-workspace.toml.bak
   nix develop -c dist generate --mode ci
+  sed -i.bak 's|/download/v[0-9.]*/cargo-dist-installer|/download/DIST_VERSION/cargo-dist-installer|' \
+    .github/workflows/release.yml && rm .github/workflows/release.yml.bak
   git diff -R -U1 .github/workflows/release.yml > .github/release-edits.patch
   git checkout dist-workspace.toml .github/workflows/release.yml
   ```

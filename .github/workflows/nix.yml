@@ -56,12 +56,14 @@ jobs:
       - run: nix run . -- --help
       # allow-dirty also turns off dist's own check, so regenerate without it,
       # re-apply the hand edits and require no difference (CONTRIBUTING.md).
-      # Runs even when the build fails, to report both failures.
+      # The patch names the dist version as DIST_VERSION, so it survives an
+      # upgrade. Runs even when the build fails, to report both failures.
       - name: Check release.yml against dist
         if: ${{ !cancelled() }}
         run: |
           sed -i '/^allow-dirty/d' dist-workspace.toml
           nix develop -c dist generate --mode ci
+          sed -i 's|/download/v[0-9.]*/cargo-dist-installer|/download/DIST_VERSION/cargo-dist-installer|' .github/workflows/release.yml
           git apply .github/release-edits.patch
           git checkout dist-workspace.toml
           git add --intent-to-add . && git diff --exit-code
