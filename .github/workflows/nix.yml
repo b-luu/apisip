@@ -57,13 +57,13 @@ jobs:
       # allow-dirty also turns off dist's own check, so regenerate without it,
       # re-apply the hand edits and require no difference (CONTRIBUTING.md).
       # The patch names the dist version as DIST_VERSION, so it survives an
-      # upgrade; the grep checks instead that install-dist pins the dist that
+      # upgrade; the test checks instead that install-dist pins the dist that
       # cargo-dist-version names. Runs even when the build fails, to report
       # both failures.
       - name: Check release.yml against dist
         if: ${{ !cancelled() }}
         run: |
-          grep -Eq "^ +DIST_VERSION: v$(sed -n 's/^cargo-dist-version = "\(.*\)"/\1/p' dist-workspace.toml)$" .github/actions/install-dist/action.yml \
+          test "$(sed -n 's/^ *DIST_VERSION: //p' .github/actions/install-dist/action.yml)" = "v$(sed -n 's/^cargo-dist-version = "\(.*\)"/\1/p' dist-workspace.toml)" \
             || { echo "::error::DIST_VERSION in install-dist differs from cargo-dist-version"; exit 1; }
           sed -i '/^allow-dirty/d' dist-workspace.toml
           nix develop -c dist generate --mode ci

@@ -159,7 +159,7 @@ Maintainers only. Releases follow the conventional commits on `main`.
   names. Run the same checks locally, in a clean checkout:
 
   ```sh
-  grep -Eq "^ +DIST_VERSION: v$(sed -n 's/^cargo-dist-version = "\(.*\)"/\1/p' dist-workspace.toml)$" .github/actions/install-dist/action.yml
+  test "$(sed -n 's/^ *DIST_VERSION: //p' .github/actions/install-dist/action.yml)" = "v$(sed -n 's/^cargo-dist-version = "\(.*\)"/\1/p' dist-workspace.toml)"
   sed -i.bak '/^allow-dirty/d' dist-workspace.toml && rm dist-workspace.toml.bak
   nix develop -c dist generate --mode ci
   sed -i.bak 's|/download/v[0-9.]*/cargo-dist-installer|/download/DIST_VERSION/cargo-dist-installer|' \
