@@ -399,7 +399,8 @@ fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
             o => o.to_string(),
         })),
         (Shape::Timestamp, Value::String(s)) => {
-            parse_timestamp(s).map(|t| Value::from(t.as_microsecond()))
+            // Floored, as before: truncating would move a pre-1970 instant forward.
+            parse_timestamp(s).map(|t| Value::from(t.as_nanosecond().div_euclid(1_000) as i64))
         }
         (Shape::Date, Value::String(s)) => parse_date(s).map(|_| v.clone()),
         (Shape::Struct(fields), Value::Object(obj)) => {
@@ -448,31 +449,42 @@ fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
 }
 
 // RFC 3339, and offset-less forms as lenient about widths and spaces as
-// the parser of earlier versions, so a cursor keeps its kind.
+// the parser of earlier versions, so a cursor keeps its kind: a year of 1 to 4
+// digits or signed, and spaces before each number. ASCII digits only.
 static RFC3339: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:([Zz])|([+-])(\d{2}):(\d{2}))$").unwrap()
+    Regex::new(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})[Tt ]([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]+))?(?:([Zz])|([+-])([0-9]{2}):([0-9]{2}))$").unwrap()
 });
 static NAIVE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"^\s*\+?(\d{4})-(\d{1,2})-(\d{1,2})(?:T|\s+)(\d{1,2}):(\d{1,2}):(\d{1,2})(?:\.(\d+))?$",
+        r"^\s*([+-][0-9]+|[0-9]{1,4})-\s*([0-9]{1,2})-\s*([0-9]{1,2})(?:T|\s*)\s*([0-9]{1,2}):\s*([0-9]{1,2}):\s*([0-9]{1,2})(?:\.([0-9]+))?$",
     )
     .unwrap()
 });
-static DATE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*\+?(\d{4})-(\d{1,2})-(\d{1,2})$").unwrap());
+static DATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*([+-][0-9]+|[0-9]{1,4})-\s*([0-9]{1,2})-\s*([0-9]{1,2})$").unwrap()
+});
 
 pub fn parse_timestamp(s: &str) -> Option<Timestamp> {
     let (c, offset) = match RFC3339.captures(s) {
         Some(c) if c.get(8).is_some() => (c, 0),
         Some(c) => {
             let (h, m): (i32, i32) = (c[10].parse().ok()?, c[11].parse().ok()?);
-            if m > 59 {
+            if h > 23 || m > 59 {
                 return None;
             }
             let sign = if &c[9] == "-" { -1 } else { 1 };
             (c, sign * (h * 3600 + m * 60))
         }
-        None => (NAIVE.captures(s)?, 0),
+        None => {
+            let c = NAIVE.captures(s)?;
+            // The old parser read two day digits when it could, so `1-23:00`
+            // never split into day 2, hour 3.
+            let (day, hour) = (c.get(3)?, c.get(4)?);
+            if day.len() == 1 && day.end() == hour.start() {
+                return None;
+            }
+            (c, 0)
+        }
     };
     let n = |i: usize| c[i].parse::<i16>().ok();
     let second = n(6)?;
@@ -744,6 +756,28 @@ mod tests {
         assert_eq!(ty("ref"), DataType::Utf8);
         assert_eq!(ty(EXTRA), DataType::Utf8);
         assert!(s.fields().iter().all(|f| f.is_nullable()));
+    }
+
+    #[test]
+    fn conform_floors_microseconds_and_checks_dates_as_before() {
+        let s = user_schema();
+        for (at, micros) in [
+            ("0001-12-31 12:12:32.123456789", -62_104_103_247_876_544i64),
+            ("1969-12-31T23:59:59.9999999Z", -1),
+        ] {
+            let c = s.conform(&json!({"updated_at": at, "birthday": "26-1-5"}));
+            assert!(c.violations.is_empty(), "{:?}", c.violations);
+            assert_eq!(c.row["updated_at"], json!(micros), "{at}");
+            assert_eq!(c.row["birthday"], json!("26-1-5"));
+        }
+        for bad in [
+            "2026-02-30",
+            "\u{662}\u{660}\u{662}\u{666}-01-05",
+            "2026-01-05 ",
+        ] {
+            let c = s.conform(&json!({ "birthday": bad }));
+            assert_eq!(c.violations.len(), 1, "{bad}");
+        }
     }
 
     #[test]

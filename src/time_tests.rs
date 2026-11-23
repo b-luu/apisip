@@ -63,6 +63,7 @@ fn duration_of(text: &str) -> Option<Duration> {
 
 /// What each spelling the old duration parser accepted loads to.
 pub(crate) const DURATIONS: &[(&str, u64, u32)] = &[
+    ("0", 0, 0),
     ("1ns", 0, 1),
     ("1nsec", 0, 1),
     ("1usec", 0, 1_000),
@@ -208,4 +209,27 @@ fn retry_after_reads_http_dates() {
     }
     h.insert("retry-after", HeaderValue::from_static("soon"));
     assert_eq!(retry_after(&h), None);
+}
+
+#[test]
+fn timestamp_cursors_keep_the_old_edge_cases() {
+    let at = |s: &str| Some(s.parse().unwrap());
+    for (text, utc) in [
+        ("26-01-24 12:00:32", "0026-01-24T12:00:32Z"),
+        ("-0001-1-13 00:29:32", "-000001-01-13T00:29:32Z"),
+        ("2026-1-12T 00:32:24", "2026-01-12T00:32:24Z"),
+        ("2026-01-0100:00:00", "2026-01-01T00:00:00Z"),
+        ("2026- 1- 2 3: 4: 5", "2026-01-02T03:04:05Z"),
+    ] {
+        assert_eq!(parse_timestamp(text), at(utc), "{text}");
+    }
+    for text in [
+        "2026-01-01T00:00:00.\u{661}\u{662}\u{663}\u{664}\u{665}Z",
+        "\u{662}\u{660}\u{662}\u{666}-01-01T00:00:00",
+        "2026-01-01T00:00:00+24:00",
+        "2026-01-01T00:00:00-25:00",
+        "2026-01-23:02:32",
+    ] {
+        assert_eq!(parse_timestamp(text), None, "{text}");
+    }
 }

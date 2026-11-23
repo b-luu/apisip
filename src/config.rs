@@ -543,6 +543,9 @@ pub fn parse_duration(s: &str) -> Option<(Duration, bool)> {
 /// old configs still load, with a warning; remove it in a later release.
 fn parse_legacy_duration(s: &str) -> Option<Duration> {
     let digits = |s: &str| s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    if s == "0" {
+        return Some(Duration::ZERO);
+    }
     let mut rest = s.trim_start();
     if rest.is_empty() {
         return None;
@@ -583,7 +586,12 @@ fn parse_legacy_duration(s: &str) -> Option<Duration> {
             if unit == 1 {
                 return None;
             }
-            total = total.checked_add((num.checked_mul(unit)? / den) as u128 * scale)?;
+            // An inexact fraction was an error; jiff reads it exactly.
+            let part = num.checked_mul(unit)?;
+            if part % den != 0 {
+                return None;
+            }
+            total = total.checked_add((part / den) as u128 * scale)?;
         }
     }
     let secs = u64::try_from(total / 1_000_000_000).ok()?;
@@ -911,19 +919,51 @@ incremental = { cursor = "updated_at", sort = { param = "sort", value = "-update
 
     #[test]
     fn only_the_old_spellings_jiff_does_not_read_alike_take_the_legacy_path() {
-        let legacy = ["1M", "1month", "2months", "1y", "1year", "2years"];
+        let legacy = ["0", "1M", "1month", "2months", "1y", "1year", "2years"];
         for (text, secs, nanos) in crate::time_tests::DURATIONS {
             let (d, old) = parse_duration(text).unwrap();
             assert_eq!(d, Duration::new(*secs, *nanos), "{text}");
             assert_eq!(old, legacy.contains(text), "{text}");
         }
         // Both read it, to different values: the old value wins, with a warning.
-        assert_eq!(parse_duration("0.0001h"), Some((Duration::ZERO, true)));
+        assert_eq!(parse_duration("0"), Some((Duration::ZERO, true)));
+        // An inexact old fraction errored; jiff's exact value is used.
+        assert_eq!(
+            parse_duration("0.0001h"),
+            Some((Duration::from_millis(360), false))
+        );
         assert_eq!(
             parse_duration("1.5h"),
             Some((Duration::from_secs(5_400), false))
         );
         assert_eq!(parse_legacy_duration("1.5ns"), None);
+    }
+
+    #[test]
+    fn the_legacy_parser_reads_every_old_unit_spelling() {
+        // humantime 2.4's spellings, each with its length in nanoseconds.
+        let units: [(&[&str], u128); 10] = [
+            (&["nanos", "nsec", "ns"], 1),
+            (&["usec", "us", "\u{b5}s"], 1_000),
+            (&["millis", "msec", "ms"], 1_000_000),
+            (&["seconds", "second", "secs", "sec", "s"], 1_000_000_000),
+            (&["minutes", "minute", "min", "mins", "m"], 60_000_000_000),
+            (&["hours", "hour", "hr", "hrs", "h"], 3_600_000_000_000),
+            (&["days", "day", "d"], 86_400_000_000_000),
+            (&["weeks", "week", "wk", "wks", "w"], 604_800_000_000_000),
+            (&["months", "month", "M"], 2_630_016_000_000_000),
+            (&["years", "year", "yr", "yrs", "y"], 31_557_600_000_000_000),
+        ];
+        for (spellings, nanos) in units {
+            for unit in spellings {
+                let d = parse_legacy_duration(&format!("2{unit}")).unwrap();
+                assert_eq!(d.as_nanos(), 2 * nanos, "{unit}");
+            }
+        }
+        assert_eq!(
+            parse_legacy_duration("1M 2d 3\u{b5}s"),
+            Some(Duration::new(2_630_016 + 2 * 86_400, 3_000))
+        );
     }
 
     #[test]

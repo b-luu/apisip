@@ -608,7 +608,7 @@ fn update_rewrites_durations_in_the_old_syntax_and_nothing_else() {
     let old = text
         .replace("rate_limit = {", "# my limit\nrate_limit = {")
         .replace("period = \"1m\"", "period = \"1M\"")
-        .replace("max_backoff = \"1m\"", "max_backoff = \"0.001M\"")
+        .replace("max_backoff = \"1m\"", "max_backoff = \"0\"")
         .replace(
             "[destination]",
             "max_cursor_skew = \"1y\" # yearly\n\n[destination]",
@@ -635,7 +635,7 @@ fn update_rewrites_durations_in_the_old_syntax_and_nothing_else() {
             "source.max_cursor_skew: \"1y\" -> \"8766h\"",
         ))
         .stdout(predicate::str::contains(
-            "source.retry.max_backoff: \"0.001M\" -> \"43m 50s\"",
+            "source.retry.max_backoff: \"0\" -> \"0s\"",
         ));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
 
@@ -648,7 +648,7 @@ fn update_rewrites_durations_in_the_old_syntax_and_nothing_else() {
         new,
         old.replace("\"1M\"", "\"731h\"")
             .replace("\"1y\"", "\"8766h\"")
-            .replace("\"0.001M\"", "\"43m 50s\""),
+            .replace("max_backoff = \"0\"", "max_backoff = \"0s\""),
     );
 
     apisip(dir.path())
