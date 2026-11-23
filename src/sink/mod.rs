@@ -517,20 +517,25 @@ mod tests {
     async fn only_staging_older_than_a_day_is_removed() {
         let dir = tempfile::tempdir().unwrap();
         let store = local(dir.path());
-        let now = Timestamp::now();
+        // Whole milliseconds, as run ids keep, so exactly a day is exact.
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
         let old = Layout::new(now - SignedDuration::from_hours(25));
         let fresh = Layout::new(now - SignedDuration::from_hours(1));
+        let day = Layout::new(now - SignedDuration::from_hours(24));
         store.put(&old.staged("s/a.jsonl"), "1\n").await.unwrap();
         store.put(&fresh.staged("s/a.jsonl"), "1\n").await.unwrap();
+        store.put(&day.staged("s/a.jsonl"), "1\n").await.unwrap();
         store.delete_stale_staging(now).await.unwrap();
         assert_eq!(store.get(&old.staged("s/a.jsonl")).await.unwrap(), None);
-        assert!(
-            store
-                .get(&fresh.staged("s/a.jsonl"))
-                .await
-                .unwrap()
-                .is_some()
-        );
+        for kept in [fresh, day] {
+            assert!(
+                store
+                    .get(&kept.staged("s/a.jsonl"))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
     }
 
     #[test]
