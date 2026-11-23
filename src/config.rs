@@ -964,6 +964,12 @@ incremental = { cursor = "updated_at", sort = { param = "sort", value = "-update
             parse_legacy_duration("1M 2d 3\u{b5}s"),
             Some(Duration::new(2_630_016 + 2 * 86_400, 3_000))
         );
+        // Exact fractions read; a fraction of a nanosecond did not.
+        assert_eq!(
+            parse_legacy_duration("1.5h"),
+            Some(Duration::from_secs(5_400))
+        );
+        assert_eq!(parse_legacy_duration("1.0ns"), None);
     }
 
     #[test]
