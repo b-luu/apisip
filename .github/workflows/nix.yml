@@ -52,14 +52,22 @@ jobs:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
           gc-max-store-size-linux: 5G
+      - run: nix flake check
+      - run: nix run . -- --help
       # allow-dirty also turns off dist's own check, so regenerate without it,
-      # re-apply the hand edits and require no difference (CONTRIBUTING.md)
+      # re-apply the hand edits and require no difference (CONTRIBUTING.md).
+      # The patch names the dist version as DIST_VERSION, so it survives an
+      # upgrade; the test checks instead that install-dist pins the dist that
+      # cargo-dist-version names. Runs even when the build fails, to report
+      # both failures.
       - name: Check release.yml against dist
+        if: ${{ !cancelled() }}
         run: |
+          test "$(sed -n 's/^ *DIST_VERSION: //p' .github/actions/install-dist/action.yml)" = "v$(sed -n 's/^cargo-dist-version = "\(.*\)"/\1/p' dist-workspace.toml)" \
+            || { echo "::error::DIST_VERSION in install-dist differs from cargo-dist-version"; exit 1; }
           sed -i '/^allow-dirty/d' dist-workspace.toml
           nix develop -c dist generate --mode ci
+          sed -i 's|/download/v[0-9.]*/cargo-dist-installer|/download/DIST_VERSION/cargo-dist-installer|' .github/workflows/release.yml
           git apply .github/release-edits.patch
           git checkout dist-workspace.toml
           git add --intent-to-add . && git diff --exit-code
-      - run: nix flake check
-      - run: nix run . -- --help
