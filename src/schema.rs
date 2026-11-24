@@ -3,10 +3,13 @@
 //! does not fit is reported as drift (and quarantined for Parquet).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use jiff::Timestamp;
+use jiff::civil::{Date, DateTime};
+use jiff::tz::Offset;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -396,11 +399,10 @@ fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
             o => o.to_string(),
         })),
         (Shape::Timestamp, Value::String(s)) => {
-            parse_timestamp(s).map(|t| Value::from(t.timestamp_micros()))
+            // Floored, as before: truncating would move a pre-1970 instant forward.
+            parse_timestamp(s).map(|t| Value::from(t.as_nanosecond().div_euclid(1_000) as i64))
         }
-        (Shape::Date, Value::String(s)) => NaiveDate::parse_from_str(s, "%Y-%m-%d")
-            .ok()
-            .map(|_| v.clone()),
+        (Shape::Date, Value::String(s)) => parse_date(s).map(|_| v.clone()),
         (Shape::Struct(fields), Value::Object(obj)) => {
             let mut out = Map::new();
             for (name, s) in fields {
@@ -446,14 +448,75 @@ fn conform_value(v: &Value, shape: &Shape, path: &str, ctx: &mut Ctx) -> Value {
     })
 }
 
-pub fn parse_timestamp(s: &str) -> Option<DateTime<Utc>> {
-    if let Ok(t) = DateTime::parse_from_rfc3339(s) {
-        return Some(t.with_timezone(&Utc));
+// RFC 3339, and offset-less forms as lenient about widths and spaces as
+// the parser of earlier versions, so a cursor keeps its kind: a year of 1 to 4
+// digits or signed, and spaces before each number. ASCII digits only.
+static RFC3339: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})[Tt ]([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]+))?(?:([Zz])|([+-])([0-9]{2}):([0-9]{2}))$").unwrap()
+});
+static NAIVE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^\s*([+-][0-9]+|[0-9]{1,4})-\s*([0-9]{1,2})-\s*([0-9]{1,2})(?:T|\s*)\s*([0-9]{1,2}):\s*([0-9]{1,2}):\s*([0-9]{1,2})(?:\.([0-9]+))?$",
+    )
+    .unwrap()
+});
+static DATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*([+-][0-9]+|[0-9]{1,4})-\s*([0-9]{1,2})-\s*([0-9]{1,2})$").unwrap()
+});
+
+pub fn parse_timestamp(s: &str) -> Option<Timestamp> {
+    let (c, offset) = match RFC3339.captures(s) {
+        Some(c) if c.get(8).is_some() => (c, 0),
+        Some(c) => {
+            let (h, m): (i32, i32) = (c[10].parse().ok()?, c[11].parse().ok()?);
+            if h > 23 || m > 59 {
+                return None;
+            }
+            let sign = if &c[9] == "-" { -1 } else { 1 };
+            (c, sign * (h * 3600 + m * 60))
+        }
+        None => {
+            let c = NAIVE.captures(s)?;
+            // The old parser read two day digits when it could, so `1-23:00`
+            // never split into day 2, hour 3.
+            let (day, hour) = (c.get(3)?, c.get(4)?);
+            if day.len() == 1 && day.end() == hour.start() {
+                return None;
+            }
+            (c, 0)
+        }
+    };
+    let n = |i: usize| c[i].parse::<i16>().ok();
+    let second = n(6)?;
+    // A leap second reads as the first instant of the next minute.
+    let leap = second == 60;
+    let nanos = c.get(7).map_or(Some(0), |f| {
+        format!("{:0<9}", &f.as_str()[..f.len().min(9)])
+            .parse()
+            .ok()
+    })?;
+    let dt = DateTime::new(
+        n(1)?,
+        n(2)? as i8,
+        n(3)? as i8,
+        n(4)? as i8,
+        n(5)? as i8,
+        if leap { 59 } else { second as i8 },
+        nanos,
+    )
+    .ok()?;
+    let t = Offset::from_seconds(offset).ok()?.to_timestamp(dt).ok()?;
+    if leap {
+        t.checked_add(jiff::SignedDuration::from_secs(1)).ok()
+    } else {
+        Some(t)
     }
-    ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"]
-        .iter()
-        .find_map(|f| NaiveDateTime::parse_from_str(s, f).ok())
-        .map(|n| n.and_utc())
+}
+
+/// A `date` value: `YYYY-MM-DD`.
+fn parse_date(s: &str) -> Option<Date> {
+    let c = DATE.captures(s)?;
+    Date::new(c[1].parse().ok()?, c[2].parse().ok()?, c[3].parse().ok()?).ok()
 }
 
 fn infer_value(v: &Value) -> Shape {
@@ -693,6 +756,28 @@ mod tests {
         assert_eq!(ty("ref"), DataType::Utf8);
         assert_eq!(ty(EXTRA), DataType::Utf8);
         assert!(s.fields().iter().all(|f| f.is_nullable()));
+    }
+
+    #[test]
+    fn conform_floors_microseconds_and_checks_dates_as_before() {
+        let s = user_schema();
+        for (at, micros) in [
+            ("0001-12-31 12:12:32.123456789", -62_104_103_247_876_544i64),
+            ("1969-12-31T23:59:59.9999999Z", -1),
+        ] {
+            let c = s.conform(&json!({"updated_at": at, "birthday": "26-1-5"}));
+            assert!(c.violations.is_empty(), "{:?}", c.violations);
+            assert_eq!(c.row["updated_at"], json!(micros), "{at}");
+            assert_eq!(c.row["birthday"], json!("26-1-5"));
+        }
+        for bad in [
+            "2026-02-30",
+            "\u{662}\u{660}\u{662}\u{666}-01-05",
+            "2026-01-05 ",
+        ] {
+            let c = s.conform(&json!({ "birthday": bad }));
+            assert_eq!(c.violations.len(), 1, "{bad}");
+        }
     }
 
     #[test]

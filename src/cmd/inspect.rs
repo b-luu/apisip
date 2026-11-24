@@ -145,7 +145,7 @@ fn watermark<'a>(s: &StreamConfig, state: &'a State) -> Option<&'a str> {
 
 fn run_label(r: &Run) -> String {
     let at = crate::sink::Layout::started_at(&r.run_id)
-        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+        .map(|t| t.strftime("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| r.run_id.clone());
     let status = match r.report.status {
         StreamStatus::Committed => "ok",

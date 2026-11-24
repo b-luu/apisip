@@ -5,10 +5,10 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
-    # Remove once apisip and its dependencies move off these crates:
-    # https://github.com/b-luu/apisip/issues/148
-    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no safe upgrade; see #148" },
-    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained, no safe upgrade; see #148" },
+    # apisip itself uses neither crate (see the bans below). cargo-deny ignores
+    # an advisory per crate, not per edge, so these stay until upstream drops them.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; still pulled in by arrow-arith, arrow-array, arrow-cast, arrow-json, parquet and object_store" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained; still pulled in by object_store" },
 ]
 
 [licenses]
@@ -34,6 +34,11 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Unmaintained: apisip uses jiff. Only the crates listed may still pull them in.
+deny = [
+    { crate = "chrono", wrappers = ["arrow-arith", "arrow-array", "arrow-cast", "arrow-json", "object_store", "parquet"] },
+    { crate = "humantime", wrappers = ["object_store"] },
+]
 
 [sources]
 unknown-registry = "deny"

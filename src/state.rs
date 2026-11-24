@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use object_store::path::Path;
 use object_store::{GetOptions, ObjectStore, PutMode, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
@@ -37,8 +37,12 @@ pub struct StreamState {
     pub cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_committed_at: Option<DateTime<Utc>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::config::timestamp_str::option"
+    )]
+    pub last_committed_at: Option<Timestamp>,
     /// Cursor range of the last committed run, to flag overlaps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_range: Option<CursorRange>,
@@ -210,9 +214,14 @@ fn is_zero(n: &u64) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub run_id: String,
-    pub started_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<DateTime<Utc>>,
+    #[serde(with = "crate::config::timestamp_str")]
+    pub started_at: Timestamp,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::config::timestamp_str::option"
+    )]
+    pub finished_at: Option<Timestamp>,
     pub status: RunStatus,
     pub full_refresh: bool,
     pub format: String,
@@ -327,7 +336,7 @@ impl Manifest {
             n if n == self.streams.len() => RunStatus::Failed,
             _ => RunStatus::Partial,
         };
-        self.finished_at = Some(Utc::now());
+        self.finished_at = Some(Timestamp::now());
         failed
     }
 

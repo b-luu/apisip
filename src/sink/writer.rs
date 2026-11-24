@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use arrow::datatypes::Schema;
-use chrono::{DateTime, SecondsFormat, Utc};
+use jiff::Timestamp;
 use serde_json::{Value, json};
 
 use super::{JsonlWriter, Layout, ParquetWriter, StagedFile, Store};
@@ -15,13 +15,13 @@ use crate::schema::{Conformed, EXTRACTED_AT, RUN_ID, Violation, wrap};
 /// The run a record was fetched in, and when.
 pub struct Stamp<'a> {
     pub run_id: &'a str,
-    pub extracted: DateTime<Utc>,
+    pub extracted: Timestamp,
 }
 
 impl Stamp<'_> {
     /// The extraction time as JSONL and quarantine lines write it.
     pub fn extracted_text(&self) -> String {
-        self.extracted.to_rfc3339_opts(SecondsFormat::Micros, true)
+        format!("{:.6}", self.extracted)
     }
 }
 
@@ -69,10 +69,7 @@ impl DataWriter {
             DataWriter::Parquet(w) => {
                 let mut row = conformed.expect("parquet has a schema").row;
                 row.insert(RUN_ID.into(), Value::String(stamp.run_id.to_string()));
-                row.insert(
-                    EXTRACTED_AT.into(),
-                    json!(stamp.extracted.timestamp_micros()),
-                );
+                row.insert(EXTRACTED_AT.into(), json!(stamp.extracted.as_microsecond()));
                 w.write(row).await
             }
         }

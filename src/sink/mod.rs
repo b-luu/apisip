@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
+use jiff::{SignedDuration, Timestamp};
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 
@@ -220,7 +220,7 @@ impl Store {
     /// Removes the staging folders of runs that started more than a day
     /// ago: leftovers of interrupted runs. A younger one may belong to a run
     /// of a copy of this folder that is still going.
-    pub async fn delete_stale_staging(&self, now: DateTime<Utc>) -> Result<()> {
+    pub async fn delete_stale_staging(&self, now: Timestamp) -> Result<()> {
         let root = Path::from(format!("{META_DIR}/staging"));
         let listing = match self.inner.list_with_delimiter(Some(&root)).await {
             Ok(l) => l,
@@ -231,7 +231,9 @@ impl Store {
             let stale = dir
                 .filename()
                 .and_then(Layout::started_at)
-                .is_some_and(|t| now - t > chrono::Duration::hours(STALE_STAGING_HOURS));
+                .is_some_and(|t| {
+                    now.duration_since(t) > SignedDuration::from_hours(STALE_STAGING_HOURS)
+                });
             if stale {
                 self.delete_prefix(dir.as_ref()).await?;
             }
@@ -306,32 +308,32 @@ pub struct StagedFile {
 #[derive(Debug, Clone)]
 pub struct Layout {
     pub run_id: String,
-    pub started: DateTime<Utc>,
+    pub started: Timestamp,
 }
 
 pub const META_DIR: &str = "_apisip";
 const STALE_STAGING_HOURS: i64 = 24;
 
 impl Layout {
-    pub fn new(started: DateTime<Utc>) -> Layout {
+    pub fn new(started: Timestamp) -> Layout {
         let suffix: u16 = rand::random();
         Layout {
-            run_id: format!("{}-{suffix:04x}", started.format("%Y%m%dT%H%M%S%3fZ")),
+            run_id: format!("{}-{suffix:04x}", started.strftime("%Y%m%dT%H%M%S%3fZ")),
             started,
         }
     }
 
     /// When the run with this id started, from the id's timestamp prefix.
-    pub fn started_at(run_id: &str) -> Option<DateTime<Utc>> {
+    pub fn started_at(run_id: &str) -> Option<Timestamp> {
         let ts = run_id.split_once('Z')?.0;
-        chrono::NaiveDateTime::parse_from_str(ts, "%Y%m%dT%H%M%S%3f")
+        jiff::civil::DateTime::strptime("%Y%m%dT%H%M%S%3f", ts)
             .ok()
-            .map(|t| t.and_utc())
+            .and_then(|t| jiff::tz::Offset::UTC.to_timestamp(t).ok())
     }
 
     /// `<stream>/dt=<date>/`, plus `run_id=<id>/` for full-refresh snapshots.
     pub fn data_dir(&self, stream: &str, snapshot: bool) -> String {
-        let mut d = format!("{stream}/dt={}", self.started.format("%Y-%m-%d"));
+        let mut d = format!("{stream}/dt={}", self.started.strftime("%Y-%m-%d"));
         if snapshot {
             d.push_str(&format!("/run_id={}", self.run_id));
         }
@@ -515,20 +517,25 @@ mod tests {
     async fn only_staging_older_than_a_day_is_removed() {
         let dir = tempfile::tempdir().unwrap();
         let store = local(dir.path());
-        let now = Utc::now();
-        let old = Layout::new(now - chrono::Duration::hours(25));
-        let fresh = Layout::new(now - chrono::Duration::hours(1));
+        // Whole milliseconds, as run ids keep, so exactly a day is exact.
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let old = Layout::new(now - SignedDuration::from_hours(25));
+        let fresh = Layout::new(now - SignedDuration::from_hours(1));
+        let day = Layout::new(now - SignedDuration::from_hours(24));
         store.put(&old.staged("s/a.jsonl"), "1\n").await.unwrap();
         store.put(&fresh.staged("s/a.jsonl"), "1\n").await.unwrap();
+        store.put(&day.staged("s/a.jsonl"), "1\n").await.unwrap();
         store.delete_stale_staging(now).await.unwrap();
         assert_eq!(store.get(&old.staged("s/a.jsonl")).await.unwrap(), None);
-        assert!(
-            store
-                .get(&fresh.staged("s/a.jsonl"))
-                .await
-                .unwrap()
-                .is_some()
-        );
+        for kept in [fresh, day] {
+            assert!(
+                store
+                    .get(&kept.staged("s/a.jsonl"))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
     }
 
     #[test]

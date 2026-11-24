@@ -190,7 +190,7 @@ pub async fn run(ws: &Workspace, o: InitOptions) -> Result<()> {
                     "{} ({} calls per {})",
                     t.plan.as_deref().unwrap_or("?"),
                     t.limit.max_calls,
-                    humantime::format_duration(t.limit.period)
+                    crate::config::format_duration(t.limit.period)
                 )
             })
             .collect();
@@ -468,7 +468,7 @@ fn print_summary(
         Some(r) => println!(
             "\nRate limit: {} calls per {}.",
             r.max_calls,
-            humantime::format_duration(r.period)
+            crate::config::format_duration(r.period)
         ),
         None => {
             println!();

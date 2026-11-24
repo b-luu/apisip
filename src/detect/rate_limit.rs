@@ -191,9 +191,8 @@ fn parse_extension(v: &Value, plan: Option<String>, source: &str, out: &mut Vec<
                 "seconds",
             ])
             .and_then(|p| match p {
-                Value::String(s) => {
-                    parse_period_word(&norm(s)).or_else(|| humantime::parse_duration(s).ok())
-                }
+                Value::String(s) => parse_period_word(&norm(s))
+                    .or_else(|| crate::config::parse_duration(s).map(|(d, _)| d)),
                 Value::Number(n) => n.as_u64().map(Duration::from_secs),
                 _ => None,
             });

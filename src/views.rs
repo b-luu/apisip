@@ -8,7 +8,7 @@
 //!   `duckdb -c ".read _apisip/views/all.sql"`.
 
 use anyhow::Result;
-use chrono::{DateTime, SecondsFormat, Utc};
+use jiff::Timestamp;
 
 use crate::config::{Config, Format, Mode, StreamConfig};
 use crate::schema::{EXTRACTED_AT, RUN_ID};
@@ -116,7 +116,7 @@ fn history_sql(
     s: &StreamConfig,
     source: &str,
     last_run: &str,
-    committed_at: Option<DateTime<Utc>>,
+    committed_at: Option<Timestamp>,
 ) -> Option<String> {
     let key = key_list(s)?;
     if s.mode() == Mode::FullRefresh {
@@ -131,7 +131,7 @@ fn history_sql(
         // the session time zone.
         let last_run = literal(last_run);
         let fallback = match committed_at {
-            Some(t) => literal(&t.to_rfc3339_opts(SecondsFormat::Micros, true)),
+            Some(t) => literal(&format!("{t:.6}")),
             None => format!("(select max({EXTRACTED_AT}) from {source})"),
         };
         return Some(format!(
@@ -256,6 +256,12 @@ incremental = { cursor = "meta.updated_at", param = "since" }"#,
             "{bounded}"
         );
         assert!(!bounded.contains(&unbounded), "{bounded}");
+        let at = "2026-11-08T21:30:00.123456789Z".parse().unwrap();
+        let bounded = history_sql(&s, &src, "r1", Some(at)).unwrap();
+        assert!(
+            bounded.contains("'2026-11-08T21:30:00.123456Z')"),
+            "{bounded}"
+        );
         // A state without a commit time keeps the old bound.
         assert!(
             history_sql(&s, &src, "r1", None)

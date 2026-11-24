@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde_json::{Value, json};
 
 use crate::config::{Cast, Format, Mode, StreamConfig};
@@ -40,7 +40,7 @@ pub async fn run(ws: &Workspace, o: ReplayOptions) -> Result<bool> {
     let store = Arc::new(Store::open(&config.destination, &ws.dir)?);
     let folder_id = ws.folder_id()?;
     claim(&store, &folder_id).await?;
-    let layout = Layout::new(Utc::now());
+    let layout = Layout::new(Timestamp::now());
     store.delete_stale_staging(layout.started).await?;
 
     let mut todo = Vec::new();
@@ -205,8 +205,7 @@ impl Replay<'_> {
             let extracted = entry
                 .get(EXTRACTED_AT)
                 .and_then(Value::as_str)
-                .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-                .map(|t| t.with_timezone(&Utc));
+                .and_then(|t| t.parse::<Timestamp>().ok());
             let conformed = schema.map(|sc| sc.conform(&record));
             let reason = match (&run_id, extracted, &conformed) {
                 // Without them the record cannot go back to the run it was fetched in.
@@ -229,7 +228,7 @@ impl Replay<'_> {
             };
 
             let day = Layout::started_at(&run_id).unwrap_or(extracted);
-            let mut dir = format!("{name}/dt={}", day.format("%Y-%m-%d"));
+            let mut dir = format!("{name}/dt={}", day.strftime("%Y-%m-%d"));
             if snapshot {
                 dir.push_str(&format!("/run_id={run_id}"));
             }

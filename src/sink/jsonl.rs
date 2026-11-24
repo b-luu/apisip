@@ -131,7 +131,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let layout = Layout::new(chrono::Utc::now());
+        let layout = Layout::new(jiff::Timestamp::now());
         let mut w = JsonlWriter::new(store.clone(), &layout, "s", "s/dt=x".into(), 20);
         for i in 0..5 {
             w.write(&json!({"id": i, "pad": "xxxx"})).await.unwrap();

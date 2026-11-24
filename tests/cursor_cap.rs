@@ -112,7 +112,7 @@ async fn filter_mode_keeps_fetching_after_a_far_future_cursor() {
     assert!(
         r.warnings.iter().any(|w| w
             .starts_with("1 record(s) have a `updated_at` value later than")
-            && w.contains("Z (run start + 1day): they were written")),
+            && w.contains("Z (run start + 24h): they were written")),
         "{:?}",
         r.warnings
     );

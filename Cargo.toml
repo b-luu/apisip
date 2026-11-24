@@ -19,12 +19,11 @@ async-stream = "0.3.6"
 base64 = "0.23.1"
 bytes = "1"
 bytesize = "2.7.0"
-chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 dotenvy = "0.15.7"
 futures = "0.3.34"
-humantime = "2.4.0"
 inquire = "0.9.4"
+jiff = { version = "1.0.2", default-features = false, features = ["std", "serde"] }
 object_store = { version = "0.14.2", features = ["aws"] }
 parquet = { version = "60.0.0", default-features = false, features = ["arrow", "async", "object_store", "snap", "zstd"] }
 rand = "0.10.3"

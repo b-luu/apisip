@@ -47,9 +47,9 @@ impl Data {
     /// A logical clock: each tick is one minute after 2026-01-01T00:00:00Z.
     fn tick(&mut self) -> String {
         self.clock += 1;
-        let t = chrono::DateTime::<chrono::Utc>::from_timestamp(1_767_225_600, 0).unwrap()
-            + chrono::Duration::minutes(self.clock as i64);
-        t.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+        let t = jiff::Timestamp::from_second(1_767_225_600).unwrap()
+            + jiff::SignedDuration::from_mins(self.clock as i64);
+        t.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()
     }
 
     fn seed() -> Data {
