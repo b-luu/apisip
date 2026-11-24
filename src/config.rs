@@ -532,10 +532,8 @@ pub fn parse_duration(s: &str) -> Option<(Duration, bool)> {
         })
         .and_then(|d| Duration::try_from(d).ok());
     match (new, parse_legacy_duration(s)) {
-        (Some(n), Some(old)) if n == old => Some((n, false)),
-        (_, Some(old)) => Some((old, true)),
-        (Some(n), None) => Some((n, false)),
-        (None, None) => None,
+        (n, Some(old)) if n != Some(old) => Some((old, true)),
+        (n, _) => n.map(|n| (n, false)),
     }
 }
 
@@ -925,7 +923,7 @@ incremental = { cursor = "updated_at", sort = { param = "sort", value = "-update
             assert_eq!(d, Duration::new(*secs, *nanos), "{text}");
             assert_eq!(old, legacy.contains(text), "{text}");
         }
-        // Both read it, to different values: the old value wins, with a warning.
+        // Only the old syntax reads it: the old value, with a warning.
         assert_eq!(parse_duration("0"), Some((Duration::ZERO, true)));
         // An inexact old fraction errored; jiff's exact value is used.
         assert_eq!(
