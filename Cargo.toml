@@ -10,7 +10,7 @@ repository = "https://github.com/b-luu/apisip"
 homepage = "https://github.com/b-luu/apisip"
 keywords = ["openapi", "ingestion", "parquet", "etl", "api"]
 categories = ["command-line-utilities"]
-exclude = ["/.github", "/AGENTS.md", "/deny.toml", "/flake.lock", "/flake.nix", "/rust-toolchain.toml"]
+exclude = ["/.clusterfuzzlite", "/.github", "/fuzz", "/AGENTS.md", "/deny.toml", "/flake.lock", "/flake.nix", "/rust-toolchain.toml"]
 
 [dependencies]
 anyhow = "1.0.104"

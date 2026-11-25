@@ -1,0 +1,39 @@
+name: ClusterFuzzLite
+
+# Builds the cargo-fuzz targets in fuzz/ and fuzzes them, ten minutes in
+# total, on pull requests that touch the code. See "Fuzzing" in CONTRIBUTING.md.
+on:
+  pull_request:
+    paths: [src/**, fuzz/**, tests/fixtures/**, Cargo.toml, Cargo.lock, .clusterfuzzlite/**, .github/workflows/cflite-pr.yml]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read # cifuzz looks up artifacts of earlier runs (corpus, coverage)
+    steps:
+      - name: Build fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: address
+      - name: Run fuzzers
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 600
+          mode: code-change
+          sanitizer: address

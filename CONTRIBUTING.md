@@ -87,6 +87,34 @@ Optional suites:
 - **Nix**: `nix flake check` builds the package. It does not run the tests:
   the `gates` job does.
 
+## Fuzzing
+
+`fuzz/` holds [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets for
+the parsers that read input apisip does not control:
+
+- `spec`: a spec as JSON or YAML, then detection and each stream's record schema;
+- `config`: an `apisip.toml`;
+- `record`: an API record conformed to a fixed schema under each cast mode;
+- `cursor`: cursor values and timestamps, and the consistency of their ordering.
+
+cargo-fuzz needs a nightly toolchain. Run one target from the repo root,
+with its seeds:
+
+```sh
+cargo install cargo-fuzz
+mkdir -p fuzz/corpus/spec
+cargo +nightly fuzz run spec fuzz/corpus/spec fuzz/seeds/spec tests/fixtures
+```
+
+The first folder collects new inputs and must exist; the others are read-only
+seeds. Pass
+`-- -max_total_time=600` to stop after ten minutes. A crash is saved under
+`fuzz/artifacts/<target>/`; replay it with `cargo +nightly fuzz run <target>
+<file>`. A fixed crash gets a regression test in the crate's own suite.
+
+On pull requests that touch the code, the `ClusterFuzzLite` workflow builds
+the targets with AddressSanitizer and fuzzes them for ten minutes in total.
+
 ## Try a change by hand
 
 The mock API in `examples/mock-api/` covers each auth scheme, the pagination

@@ -1,0 +1,45 @@
+[package]
+name = "apisip-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+apisip = { path = ".." }
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+# Keeps this crate out of the main build and its lockfile.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "spec"
+path = "fuzz_targets/spec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record"
+path = "fuzz_targets/record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cursor"
+path = "fuzz_targets/cursor.rs"
+test = false
+doc = false
+bench = false
