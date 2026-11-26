@@ -177,6 +177,7 @@ fn jsonl_init_check_run_and_incremental_rerun() {
         first_out.contains("Views: data/_apisip/views/all.sql"),
         "{first_out}"
     );
+    assert!(!first_out.contains("share the newest"), "{first_out}");
     let after_first = mock.requests();
     for (stream, n) in [("users", 25), ("orders", 30), ("events", 20), ("plans", 6)] {
         assert_eq!(records(d, stream).len(), n, "{stream}");

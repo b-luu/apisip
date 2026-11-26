@@ -53,15 +53,6 @@ impl CursorValue {
         }
         CursorValue::Text(s.to_string())
     }
-
-    fn text(&self) -> String {
-        match self {
-            CursorValue::Time(t) => t.to_rfc3339(),
-            CursorValue::Int(i) => i.to_string(),
-            CursorValue::Number(n) => n.to_string(),
-            CursorValue::Text(s) => s.clone(),
-        }
-    }
 }
 
 impl PartialOrd for CursorValue {
@@ -74,7 +65,10 @@ impl PartialOrd for CursorValue {
             (CursorValue::Number(f), CursorValue::Int(i)) => {
                 int_cmp_float(*i, *f).map(Ordering::reverse)
             }
-            (a, b) => a.text().partial_cmp(&b.text()),
+            (CursorValue::Text(a), CursorValue::Text(b)) => a.partial_cmp(b),
+            // Across kinds, a fixed order keeps the comparison transitive:
+            // as text, 9 < 10 < "1a" < 9 would be a cycle.
+            (a, b) => a.kind().partial_cmp(&b.kind()),
         }
     }
 }
@@ -124,7 +118,8 @@ pub struct Range {
     future: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Kinds in their order when compared: a timestamp < a number < text.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 enum Kind {
     Time = 0,
     Number = 1,
@@ -284,12 +279,19 @@ impl Boundary {
     }
 }
 
-/// Collects the fingerprints of the written records at the highest cursor.
+/// Collects the fingerprints of the written records at the highest cursor,
+/// for each kind: the watermark has one kind only, and a stray value of
+/// another kind (`""`, `0`) must not take the place of the real highest one.
 #[derive(Debug, Default)]
 pub struct BoundaryTracker {
+    by_kind: [KindBoundary; 3],
+}
+
+#[derive(Debug, Default)]
+struct KindBoundary {
     max: Option<CursorValue>,
     fingerprints: Vec<String>,
-    pub overflow: bool,
+    overflow: bool,
 }
 
 impl BoundaryTracker {
@@ -297,27 +299,35 @@ impl BoundaryTracker {
         let Some(c) = CursorValue::from_json(cursor) else {
             return;
         };
-        match self.max.as_ref().map(|m| c.partial_cmp(m)) {
+        let t = &mut self.by_kind[c.kind() as usize];
+        match t.max.as_ref().map(|m| c.partial_cmp(m)) {
             Some(Some(Ordering::Less)) | Some(None) => return,
             Some(Some(Ordering::Equal)) => {}
             _ => {
-                self.max = Some(c);
-                self.fingerprints.clear();
-                self.overflow = false;
+                t.max = Some(c);
+                t.fingerprints.clear();
+                t.overflow = false;
             }
         }
-        if self.fingerprints.len() < MAX_BOUNDARY {
-            self.fingerprints.push(fingerprint(record));
+        if t.fingerprints.len() < MAX_BOUNDARY {
+            t.fingerprints.push(fingerprint(record));
         } else {
-            self.overflow = true;
+            t.overflow = true;
         }
+    }
+
+    /// Whether more records share the highest cursor of `max`'s kind than fit.
+    pub fn overflow(&self, max: &str) -> bool {
+        self.by_kind[CursorValue::parse(max).kind() as usize].overflow
     }
 
     /// The fingerprints at `max`, the watermark this run commits. Empty when
     /// they do not fit, or when `max` is not the value tracked here.
-    pub fn finish(self, max: &str) -> Vec<String> {
-        match self.max {
-            Some(m) if !self.overflow && m == CursorValue::parse(max) => self.fingerprints,
+    pub fn finish(mut self, max: &str) -> Vec<String> {
+        let max = CursorValue::parse(max);
+        let t = std::mem::take(&mut self.by_kind[max.kind() as usize]);
+        match t.max {
+            Some(m) if !t.overflow && m == max => t.fingerprints,
             _ => Vec::new(),
         }
     }
@@ -459,6 +469,24 @@ mod tests {
     }
 
     #[test]
+    fn cursor_values_of_different_kinds_order_by_kind() {
+        let v = CursorValue::parse;
+        // As text, 9 < 10 < "1a" < 9 was a cycle.
+        assert!(v("9") < v("10") && v("10") < v("1a") && v("9") < v("1a"));
+        assert!(v("2099-01-01T00:00:00Z") < v("-1") && v("-1") < v("!"));
+        assert!(v("2026-01-01T00:00:00Z") < v("N/A"));
+        // The highest cursor no longer depends on the order records arrive in.
+        let r = |c: &str| json!({ "c": c });
+        for order in [["9", "10", "1a"], ["10", "1a", "9"], ["1a", "9", "10"]] {
+            let mut t = BoundaryTracker::default();
+            for c in order {
+                t.observe(&r(c), &json!(c));
+            }
+            assert_eq!(t.finish("1a"), vec![fingerprint(&r("1a"))], "{order:?}");
+        }
+    }
+
+    #[test]
     fn a_stray_text_value_never_becomes_the_watermark() {
         let dates = [json!("2026-01-01T00:00:00Z"), json!("2026-01-02T00:00:00Z")];
         // No watermark yet: the kind seen most often wins.
@@ -559,13 +587,29 @@ mod tests {
     }
 
     #[test]
+    fn a_stray_value_of_another_kind_keeps_the_boundary() {
+        let at = json!({"id": 1, "updated_at": "2026-01-01T00:00:00Z"});
+        for stray in [json!(""), json!("-"), json!(0), json!("N/A")] {
+            let mut t = BoundaryTracker::default();
+            t.observe(&at, &at["updated_at"]);
+            let r = json!({"id": 2, "updated_at": stray});
+            t.observe(&r, &r["updated_at"]);
+            assert_eq!(
+                t.finish("2026-01-01T00:00:00Z"),
+                vec![fingerprint(&at)],
+                "{stray}"
+            );
+        }
+    }
+
+    #[test]
     fn past_the_cap_no_fingerprint_is_kept() {
         let mut t = BoundaryTracker::default();
         for i in 0..=MAX_BOUNDARY {
             let r = json!({"id": i, "updated_at": "2026-01-01"});
             t.observe(&r, &r["updated_at"]);
         }
-        assert!(t.overflow);
+        assert!(t.overflow("2026-01-01"));
         assert!(t.finish("2026-01-01").is_empty());
 
         // A higher value starts over.
@@ -576,7 +620,7 @@ mod tests {
         }
         let r = json!({"id": 0, "updated_at": "2026-01-02"});
         t.observe(&r, &r["updated_at"]);
-        assert!(!t.overflow);
+        assert!(!t.overflow("2026-01-02"));
         assert_eq!(t.finish("2026-01-02").len(), 1);
     }
 
