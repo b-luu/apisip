@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- *(incremental)* cursor values of different kinds compare by kind: a timestamp
+  is below a number, and a number is below text. They used to compare as text,
+  which is not transitive (`9 < 10 < "1a" < 9`), so for a cursor field that
+  mixes kinds, the records kept at the highest cursor could depend on the order
+  the records arrived in. Such a stream may write its boundary records again
+  once on the next run; the stored watermark keeps its kind and does not move.
+
 ## [0.4.1](https://github.com/b-luu/apisip/compare/v0.4.0...v0.4.1) - 2026-11-18
 
 ### Fixed

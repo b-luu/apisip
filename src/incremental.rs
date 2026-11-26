@@ -53,15 +53,6 @@ impl CursorValue {
         }
         CursorValue::Text(s.to_string())
     }
-
-    fn text(&self) -> String {
-        match self {
-            CursorValue::Time(t) => t.to_rfc3339(),
-            CursorValue::Int(i) => i.to_string(),
-            CursorValue::Number(n) => n.to_string(),
-            CursorValue::Text(s) => s.clone(),
-        }
-    }
 }
 
 impl PartialOrd for CursorValue {
@@ -74,7 +65,10 @@ impl PartialOrd for CursorValue {
             (CursorValue::Number(f), CursorValue::Int(i)) => {
                 int_cmp_float(*i, *f).map(Ordering::reverse)
             }
-            (a, b) => a.text().partial_cmp(&b.text()),
+            (CursorValue::Text(a), CursorValue::Text(b)) => a.partial_cmp(b),
+            // Across kinds, a fixed order keeps the comparison transitive:
+            // as text, 9 < 10 < "1a" < 9 would be a cycle.
+            (a, b) => a.kind().partial_cmp(&b.kind()),
         }
     }
 }
@@ -124,7 +118,8 @@ pub struct Range {
     future: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Kinds in their order when compared: a timestamp < a number < text.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 enum Kind {
     Time = 0,
     Number = 1,
@@ -456,6 +451,24 @@ mod tests {
             ("1".into(), "7".into())
         );
         assert_eq!(field(&json!({"a": {"b": 1}}), "a.b"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn cursor_values_of_different_kinds_order_by_kind() {
+        let v = CursorValue::parse;
+        // As text, 9 < 10 < "1a" < 9 was a cycle.
+        assert!(v("9") < v("10") && v("10") < v("1a") && v("9") < v("1a"));
+        assert!(v("2099-01-01T00:00:00Z") < v("-1") && v("-1") < v("!"));
+        assert!(v("2026-01-01T00:00:00Z") < v("N/A"));
+        // The highest cursor no longer depends on the order records arrive in.
+        let r = |c: &str| json!({ "c": c });
+        for order in [["9", "10", "1a"], ["10", "1a", "9"], ["1a", "9", "10"]] {
+            let mut t = BoundaryTracker::default();
+            for c in order {
+                t.observe(&r(c), &json!(c));
+            }
+            assert_eq!(t.finish("1a"), vec![fingerprint(&r("1a"))], "{order:?}");
+        }
     }
 
     #[test]
