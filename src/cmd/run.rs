@@ -544,7 +544,7 @@ async fn commit(
         (Some(min), Some(max)) => Some(CursorRange { min, max }),
         _ => None,
     };
-    if tracker.overflow && !snapshot {
+    if observed.as_ref().is_some_and(|o| tracker.overflow(&o.max)) && !snapshot {
         report.warnings.push(format!(
             "more than {MAX_BOUNDARY} records share the newest `{}` value: the next run writes \
              them again (the views deduplicate them)",
